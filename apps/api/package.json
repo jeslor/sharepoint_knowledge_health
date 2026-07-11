@@ -19,6 +19,7 @@
     "@sph/config": "workspace:*",
     "@sph/database": "workspace:*",
     "@sph/types": "workspace:*",
+    "jose": "^5.9.6",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1"
   },

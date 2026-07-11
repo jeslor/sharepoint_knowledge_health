@@ -6,6 +6,13 @@
 export { createTenantContext } from './tenant-context';
 export type { TenantContext } from './tenant-context';
 export { findUserByEntraIdentity } from './identity';
+export {
+  findMicrosoftTenantByEntraTenantId,
+  provisionOrganizationFromConsent,
+  provisionUserFromExistingTenant,
+  resolveOrProvisionFromConsent,
+} from './onboarding';
+export type { EntraProfile, BootstrapResult, ConsentResolution } from './onboarding';
 
 export type {
   Organization,
