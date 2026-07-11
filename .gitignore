@@ -31,6 +31,15 @@ coverage/
 # TypeScript
 *.tsbuildinfo
 
+# Turborepo
+.turbo/
+
+# Prisma generated client
+node_modules/.prisma/
+
+# Next.js standalone build metadata
+.vercel/
+
 # Logs
 *.log
 npm-debug.log*

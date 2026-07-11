@@ -34,7 +34,14 @@ Docker
 
 GitHub Actions
 
-AWS
+Azure (single cloud platform for the entire application — see ADR-0006, ADR-0008):
+
+- Azure Container Apps — frontend (Next.js), API (NestJS), and scan worker
+- Azure Container Registry (ACR)
+- Azure Database for PostgreSQL (Flexible Server)
+- Azure Cache for Redis
+- Azure Key Vault
+- Azure Monitor + Application Insights
 
 ## Testing
 
