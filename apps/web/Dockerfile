@@ -1,7 +1,11 @@
 # syntax=docker/dockerfile:1
 
 FROM node:20.18-slim AS base
-RUN corepack enable
+# Install pnpm directly rather than via `corepack enable`: Corepack's bundled
+# signing keys can lag npm's rotated keys, causing "Cannot find matching
+# keyid" failures when it lazily fetches pnpm. Installing a pinned version
+# via npm sidesteps that verification path entirely.
+RUN npm install -g pnpm@9.15.0
 WORKDIR /app
 
 # ---- Prune: extract only what apps/web needs from the workspace ----
@@ -20,6 +24,10 @@ FROM base AS builder
 RUN npm install -g turbo@^2.3.0
 COPY --from=installer /app/ .
 COPY --from=pruner /app/out/full/ .
+# turbo prune only copies files reachable through the pnpm workspace package
+# graph — it doesn't know about tsconfig.base.json, which is referenced only
+# via a relative `extends` path, so it's copied in explicitly here.
+COPY tsconfig.base.json ./tsconfig.base.json
 RUN pnpm turbo run db:generate --filter=@sph/web
 RUN pnpm turbo run build --filter=@sph/web
 

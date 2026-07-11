@@ -8,12 +8,279 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// Prisma refuses to `generate` a client with zero models defined (confirmed
-// against Prisma 5.22 — "You don't have any models defined in your schema").
-// This placeholder exists solely to unblock the Phase 1 toolchain
-// (generate/migrate/CI) and must be removed the moment real domain models
-// (ADR-0007) are added in the next phase.
-model Placeholder {
-  id        String   @id @default(cuid())
-  createdAt DateTime @default(now())
+// ---------------------------------------------------------------------------
+// Enums (ADR-0007 domain model, ADR-0002 scoring bands/criteria)
+// ---------------------------------------------------------------------------
+
+enum OrganizationStatus {
+  Active
+  Suspended
+}
+
+enum UserRole {
+  Admin
+  Member
+}
+
+enum UserStatus {
+  Active
+  Deactivated
+}
+
+enum MicrosoftTenantStatus {
+  PendingConsent
+  Consented
+  Revoked
+}
+
+enum DocumentStatus {
+  Active
+  Removed
+}
+
+enum DocumentOwnerType {
+  Author
+  AssignedOwner
+  Unknown
+}
+
+enum DocumentOwnerSource {
+  GraphMetadata
+  ManualAssignment
+}
+
+enum ScanJobStatus {
+  Queued
+  Running
+  Completed
+  Failed
+  Cancelled
+}
+
+enum HealthBand {
+  Healthy
+  NeedsAttention
+  RequiresReview
+}
+
+enum HealthIssueCriterion {
+  Freshness
+  Ownership
+  ReviewStatus
+  Metadata
+  Duplication
+  Age
+}
+
+enum HealthIssueSeverity {
+  NeedsAttention
+  RequiresReview
+}
+
+// ---------------------------------------------------------------------------
+// Models
+// ---------------------------------------------------------------------------
+
+/// The customer account (tenant of our SaaS). Root of the tenancy tree.
+model Organization {
+  id        String             @id @default(cuid())
+  name      String
+  status    OrganizationStatus @default(Active)
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+
+  users            User[]
+  microsoftTenants MicrosoftTenant[]
+  sharePointSites  SharePointSite[]
+  documents        Document[]
+  documentOwners   DocumentOwner[]
+  scanJobs         ScanJob[]
+  healthScores     HealthScore[]
+  healthIssues     HealthIssue[]
+
+  @@index([status])
+}
+
+/// A person who signs into the dashboard. Belongs to exactly one Organization.
+model User {
+  id             String     @id @default(cuid())
+  organizationId String
+  entraObjectId  String
+  email          String
+  displayName    String
+  role           UserRole   @default(Member)
+  status         UserStatus @default(Active)
+  createdAt      DateTime   @default(now())
+  lastLoginAt    DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  consentedMicrosoftTenants MicrosoftTenant[] @relation("MicrosoftTenantConsentedBy")
+  triggeredScanJobs         ScanJob[]         @relation("ScanJobTriggeredBy")
+
+  // Login resolves identity from the validated token subject claim before
+  // organizationId is known, so this must be globally unique.
+  @@unique([entraObjectId])
+  @@index([organizationId, status])
+}
+
+/// One customer's connected Microsoft 365 / Azure AD tenant.
+model MicrosoftTenant {
+  id                     String                @id @default(cuid())
+  organizationId         String
+  entraTenantId          String
+  tenantName             String
+  status                 MicrosoftTenantStatus @default(PendingConsent)
+  consentGrantedAt       DateTime?
+  consentGrantedByUserId String?
+  createdAt              DateTime              @default(now())
+
+  organization         Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  consentGrantedByUser User?        @relation("MicrosoftTenantConsentedBy", fields: [consentGrantedByUserId], references: [id], onDelete: SetNull)
+
+  sharePointSites SharePointSite[]
+  scanJobs        ScanJob[]
+
+  // entraTenantId is NOT globally unique (ADR-0007): isolation is by
+  // organizationId, not by assuming one Microsoft tenant maps to one
+  // Organization forever. Unique per-organization only.
+  @@unique([organizationId, entraTenantId])
+  @@index([organizationId, status])
+}
+
+/// A SharePoint site discovered under a connected tenant.
+model SharePointSite {
+  id                String    @id @default(cuid())
+  organizationId    String
+  microsoftTenantId String
+  graphSiteId       String
+  siteUrl           String
+  displayName       String
+  lastScannedAt     DateTime?
+  createdAt         DateTime  @default(now())
+
+  organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  microsoftTenant MicrosoftTenant @relation(fields: [microsoftTenantId], references: [id], onDelete: Cascade)
+
+  documents Document[]
+
+  @@unique([microsoftTenantId, graphSiteId])
+  @@index([organizationId])
+}
+
+/// A single SharePoint document tracked for health scoring.
+model Document {
+  id                   String         @id @default(cuid())
+  organizationId       String
+  siteId               String
+  graphItemId          String
+  name                 String
+  path                 String
+  fileType             String
+  sizeBytes            BigInt
+  sourceCreatedAt      DateTime
+  sourceModifiedAt     DateTime
+  status               DocumentStatus @default(Active)
+  currentHealthScoreId String?        @unique
+  ingestedAt           DateTime       @default(now())
+
+  organization       Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  site               SharePointSite @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  currentHealthScore HealthScore?   @relation("CurrentHealthScore", fields: [currentHealthScoreId], references: [id], onDelete: SetNull)
+
+  owners       DocumentOwner[]
+  healthScores HealthScore[]   @relation("DocumentHealthScores")
+
+  @@unique([siteId, graphItemId])
+  @@index([organizationId, status])
+  @@index([siteId, status])
+}
+
+/// Ownership signal(s) for a document (author / assigned owner / unknown).
+model DocumentOwner {
+  id             String              @id @default(cuid())
+  documentId     String
+  organizationId String
+  ownerType      DocumentOwnerType
+  displayName    String?
+  email          String?
+  source         DocumentOwnerSource
+
+  document     Document     @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([documentId])
+  @@index([organizationId])
+}
+
+/// A single execution of the scan pipeline (ADR-0004).
+model ScanJob {
+  id                String        @id @default(cuid())
+  organizationId    String
+  microsoftTenantId String
+  triggeredByUserId String
+  status            ScanJobStatus @default(Queued)
+  startedAt         DateTime?
+  completedAt       DateTime?
+  documentsScanned  Int           @default(0)
+  documentsFailed   Int           @default(0)
+  errorSummary      String?
+  createdAt         DateTime      @default(now())
+
+  organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  microsoftTenant MicrosoftTenant @relation(fields: [microsoftTenantId], references: [id], onDelete: Cascade)
+  triggeredByUser User            @relation("ScanJobTriggeredBy", fields: [triggeredByUserId], references: [id], onDelete: Restrict)
+
+  healthScores HealthScore[]
+
+  @@index([organizationId, status])
+  @@index([microsoftTenantId, status])
+  @@index([organizationId, createdAt])
+}
+
+/// Result of scoring one document during one scan. Immutable once written.
+model HealthScore {
+  id                String     @id @default(cuid())
+  organizationId    String
+  documentId        String
+  scanJobId         String
+  compositeScore    Int
+  freshnessScore    Int
+  ownershipScore    Int
+  reviewStatusScore Int
+  metadataScore     Int
+  duplicationScore  Int
+  ageScore          Int
+  healthBand        HealthBand
+  calculatedAt      DateTime   @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  document     Document     @relation("DocumentHealthScores", fields: [documentId], references: [id], onDelete: Cascade)
+  scanJob      ScanJob      @relation(fields: [scanJobId], references: [id], onDelete: Cascade)
+
+  // Inverse of Document.currentHealthScoreId — a HealthScore is pointed to
+  // by at most one Document as its "current" score.
+  currentForDocument Document?
+
+  healthIssues HealthIssue[]
+
+  @@index([organizationId, documentId, calculatedAt])
+  @@index([scanJobId])
+}
+
+/// A flagged problem on one scoring criterion for one HealthScore. Immutable.
+model HealthIssue {
+  id             String               @id @default(cuid())
+  organizationId String
+  healthScoreId  String
+  criterion      HealthIssueCriterion
+  severity       HealthIssueSeverity
+  message        String
+  createdAt      DateTime             @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  healthScore  HealthScore  @relation(fields: [healthScoreId], references: [id], onDelete: Cascade)
+
+  @@index([healthScoreId])
+  @@index([organizationId, criterion])
 }
