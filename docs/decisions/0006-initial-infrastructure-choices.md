@@ -54,7 +54,7 @@ Infrastructure needed concrete choices — compute target, database hosting, sec
 - **Queue**: **Azure Cache for Redis**, Standard tier, backing the BullMQ job queue from ADR-0004.
 - **Secrets**: **Azure Key Vault** for the Graph API client secret, database credentials, and session/JWT signing secrets, referenced by Container Apps secret bindings at runtime. No secrets in plain environment variables or committed config anywhere, including the frontend.
 - **Monitoring**: **Azure Monitor + Application Insights**, instrumented on the API and worker (request tracing, error rates, scan job duration/failure/success counts) and the frontend (page-level errors, Core Web Vitals where feasible).
-- **CI/CD**: **GitHub Actions**, single pipeline shape for all three apps: run lint/tests on every PR; on merge to main, build Docker images for frontend/API/worker, push to ACR, and deploy new revisions to the corresponding Azure Container Apps.
+- **CI/CD**: **GitHub Actions**, one workflow with three path-filtered, independent jobs (one per app — see ADR-0009 for the monorepo structure this depends on): run lint/tests on every PR; on merge to main, each app whose files (or shared package dependencies) changed builds its Docker image, pushes to ACR, and deploys a new revision to its corresponding Azure Container App. Apps with no relevant changes are not rebuilt or redeployed.
 
 All three apps communicate within a single Azure environment; CORS is still required between the frontend and API origins (separate Container Apps get separate ingress URLs), but there is no cross-cloud networking, secrets, or deployment surface to manage.
 

@@ -22,7 +22,9 @@ No design exists for how or when SharePoint metadata retrieval happens. The cont
 Simplest to implement, but breaks immediately at real-world document volumes — HTTP timeouts, a blocked request thread, and no way to show scan progress. Not viable.
 
 **B. Background job queue (e.g., BullMQ on Redis)**
-"Trigger scan" API enqueues a job and returns immediately; a worker (running inside the same NestJS deployment, not a separate service) processes sites/documents page by page via the Graph module, respecting throttling/backoff, writing results incrementally to Postgres, and updating job status. Frontend polls a scan-status endpoint.
+"Trigger scan" API enqueues a job and returns immediately; a worker processes sites/documents page by page via the Graph module, respecting throttling/backoff, writing results incrementally to Postgres, and updating job status. Frontend polls a scan-status endpoint.
+
+**Amended by ADR-0009**: the worker is deployed as its own Azure Container App (`apps/worker`), not a process inside the API's deployment as originally described here. It has no public HTTP endpoints and is reachable only by consuming from the Redis queue. This is a packaging refinement, not a change to the async, queue-based design decided below.
 
 **C. Scheduled recurring scans (cron-based) in addition to on-demand**
 Adds value (automatic freshness) but also adds scheduling infrastructure and questions about scan frequency/cost per tenant. Not required for the MVP's core "get a score" loop.
@@ -31,7 +33,7 @@ Adds value (automatic freshness) but also adds scheduling infrastructure and que
 
 **Option B**, with recurring scans (Option C) explicitly deferred to v2.
 
-- A job queue (BullMQ + Redis) is added as new infrastructure. The worker runs as a process within the existing NestJS application (not a separate microservice), consistent with "no microservices unless required."
+- A job queue (BullMQ + Redis) is added as new infrastructure. The worker is a separate deployable app (`apps/worker`, per ADR-0009) but is still not a "microservice" in the prohibited sense — it exposes no API and communicates only through shared infrastructure (Postgres, Redis), never synchronous network calls — consistent with "no microservices unless required."
 - Scan API: `POST /scans` enqueues, returns a job id; `GET /scans/:id` returns status/progress; completed scan writes `Document` rows and triggers score calculation (ADR-0002).
 - MVP scans are manually triggered only ("Run Scan" button). No cron scheduling in MVP.
 

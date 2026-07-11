@@ -1,0 +1,32 @@
+{
+  "name": "@sph/database",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "prisma": {
+    "schema": "../../prisma/schema.prisma"
+  },
+  "scripts": {
+    "generate": "dotenv -e ../../.env -- prisma generate --schema=../../prisma/schema.prisma",
+    "migrate:dev": "dotenv -e ../../.env -- prisma migrate dev --schema=../../prisma/schema.prisma",
+    "migrate:deploy": "dotenv -e ../../.env -- prisma migrate deploy --schema=../../prisma/schema.prisma",
+    "studio": "dotenv -e ../../.env -- prisma studio --schema=../../prisma/schema.prisma",
+    "db:generate": "pnpm run generate",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "echo \"no tests yet\" && exit 0",
+    "clean": "rm -rf dist .turbo"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.16.0",
+    "dotenv-cli": "^7.4.2",
+    "prisma": "^5.22.0",
+    "typescript": "^5.6.0"
+  }
+}

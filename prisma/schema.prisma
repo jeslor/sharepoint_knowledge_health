@@ -1,0 +1,19 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../node_modules/.prisma/client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Prisma refuses to `generate` a client with zero models defined (confirmed
+// against Prisma 5.22 — "You don't have any models defined in your schema").
+// This placeholder exists solely to unblock the Phase 1 toolchain
+// (generate/migrate/CI) and must be removed the moment real domain models
+// (ADR-0007) are added in the next phase.
+model Placeholder {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+}
