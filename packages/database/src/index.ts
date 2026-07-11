@@ -5,7 +5,7 @@
 
 export { createTenantContext } from './tenant-context';
 export type { TenantContext } from './tenant-context';
-export { findUserByEntraObjectId } from './identity';
+export { findUserByEntraIdentity } from './identity';
 
 export type {
   Organization,

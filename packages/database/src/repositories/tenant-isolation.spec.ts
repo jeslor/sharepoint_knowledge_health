@@ -27,20 +27,21 @@ async function seedOrganization(label: string): Promise<SeededOrg> {
     data: { name: `Tenant Isolation Test Org ${unique}` },
   });
 
-  const user = await prisma.user.create({
-    data: {
-      organizationId: organization.id,
-      entraObjectId: `entra-${unique}`,
-      email: `${unique}@example.com`,
-      displayName: `Test User ${unique}`,
-    },
-  });
-
   const microsoftTenant = await prisma.microsoftTenant.create({
     data: {
       organizationId: organization.id,
       entraTenantId: `tenant-${unique}`,
       tenantName: `Test Tenant ${unique}`,
+    },
+  });
+
+  const user = await prisma.user.create({
+    data: {
+      organizationId: organization.id,
+      microsoftTenantId: microsoftTenant.id,
+      entraObjectId: `entra-${unique}`,
+      email: `${unique}@example.com`,
+      displayName: `Test User ${unique}`,
     },
   });
 

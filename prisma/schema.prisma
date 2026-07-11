@@ -102,24 +102,28 @@ model Organization {
 
 /// A person who signs into the dashboard. Belongs to exactly one Organization.
 model User {
-  id             String     @id @default(cuid())
-  organizationId String
-  entraObjectId  String
-  email          String
-  displayName    String
-  role           UserRole   @default(Member)
-  status         UserStatus @default(Active)
-  createdAt      DateTime   @default(now())
-  lastLoginAt    DateTime?
+  id                String     @id @default(cuid())
+  organizationId    String
+  microsoftTenantId String
+  entraObjectId     String
+  email             String
+  displayName       String
+  role              UserRole   @default(Member)
+  status            UserStatus @default(Active)
+  createdAt         DateTime   @default(now())
+  lastLoginAt       DateTime?
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  microsoftTenant MicrosoftTenant @relation("UserHomeMicrosoftTenant", fields: [microsoftTenantId], references: [id], onDelete: Restrict)
 
   consentedMicrosoftTenants MicrosoftTenant[] @relation("MicrosoftTenantConsentedBy")
   triggeredScanJobs         ScanJob[]         @relation("ScanJobTriggeredBy")
 
-  // Login resolves identity from the validated token subject claim before
-  // organizationId is known, so this must be globally unique.
-  @@unique([entraObjectId])
+  // The Entra oid claim (entraObjectId) is only unique WITHIN the Azure AD
+  // tenant that issued it (ADR-0010) — Microsoft's own multi-tenant app
+  // guidance requires the oid+tid combination as the unique identifying
+  // key, never oid alone. microsoftTenantId is our FK standing in for tid.
+  @@unique([microsoftTenantId, entraObjectId])
   @@index([organizationId, status])
 }
 
@@ -139,12 +143,18 @@ model MicrosoftTenant {
 
   sharePointSites SharePointSite[]
   scanJobs        ScanJob[]
+  homeUsers       User[]           @relation("UserHomeMicrosoftTenant")
 
   // entraTenantId is NOT globally unique (ADR-0007): isolation is by
   // organizationId, not by assuming one Microsoft tenant maps to one
   // Organization forever. Unique per-organization only.
   @@unique([organizationId, entraTenantId])
   @@index([organizationId, status])
+  // Standalone index (ADR-0010): enables resolving a JWT's tid claim to
+  // candidate MicrosoftTenant row(s) during login, before organizationId
+  // is known — the compound unique above isn't usable for that lookup
+  // since entraTenantId isn't its leading column.
+  @@index([entraTenantId])
 }
 
 /// A SharePoint site discovered under a connected tenant.
