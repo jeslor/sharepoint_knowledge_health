@@ -1,6 +1,5 @@
 generator client {
   provider = "prisma-client-js"
-  output   = "../node_modules/.prisma/client"
 }
 
 datasource db {
@@ -260,7 +259,7 @@ model HealthScore {
 
   // Inverse of Document.currentHealthScoreId — a HealthScore is pointed to
   // by at most one Document as its "current" score.
-  currentForDocument Document?
+  currentForDocument Document? @relation("CurrentHealthScore")
 
   healthIssues HealthIssue[]
 
