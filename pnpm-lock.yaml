@@ -250,15 +250,24 @@ importers:
         specifier: ^5.22.0
         version: 5.22.0(prisma@5.22.0)
     devDependencies:
+      '@types/jest':
+        specifier: ^29.5.13
+        version: 29.5.14
       '@types/node':
         specifier: ^20.16.0
         version: 20.19.43
       dotenv-cli:
         specifier: ^7.4.2
         version: 7.4.4
+      jest:
+        specifier: ^29.7.0
+        version: 29.7.0(@types/node@20.19.43)(ts-node@10.9.2(@types/node@20.19.43)(typescript@5.9.3))
       prisma:
         specifier: ^5.22.0
         version: 5.22.0
+      ts-jest:
+        specifier: ^29.2.5
+        version: 29.4.11(@babel/core@7.29.7)(@jest/transform@29.7.0)(@jest/types@29.6.3)(babel-jest@29.7.0(@babel/core@7.29.7))(jest-util@29.7.0)(jest@29.7.0(@types/node@20.19.43)(ts-node@10.9.2(@types/node@20.19.43)(typescript@5.9.3)))(typescript@5.9.3)
       typescript:
         specifier: ^5.6.0
         version: 5.9.3

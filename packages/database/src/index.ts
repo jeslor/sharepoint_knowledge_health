@@ -1,21 +1,34 @@
-import { PrismaClient } from '@prisma/client';
+// Public surface of @sph/database. Deliberately does NOT export the raw
+// PrismaClient singleton (see client.ts) — this is the actual enforcement
+// mechanism for ADR-0001: consumers can only obtain tenant-scoped access
+// via createTenantContext(), or the one sanctioned unscoped identity lookup.
 
-declare global {
-  var __prismaClient: PrismaClient | undefined;
-}
+export { createTenantContext } from './tenant-context';
+export type { TenantContext } from './tenant-context';
+export { findUserByEntraObjectId } from './identity';
 
-function createPrismaClient(): PrismaClient {
-  return new PrismaClient({
-    log: process.env.NODE_ENV === 'development' ? ['warn', 'error'] : ['error'],
-  });
-}
+export type {
+  Organization,
+  User,
+  MicrosoftTenant,
+  SharePointSite,
+  Document,
+  DocumentOwner,
+  ScanJob,
+  HealthScore,
+  HealthIssue,
+} from '@prisma/client';
 
-// Reuse a single PrismaClient across hot-module-reload cycles in dev so we
-// don't exhaust the Postgres connection pool with a new client per reload.
-export const prisma: PrismaClient = globalThis.__prismaClient ?? createPrismaClient();
-
-if (process.env.NODE_ENV !== 'production') {
-  globalThis.__prismaClient = prisma;
-}
-
-export type { PrismaClient } from '@prisma/client';
+export {
+  OrganizationStatus,
+  UserRole,
+  UserStatus,
+  MicrosoftTenantStatus,
+  DocumentStatus,
+  DocumentOwnerType,
+  DocumentOwnerSource,
+  ScanJobStatus,
+  HealthBand,
+  HealthIssueCriterion,
+  HealthIssueSeverity,
+} from '@prisma/client';
