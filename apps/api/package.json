@@ -12,13 +12,16 @@
     "clean": "rm -rf dist coverage .turbo"
   },
   "dependencies": {
+    "@nestjs/bullmq": "^10.2.0",
     "@nestjs/common": "^10.4.0",
     "@nestjs/config": "^3.3.0",
     "@nestjs/core": "^10.4.0",
     "@nestjs/platform-express": "^10.4.0",
     "@sph/config": "workspace:*",
     "@sph/database": "workspace:*",
+    "@sph/graph-client": "workspace:*",
     "@sph/types": "workspace:*",
+    "bullmq": "^5.21.0",
     "jose": "^5.9.6",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1"

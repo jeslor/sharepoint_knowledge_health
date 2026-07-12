@@ -1,7 +1,12 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { BullModule } from '@nestjs/bullmq';
 import { HealthModule } from './health/health.module';
 import { AuthModule } from './auth/auth.module';
+import { SharePointSitesModule } from './sharepoint-sites/sharepoint-sites.module';
+import { DocumentsModule } from './documents/documents.module';
+import { ScansModule } from './scans/scans.module';
+import { HealthSummaryModule } from './health-summary/health-summary.module';
 
 @Module({
   imports: [
@@ -10,8 +15,19 @@ import { AuthModule } from './auth/auth.module';
     // falls through to process.env, which is where those environments
     // inject config instead.
     ConfigModule.forRoot({ isGlobal: true, envFilePath: '../../.env' }),
+    BullModule.forRootAsync({
+      useFactory: () => ({
+        connection: {
+          url: process.env.REDIS_URL,
+        },
+      }),
+    }),
     HealthModule,
     AuthModule,
+    SharePointSitesModule,
+    DocumentsModule,
+    ScansModule,
+    HealthSummaryModule,
   ],
 })
 export class AppModule {}

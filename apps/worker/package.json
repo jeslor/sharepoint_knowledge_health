@@ -18,6 +18,8 @@
     "@nestjs/core": "^10.4.0",
     "@sph/config": "workspace:*",
     "@sph/database": "workspace:*",
+    "@sph/graph-client": "workspace:*",
+    "@sph/scoring": "workspace:*",
     "@sph/types": "workspace:*",
     "bullmq": "^5.21.0",
     "reflect-metadata": "^0.2.2",

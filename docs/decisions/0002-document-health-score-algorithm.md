@@ -62,6 +62,8 @@ Bands classify the **composite** score for dashboard display (e.g., badge color/
 
 A `HealthIssue` (see ADR-0007) is generated whenever an individual **criterion sub-score** — not the composite — falls below 70. This means a document can sit in the "Healthy" composite band while still surfacing an issue on one weak criterion; that's intentional, since the goal is actionable per-criterion recommendations, not just a single pass/fail gate.
 
+**Amendment (2026-07-12, Phase 5 implementation)**: this ADR never specified how a sub-70 sub-score maps to one of `HealthIssueSeverity`'s two values (`NeedsAttention`, `RequiresReview`) — needed once the scoring engine (`packages/scoring`) was actually implemented. Decided: **40–69 → `NeedsAttention`, below 40 → `RequiresReview`**, mirroring the same two-tier structure already used for the composite `HealthBand` rather than inventing a separate scale.
+
 ### Configurability Design
 
 Weights and thresholds are hardcoded for MVP but must not be scattered as magic numbers inside the scoring functions. Structure:

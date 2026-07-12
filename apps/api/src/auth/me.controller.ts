@@ -1,14 +1,9 @@
 import { Controller, Get, UseGuards } from '@nestjs/common';
 import type { User } from '@sph/database';
+import type { MeResponse } from '@sph/types';
 import { EntraJwtGuard } from './entra-jwt.guard';
 import { TenantContextGuard } from './tenant-context.guard';
 import { CurrentUser } from './current-user.decorator';
-
-export interface MeResponse {
-  id: string;
-  role: User['role'];
-  organizationId: string;
-}
 
 /**
  * Minimal endpoint proving the full guard chain works end-to-end — the

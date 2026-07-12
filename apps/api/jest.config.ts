@@ -11,6 +11,11 @@ const config: Config = {
   collectCoverageFrom: ['**/*.(t|j)s'],
   coverageDirectory: '../coverage',
   testEnvironment: 'node',
+  // ScansModule wires a real BullMQ queue against Redis. Any test that
+  // boots the full AppModule leaves ioredis's internal reconnect/keepalive
+  // timers open past Jest's 1s handle-detection window — same well-known
+  // upstream BullMQ+Jest interaction as apps/worker, not a leak here.
+  forceExit: true,
 };
 
 export default config;

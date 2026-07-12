@@ -54,3 +54,25 @@ Binding on whatever builds the actual auth middleware/guard in `apps/api`:
 
 - If RBAC expands beyond `Admin`/`Member` (per the earlier schema review), role resolution must continue to come from the `User` row, never from Entra group claims directly, unless a deliberate future ADR decides to map Entra groups to roles explicitly (that would be a new, separate trust decision, not an extension of this one).
 - If SCIM-based or admin-driven user provisioning is added later (as an alternative to lazy first-login provisioning), it must still ultimately anchor each provisioned `User` row to a `(microsoftTenantId, entraObjectId)` pair before the account is usable — provisioning by email invite is fine as a UX flow, but the account isn't "real" until an actual Entra sign-in resolves and fills in the `oid`.
+
+## Amendment (2026-07-12, Phase 6): client-side completion
+
+This ADR's trust model was decided before `apps/web` had any auth
+implementation. Phase 6 built the client side against it, unchanged:
+
+- `apps/web` uses `@azure/msal-browser` + `@azure/msal-react`, `loginRedirect`
+  against authority `https://login.microsoftonline.com/organizations` — the
+  same work/school-account-only authority `entra-jwt.guard.ts` fetches its
+  JWKS from, kept deliberately in sync.
+- The frontend requests only `openid profile` scopes — no Graph permissions
+  — and sends the resulting **ID token** (not an access token) as the
+  Bearer credential. This matches what this backend already validates:
+  `EntraJwtGuard`'s `audience` check is against `ENTRA_CLIENT_ID` (our own
+  app), which is an ID token's `aud` shape, not a Graph access token's.
+  There was never a separate "API access token" concept to add — the ID
+  token IS the bearer credential, on both the consent-callback path and
+  every protected route.
+- Token cache: `sessionStorage` (MSAL's own recommended default for SPAs,
+  set explicitly rather than left implicit), never `localStorage`.
+- No backend guard, claim-validation, or provisioning logic changed. This
+  amendment documents implementation, not a new decision.

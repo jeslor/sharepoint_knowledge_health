@@ -74,3 +74,15 @@ Each app has its own Dockerfile (above) and its own CI/CD trigger: GitHub Action
 
 - **ADR-0004** ("the worker runs as a process within the existing NestJS application, not a separate microservice"): superseded by this ADR. The worker is now `apps/worker`, a distinct Container App with its own Dockerfile and deployment lifecycle — but the "no microservices" rationale still holds for the reason explained above (no inter-service network API), so ADR-0004's core architectural conclusion (queue-based, async, no synchronous scan) is unchanged, only the deployment packaging is refined.
 - **ADR-0006** (CI/CD description): "single pipeline shape... build Docker images for frontend/API/worker... on merge to main" is refined to path-filtered, independent per-app jobs within one GitHub Actions workflow, as described above.
+
+## Implementation note (2026-07-12, Phase 6)
+
+This ADR's `packages/types` description ("API request/response DTOs") went
+unimplemented through Phase 5 — `apps/api`'s document/health-score response
+shapes lived in `apps/api/src/documents/dto.ts` instead. Phase 6 is the
+first time `apps/web` needs any of these types, which is exactly the
+scenario this ADR anticipated; the DTOs moved into
+`packages/types/src/api/*.ts` (documents, scans, health-summary, me) at
+that point, and `apps/api` now imports them from there rather than
+declaring local duplicates. No boundary rule changed — this closes a gap
+between the decision and its implementation, not a new decision.

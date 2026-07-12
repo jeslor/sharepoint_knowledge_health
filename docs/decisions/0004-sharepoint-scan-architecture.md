@@ -47,3 +47,29 @@ Adds value (automatic freshness) but also adds scheduling infrastructure and que
 - v2: scheduled recurring scans (cron per organization, configurable frequency).
 - v2: incremental/delta scans using the Graph delta query API instead of always re-scanning the full document set — reduces Graph API load and scan duration significantly.
 - v2: webhook-driven near-real-time updates for high-value sites, once the queue infrastructure already exists to support it.
+
+## Amendment (2026-07-12, Phase 5 production readiness review)
+
+This ADR never specified the queue's retry policy, worker concurrency, or
+what happens if two scans for the same tenant overlap. Decided during the
+Phase 5 review, once the Document Collector existed to review against:
+
+- **Retries**: `attempts: 3` with exponential backoff (5s base) on the scan
+  queue's `defaultJobOptions`. Safe because a whole-job retry is idempotent
+  — `Document` upsert keys on `(siteId, graphItemId)` and scoring is a full
+  recompute every run, so re-running `process()` from scratch never
+  double-writes.
+- **Concurrency**: worker concurrency is configurable via `WORKER_CONCURRENCY`
+  (previously declared in `.env.example` but never actually wired to
+  anything — now passed to `@Processor`'s `concurrency` option).
+- **Overlapping scans of the same tenant**: rejected at trigger time (409)
+  while a `ScanJob` for that `MicrosoftTenant` is already `Queued` or
+  `Running`, rather than left to race. `Document` upsert is find-then-write,
+  not an atomic upsert, so two concurrent collections of the same site could
+  otherwise race on the same rows.
+- **Document reconciliation**: implemented to match the lifecycle already
+  specified in ADR-0007's domain model table (`Active` → `Removed` "when a
+  rescan no longer finds the item in SharePoint") — this was documented in
+  Phase 2 but not actually built until this review caught the gap. A site's
+  full item enumeration is only trusted for reconciliation if it completes
+  without error; a partial/failed enumeration never marks anything Removed.
