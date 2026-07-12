@@ -11,6 +11,12 @@ const config: Config = {
   collectCoverageFrom: ['**/*.(t|j)s'],
   coverageDirectory: '../coverage',
   testEnvironment: 'node',
+  // app.module.spec.ts boots a real BullMQ Worker against Redis. worker.close()
+  // is correctly invoked via Nest's onApplicationShutdown (confirmed in
+  // @nestjs/bullmq's BullExplorer), but ioredis leaves internal
+  // reconnect/keepalive timers open well past Jest's 1s open-handle window —
+  // a well-known upstream BullMQ+Jest interaction, not a leak in this code.
+  forceExit: true,
 };
 
 export default config;

@@ -18,6 +18,8 @@ export default tseslint.config(
         {
           patterns: [
             { group: ['@sph/database', '@sph/database/*'], message: 'apps/web must not access the database directly — call apps/api over REST instead.' },
+            { group: ['@sph/graph-client', '@sph/graph-client/*'], message: 'apps/web must not call Microsoft Graph directly — call apps/api over REST instead.' },
+            { group: ['bullmq', 'bullmq/*'], message: 'apps/web must not know about the job queue — trigger scans via apps/api over REST instead.' },
           ],
         },
       ],

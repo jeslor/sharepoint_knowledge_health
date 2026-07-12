@@ -32,6 +32,15 @@ enum UserStatus {
   PendingApproval
 }
 
+// ADR-0014: a site is scan-eligible only in the Approved state. New sites
+// (whether from initial discovery or a later rescan) always start
+// Discovered — never auto-approved, under any circumstance.
+enum SharePointSiteStatus {
+  Discovered
+  Approved
+  Removed
+}
+
 enum MicrosoftTenantStatus {
   PendingConsent
   Consented
@@ -122,8 +131,9 @@ model User {
   organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   microsoftTenant MicrosoftTenant @relation("UserHomeMicrosoftTenant", fields: [microsoftTenantId], references: [id], onDelete: Restrict)
 
-  consentedMicrosoftTenants MicrosoftTenant[] @relation("MicrosoftTenantConsentedBy")
-  triggeredScanJobs         ScanJob[]         @relation("ScanJobTriggeredBy")
+  consentedMicrosoftTenants  MicrosoftTenant[] @relation("MicrosoftTenantConsentedBy")
+  triggeredScanJobs          ScanJob[]         @relation("ScanJobTriggeredBy")
+  approvedSharePointSites    SharePointSite[]  @relation("SharePointSiteApprovedBy")
 
   // The Entra oid claim (entraObjectId) is only unique WITHIN the Azure AD
   // tenant that issued it (ADR-0010) — Microsoft's own multi-tenant app
@@ -163,24 +173,31 @@ model MicrosoftTenant {
   @@index([entraTenantId])
 }
 
-/// A SharePoint site discovered under a connected tenant.
+/// A SharePoint site discovered under a connected tenant. status governs
+/// scan eligibility (ADR-0014) — a site is never scanned until an Admin
+/// explicitly approves it, and that never happens automatically.
 model SharePointSite {
-  id                String    @id @default(cuid())
+  id                String               @id @default(cuid())
   organizationId    String
   microsoftTenantId String
   graphSiteId       String
   siteUrl           String
   displayName       String
+  status            SharePointSiteStatus @default(Discovered)
+  approvedAt        DateTime?
+  approvedByUserId  String?
   lastScannedAt     DateTime?
-  createdAt         DateTime  @default(now())
+  createdAt         DateTime             @default(now())
 
   organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   microsoftTenant MicrosoftTenant @relation(fields: [microsoftTenantId], references: [id], onDelete: Cascade)
+  approvedByUser  User?           @relation("SharePointSiteApprovedBy", fields: [approvedByUserId], references: [id], onDelete: SetNull)
 
   documents Document[]
 
   @@unique([microsoftTenantId, graphSiteId])
   @@index([organizationId])
+  @@index([organizationId, status])
 }
 
 /// A single SharePoint document tracked for health scoring.

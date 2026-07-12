@@ -12,6 +12,8 @@
     "clean": "rm -rf dist .next .turbo"
   },
   "dependencies": {
+    "@azure/msal-browser": "^3.27.0",
+    "@azure/msal-react": "^2.2.0",
     "@sph/config": "workspace:*",
     "@sph/types": "workspace:*",
     "next": "^15.0.0",
