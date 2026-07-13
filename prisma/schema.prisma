@@ -129,6 +129,25 @@ enum DocumentReviewDateSource {
   GraphMetadata
 }
 
+// Phase 8C: one row per recorded governance action. PascalCase to match
+// this schema's existing enum convention (every other enum here already
+// does this — not a departure, just consistency with e.g.
+// GovernanceIssueStatus, ScanJobTriggerSource). StatusChanged covers the
+// Open<->InProgress edge only; the InProgress->Resolved and Resolved->Open
+// edges get their own, more specific types (IssueResolved/IssueReopened)
+// since those are the two transitions a reader most wants to scan for.
+enum GovernanceActivityType {
+  IssueCreated
+  IssueAssigned
+  AssigneeChanged
+  StatusChanged
+  ResolutionNoteUpdated
+  OwnerAssigned
+  OwnerRemoved
+  IssueReopened
+  IssueResolved
+}
+
 // ---------------------------------------------------------------------------
 // Models
 // ---------------------------------------------------------------------------
@@ -141,17 +160,18 @@ model Organization {
   createdAt DateTime           @default(now())
   updatedAt DateTime           @updatedAt
 
-  users            User[]
-  microsoftTenants MicrosoftTenant[]
-  sharePointSites  SharePointSite[]
-  documents        Document[]
-  documentOwners   DocumentOwner[]
-  scanJobs         ScanJob[]
-  scanSchedule     ScanSchedule?
-  healthScores     HealthScore[]
-  healthIssues     HealthIssue[]
-  healthSnapshots  HealthSnapshot[]
-  governanceIssues GovernanceIssue[]
+  users              User[]
+  microsoftTenants   MicrosoftTenant[]
+  sharePointSites    SharePointSite[]
+  documents          Document[]
+  documentOwners     DocumentOwner[]
+  scanJobs           ScanJob[]
+  scanSchedule       ScanSchedule?
+  healthScores       HealthScore[]
+  healthIssues       HealthIssue[]
+  healthSnapshots    HealthSnapshot[]
+  governanceIssues   GovernanceIssue[]
+  governanceActivity GovernanceActivity[]
 
   @@index([status])
 }
@@ -172,11 +192,12 @@ model User {
   organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   microsoftTenant MicrosoftTenant @relation("UserHomeMicrosoftTenant", fields: [microsoftTenantId], references: [id], onDelete: Restrict)
 
-  consentedMicrosoftTenants MicrosoftTenant[] @relation("MicrosoftTenantConsentedBy")
-  triggeredScanJobs         ScanJob[]         @relation("ScanJobTriggeredBy")
-  approvedSharePointSites   SharePointSite[]  @relation("SharePointSiteApprovedBy")
-  assignedGovernanceIssues  GovernanceIssue[] @relation("GovernanceIssueAssignedTo")
-  assignedDocumentOwners    DocumentOwner[]   @relation("DocumentOwnerAssignedBy")
+  consentedMicrosoftTenants MicrosoftTenant[]    @relation("MicrosoftTenantConsentedBy")
+  triggeredScanJobs         ScanJob[]            @relation("ScanJobTriggeredBy")
+  approvedSharePointSites   SharePointSite[]     @relation("SharePointSiteApprovedBy")
+  assignedGovernanceIssues  GovernanceIssue[]    @relation("GovernanceIssueAssignedTo")
+  assignedDocumentOwners    DocumentOwner[]      @relation("DocumentOwnerAssignedBy")
+  governanceActivityAsActor GovernanceActivity[] @relation("GovernanceActivityActor")
 
   // The Entra oid claim (entraObjectId) is only unique WITHIN the Azure AD
   // tenant that issued it (ADR-0010) — Microsoft's own multi-tenant app
@@ -270,9 +291,10 @@ model Document {
   site               SharePointSite @relation(fields: [siteId], references: [id], onDelete: Cascade)
   currentHealthScore HealthScore?   @relation("CurrentHealthScore", fields: [currentHealthScoreId], references: [id], onDelete: SetNull)
 
-  owners           DocumentOwner[]
-  healthScores     HealthScore[]     @relation("DocumentHealthScores")
-  governanceIssues GovernanceIssue[]
+  owners             DocumentOwner[]
+  healthScores       HealthScore[]        @relation("DocumentHealthScores")
+  governanceIssues   GovernanceIssue[]
+  governanceActivity GovernanceActivity[]
 
   @@unique([siteId, graphItemId])
   @@index([organizationId, status])
@@ -462,11 +484,57 @@ model GovernanceIssue {
   updatedAt       DateTime              @updatedAt
   resolvedAt      DateTime?
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  document     Document     @relation(fields: [documentId], references: [id], onDelete: Cascade)
-  assignedUser User?        @relation("GovernanceIssueAssignedTo", fields: [assignedUserId], references: [id], onDelete: SetNull)
+  organization Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  document     Document             @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  assignedUser User?                @relation("GovernanceIssueAssignedTo", fields: [assignedUserId], references: [id], onDelete: SetNull)
+  activity     GovernanceActivity[]
 
   @@unique([documentId, issueType])
   @@index([organizationId, status])
   @@index([assignedUserId])
+}
+
+/// Immutable, append-only record of every governance action (Phase 8C).
+/// No update or delete path exists anywhere in this codebase for this
+/// model — GovernanceActivityRepository deliberately exposes only
+/// findMany/findFirstById/count/create, the same "enforced by the public
+/// API shape itself, not just by convention" discipline ADR-0013 §8
+/// already established for packages/graph-client's read-only surface.
+///
+/// governanceIssueId is nullable: issue-lifecycle activity types
+/// (IssueCreated, IssueAssigned, AssigneeChanged, StatusChanged,
+/// ResolutionNoteUpdated, IssueReopened, IssueResolved) always set it;
+/// document-ownership activity types (OwnerAssigned, OwnerRemoved) don't
+/// — a manual ownership assignment isn't tied to any specific
+/// GovernanceIssue. documentId is required on every row instead, since
+/// every governance action — issue or ownership — happens in the context
+/// of exactly one document.
+model GovernanceActivity {
+  id                String                 @id @default(cuid())
+  organizationId    String
+  governanceIssueId String?
+  documentId        String
+  actorUserId       String
+  activityType      GovernanceActivityType
+  // Deliberately plain display-ready strings, not raw ids — e.g. the
+  // assignee's displayName, not their User.id. Resolved once, at write
+  // time, when the acting service already has that context in hand; this
+  // is what keeps every read path (list/paginate/filter) a single query
+  // with no secondary batch lookup to render human-readable text.
+  previousValue     String?
+  newValue          String?
+  metadata          Json?
+  createdAt         DateTime               @default(now())
+
+  organization    Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  governanceIssue GovernanceIssue? @relation(fields: [governanceIssueId], references: [id], onDelete: Cascade)
+  document        Document         @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  // Restrict, matching ScanJob.triggeredByUserId's precedent (ADR-0007) —
+  // an audit trail must never silently lose who performed an action, so a
+  // User row can never be hard-deleted while activity still references it.
+  actorUser       User             @relation("GovernanceActivityActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+
+  @@index([organizationId, createdAt])
+  @@index([governanceIssueId, createdAt])
+  @@index([organizationId, activityType])
 }

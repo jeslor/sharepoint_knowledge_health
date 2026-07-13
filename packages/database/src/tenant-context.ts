@@ -11,6 +11,7 @@ import { HealthIssueRepository } from './repositories/health-issue-repository';
 import { HealthSnapshotRepository } from './repositories/health-snapshot-repository';
 import { ScanScheduleRepository } from './repositories/scan-schedule-repository';
 import { GovernanceIssueRepository } from './repositories/governance-issue-repository';
+import { GovernanceActivityRepository } from './repositories/governance-activity-repository';
 
 export interface TenantContext {
   readonly organizationId: string;
@@ -26,6 +27,7 @@ export interface TenantContext {
   readonly healthSnapshots: HealthSnapshotRepository;
   readonly scanSchedules: ScanScheduleRepository;
   readonly governanceIssues: GovernanceIssueRepository;
+  readonly governanceActivity: GovernanceActivityRepository;
 }
 
 /**
@@ -49,5 +51,6 @@ export function createTenantContext(organizationId: string): TenantContext {
     healthSnapshots: new HealthSnapshotRepository(organizationId, prisma),
     scanSchedules: new ScanScheduleRepository(organizationId, prisma),
     governanceIssues: new GovernanceIssueRepository(organizationId, prisma),
+    governanceActivity: new GovernanceActivityRepository(organizationId, prisma),
   };
 }

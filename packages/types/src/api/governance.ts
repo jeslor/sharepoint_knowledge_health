@@ -69,3 +69,44 @@ export interface AssignableUserResponse {
   displayName: string;
   email: string;
 }
+
+// Phase 8C — immutable, append-only activity record (ADR-0016 implementation
+// notes). Matches packages/database's GovernanceActivityType, redeclared
+// here per this file's own established convention (GovernanceIssueTypeValue
+// above does the same for HealthIssueCriterion).
+export type GovernanceActivityTypeValue =
+  | 'IssueCreated'
+  | 'IssueAssigned'
+  | 'AssigneeChanged'
+  | 'StatusChanged'
+  | 'ResolutionNoteUpdated'
+  | 'OwnerAssigned'
+  | 'OwnerRemoved'
+  | 'IssueReopened'
+  | 'IssueResolved';
+
+export interface GovernanceActivityResponse {
+  id: string;
+  governanceIssueId: string | null;
+  documentId: string;
+  documentName: string;
+  actorUserId: string;
+  actorUserName: string;
+  activityType: GovernanceActivityTypeValue;
+  // Deliberately plain display-ready strings (e.g. an assignee's name, not
+  // their id) — resolved once at write time so no reader ever needs a
+  // second lookup just to render human-readable text.
+  previousValue: string | null;
+  newValue: string | null;
+  metadata: Record<string, unknown> | null;
+  createdAt: string;
+}
+
+export interface GovernanceActivityListQuery {
+  page?: number;
+  pageSize?: number;
+  activityType?: GovernanceActivityTypeValue;
+  sortDir?: SortDirection;
+  since?: string;
+  until?: string;
+}

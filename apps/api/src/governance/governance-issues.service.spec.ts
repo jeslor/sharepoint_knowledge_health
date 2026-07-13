@@ -1,5 +1,6 @@
 import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { createTenantContext } from '@sph/database';
+import { GovernanceActivityService } from './governance-activity.service';
 import { GovernanceIssuesService } from './governance-issues.service';
 
 jest.mock('@sph/database');
@@ -7,7 +8,8 @@ jest.mock('@sph/database');
 const mockedCreateContext = createTenantContext as jest.MockedFunction<typeof createTenantContext>;
 
 describe('GovernanceIssuesService', () => {
-  const service = new GovernanceIssuesService();
+  const governanceActivityService = { record: jest.fn() };
+  const service = new GovernanceIssuesService(governanceActivityService as unknown as GovernanceActivityService);
 
   const governanceIssues = { findMany: jest.fn(), findFirstById: jest.fn(), count: jest.fn(), create: jest.fn(), updateById: jest.fn() };
   const documents = { findFirstById: jest.fn(), findMany: jest.fn() };
@@ -24,6 +26,7 @@ describe('GovernanceIssuesService', () => {
     healthIssues.findMany.mockResolvedValue([]);
     sharePointSites.findMany.mockResolvedValue([]);
     users.findMany.mockResolvedValue([]);
+    users.findFirstById.mockResolvedValue(null);
   });
 
   describe('listIssues', () => {
@@ -122,38 +125,39 @@ describe('GovernanceIssuesService', () => {
     it('throws ConflictException when a governance issue already exists for this document+issueType', async () => {
       governanceIssues.findMany.mockResolvedValue([{ id: 'existing' }]);
 
-      await expect(service.createIssue('org-1', { documentId: 'doc-1', issueType: 'Freshness' })).rejects.toThrow(
-        ConflictException,
-      );
+      await expect(
+        service.createIssue('org-1', 'actor-1', { documentId: 'doc-1', issueType: 'Freshness' }),
+      ).rejects.toThrow(ConflictException);
       expect(governanceIssues.create).not.toHaveBeenCalled();
+      expect(governanceActivityService.record).not.toHaveBeenCalled();
     });
 
     it('throws NotFoundException when the document does not exist', async () => {
       documents.findFirstById.mockResolvedValue(null);
 
-      await expect(service.createIssue('org-1', { documentId: 'doc-missing', issueType: 'Freshness' })).rejects.toThrow(
-        NotFoundException,
-      );
+      await expect(
+        service.createIssue('org-1', 'actor-1', { documentId: 'doc-missing', issueType: 'Freshness' }),
+      ).rejects.toThrow(NotFoundException);
     });
 
     it('throws NotFoundException when the document has never been scored', async () => {
       documents.findFirstById.mockResolvedValue({ id: 'doc-1', currentHealthScoreId: null });
 
-      await expect(service.createIssue('org-1', { documentId: 'doc-1', issueType: 'Freshness' })).rejects.toThrow(
-        NotFoundException,
-      );
+      await expect(
+        service.createIssue('org-1', 'actor-1', { documentId: 'doc-1', issueType: 'Freshness' }),
+      ).rejects.toThrow(NotFoundException);
     });
 
     it('throws NotFoundException when no currently-detected HealthIssue matches the requested issueType', async () => {
       documents.findFirstById.mockResolvedValue({ id: 'doc-1', currentHealthScoreId: 'score-1' });
       healthIssues.findMany.mockResolvedValue([]);
 
-      await expect(service.createIssue('org-1', { documentId: 'doc-1', issueType: 'Freshness' })).rejects.toThrow(
-        NotFoundException,
-      );
+      await expect(
+        service.createIssue('org-1', 'actor-1', { documentId: 'doc-1', issueType: 'Freshness' }),
+      ).rejects.toThrow(NotFoundException);
     });
 
-    it('creates a GovernanceIssue with severity snapshotted from the matching HealthIssue', async () => {
+    it('creates a GovernanceIssue with severity snapshotted from the matching HealthIssue, and records IssueCreated activity', async () => {
       documents.findFirstById.mockResolvedValue({ id: 'doc-1', name: 'Handbook.docx', siteId: 'site-1', currentHealthScoreId: 'score-1' });
       healthIssues.findMany.mockImplementation(async ({ where }: { where: { criterion?: string } }) =>
         where.criterion === 'Freshness' ? [{ healthScoreId: 'score-1', criterion: 'Freshness', severity: 'RequiresReview' }] : [],
@@ -172,7 +176,7 @@ describe('GovernanceIssuesService', () => {
       });
       documents.findMany.mockResolvedValue([{ id: 'doc-1', name: 'Handbook.docx', siteId: 'site-1', currentHealthScoreId: 'score-1' }]);
 
-      const result = await service.createIssue('org-1', { documentId: 'doc-1', issueType: 'Freshness' });
+      const result = await service.createIssue('org-1', 'actor-1', { documentId: 'doc-1', issueType: 'Freshness' });
 
       expect(governanceIssues.create).toHaveBeenCalledWith({
         documentId: 'doc-1',
@@ -180,6 +184,13 @@ describe('GovernanceIssuesService', () => {
         severity: 'RequiresReview',
       });
       expect(result.severity).toBe('RequiresReview');
+      expect(governanceActivityService.record).toHaveBeenCalledWith('org-1', {
+        governanceIssueId: 'issue-1',
+        documentId: 'doc-1',
+        actorUserId: 'actor-1',
+        activityType: 'IssueCreated',
+        metadata: { issueType: 'Freshness', severity: 'RequiresReview' },
+      });
     });
   });
 
@@ -199,8 +210,9 @@ describe('GovernanceIssuesService', () => {
 
     it('returns null when the issue does not exist for this organization', async () => {
       governanceIssues.findFirstById.mockResolvedValue(null);
-      const result = await service.updateIssue('org-1', 'issue-missing', { status: 'InProgress' });
+      const result = await service.updateIssue('org-1', 'issue-missing', 'actor-1', { status: 'InProgress' });
       expect(result).toBeNull();
+      expect(governanceActivityService.record).not.toHaveBeenCalled();
     });
 
     it.each([
@@ -211,44 +223,54 @@ describe('GovernanceIssuesService', () => {
       governanceIssues.findFirstById.mockResolvedValue({ ...baseIssue, status: from });
 
       await expect(
-        service.updateIssue('org-1', 'issue-1', { status: to as 'Open' | 'InProgress' | 'Resolved' }),
+        service.updateIssue('org-1', 'issue-1', 'actor-1', { status: to as 'Open' | 'InProgress' | 'Resolved' }),
       ).rejects.toThrow(ConflictException);
       expect(governanceIssues.updateById).not.toHaveBeenCalled();
+      expect(governanceActivityService.record).not.toHaveBeenCalled();
     });
 
     it.each([
-      ['Open', 'InProgress'],
-      ['InProgress', 'Resolved'],
-      ['Resolved', 'Open'],
-    ])('allows the valid transition from %s to %s', async (from, to) => {
+      ['Open', 'InProgress', 'StatusChanged'],
+      ['InProgress', 'Resolved', 'IssueResolved'],
+      ['Resolved', 'Open', 'IssueReopened'],
+    ])('allows the valid transition from %s to %s and records %s activity', async (from, to, activityType) => {
       governanceIssues.findFirstById.mockResolvedValue({ ...baseIssue, status: from });
       governanceIssues.updateById.mockResolvedValue({ ...baseIssue, status: to });
       documents.findMany.mockResolvedValue([]);
 
-      await service.updateIssue('org-1', 'issue-1', { status: to as 'Open' | 'InProgress' | 'Resolved' });
+      await service.updateIssue('org-1', 'issue-1', 'actor-1', { status: to as 'Open' | 'InProgress' | 'Resolved' });
 
       expect(governanceIssues.updateById).toHaveBeenCalledWith(
         'issue-1',
         expect.objectContaining({ status: to, resolvedAt: to === 'Resolved' ? expect.any(Date) : null }),
       );
+      expect(governanceActivityService.record).toHaveBeenCalledWith('org-1', {
+        governanceIssueId: 'issue-1',
+        documentId: 'doc-1',
+        actorUserId: 'actor-1',
+        activityType,
+        previousValue: from,
+        newValue: to,
+      });
     });
 
-    it('is a no-op for a same-status update (not treated as an invalid transition)', async () => {
+    it('is a no-op for a same-status update (not treated as an invalid transition, and records no activity)', async () => {
       governanceIssues.findFirstById.mockResolvedValue({ ...baseIssue, status: 'Open' });
       governanceIssues.updateById.mockResolvedValue(baseIssue);
 
-      await service.updateIssue('org-1', 'issue-1', { status: 'Open' });
+      await service.updateIssue('org-1', 'issue-1', 'actor-1', { status: 'Open' });
 
       expect(governanceIssues.updateById).toHaveBeenCalledWith('issue-1', {});
+      expect(governanceActivityService.record).not.toHaveBeenCalled();
     });
 
     it('throws BadRequestException when assignedUserId does not resolve to a user in this organization', async () => {
       governanceIssues.findFirstById.mockResolvedValue(baseIssue);
       users.findFirstById.mockResolvedValue(null);
 
-      await expect(service.updateIssue('org-1', 'issue-1', { assignedUserId: 'user-other-org' })).rejects.toThrow(
-        BadRequestException,
-      );
+      await expect(
+        service.updateIssue('org-1', 'issue-1', 'actor-1', { assignedUserId: 'user-other-org' }),
+      ).rejects.toThrow(BadRequestException);
       expect(governanceIssues.updateById).not.toHaveBeenCalled();
     });
 
@@ -256,39 +278,104 @@ describe('GovernanceIssuesService', () => {
       governanceIssues.findFirstById.mockResolvedValue(baseIssue);
       users.findFirstById.mockResolvedValue({ id: 'user-1', status: 'Deactivated' });
 
-      await expect(service.updateIssue('org-1', 'issue-1', { assignedUserId: 'user-1' })).rejects.toThrow(BadRequestException);
+      await expect(
+        service.updateIssue('org-1', 'issue-1', 'actor-1', { assignedUserId: 'user-1' }),
+      ).rejects.toThrow(BadRequestException);
     });
 
-    it('assigns to a valid, active, organization-scoped user', async () => {
+    it('assigns to a valid, active, organization-scoped user and records IssueAssigned when there was no previous assignee', async () => {
       governanceIssues.findFirstById.mockResolvedValue(baseIssue);
-      users.findFirstById.mockResolvedValue({ id: 'user-1', status: 'Active' });
+      users.findFirstById.mockResolvedValue({ id: 'user-1', status: 'Active', displayName: 'Sarah' });
       governanceIssues.updateById.mockResolvedValue({ ...baseIssue, assignedUserId: 'user-1' });
       documents.findMany.mockResolvedValue([]);
 
-      await service.updateIssue('org-1', 'issue-1', { assignedUserId: 'user-1' });
+      await service.updateIssue('org-1', 'issue-1', 'actor-1', { assignedUserId: 'user-1' });
 
       expect(governanceIssues.updateById).toHaveBeenCalledWith('issue-1', { assignedUserId: 'user-1' });
+      expect(governanceActivityService.record).toHaveBeenCalledWith('org-1', {
+        governanceIssueId: 'issue-1',
+        documentId: 'doc-1',
+        actorUserId: 'actor-1',
+        activityType: 'IssueAssigned',
+        previousValue: null,
+        newValue: 'Sarah',
+      });
     });
 
-    it('allows unassigning by passing assignedUserId: null', async () => {
+    it('records AssigneeChanged (not IssueAssigned) when reassigning from one user to another', async () => {
       governanceIssues.findFirstById.mockResolvedValue({ ...baseIssue, assignedUserId: 'user-1' });
+      users.findFirstById.mockImplementation(async (id: string) =>
+        id === 'user-1' ? { id: 'user-1', displayName: 'Sarah' } : { id: 'user-2', status: 'Active', displayName: 'John' },
+      );
+      governanceIssues.updateById.mockResolvedValue({ ...baseIssue, assignedUserId: 'user-2' });
+      documents.findMany.mockResolvedValue([]);
+
+      await service.updateIssue('org-1', 'issue-1', 'actor-1', { assignedUserId: 'user-2' });
+
+      expect(governanceActivityService.record).toHaveBeenCalledWith('org-1', {
+        governanceIssueId: 'issue-1',
+        documentId: 'doc-1',
+        actorUserId: 'actor-1',
+        activityType: 'AssigneeChanged',
+        previousValue: 'Sarah',
+        newValue: 'John',
+      });
+    });
+
+    it('allows unassigning by passing assignedUserId: null and records AssigneeChanged with a null newValue', async () => {
+      governanceIssues.findFirstById.mockResolvedValue({ ...baseIssue, assignedUserId: 'user-1' });
+      users.findFirstById.mockResolvedValue({ id: 'user-1', displayName: 'Sarah' });
       governanceIssues.updateById.mockResolvedValue({ ...baseIssue, assignedUserId: null });
       documents.findMany.mockResolvedValue([]);
 
-      await service.updateIssue('org-1', 'issue-1', { assignedUserId: null });
+      await service.updateIssue('org-1', 'issue-1', 'actor-1', { assignedUserId: null });
 
-      expect(users.findFirstById).not.toHaveBeenCalled();
       expect(governanceIssues.updateById).toHaveBeenCalledWith('issue-1', { assignedUserId: null });
+      expect(governanceActivityService.record).toHaveBeenCalledWith('org-1', {
+        governanceIssueId: 'issue-1',
+        documentId: 'doc-1',
+        actorUserId: 'actor-1',
+        activityType: 'AssigneeChanged',
+        previousValue: 'Sarah',
+        newValue: null,
+      });
     });
 
-    it('updates resolutionNotes independently of status', async () => {
+    it('updates resolutionNotes independently of status and records ResolutionNoteUpdated', async () => {
       governanceIssues.findFirstById.mockResolvedValue(baseIssue);
       governanceIssues.updateById.mockResolvedValue({ ...baseIssue, resolutionNotes: 'Fixed via reassignment' });
       documents.findMany.mockResolvedValue([]);
 
-      await service.updateIssue('org-1', 'issue-1', { resolutionNotes: 'Fixed via reassignment' });
+      await service.updateIssue('org-1', 'issue-1', 'actor-1', { resolutionNotes: 'Fixed via reassignment' });
 
       expect(governanceIssues.updateById).toHaveBeenCalledWith('issue-1', { resolutionNotes: 'Fixed via reassignment' });
+      expect(governanceActivityService.record).toHaveBeenCalledWith('org-1', {
+        governanceIssueId: 'issue-1',
+        documentId: 'doc-1',
+        actorUserId: 'actor-1',
+        activityType: 'ResolutionNoteUpdated',
+        previousValue: null,
+        newValue: 'Fixed via reassignment',
+      });
+    });
+
+    it('records multiple activity rows when status and assignment both change in one PATCH', async () => {
+      governanceIssues.findFirstById.mockResolvedValue(baseIssue);
+      users.findFirstById.mockResolvedValue({ id: 'user-1', status: 'Active', displayName: 'Sarah' });
+      governanceIssues.updateById.mockResolvedValue({ ...baseIssue, status: 'InProgress', assignedUserId: 'user-1' });
+      documents.findMany.mockResolvedValue([]);
+
+      await service.updateIssue('org-1', 'issue-1', 'actor-1', { status: 'InProgress', assignedUserId: 'user-1' });
+
+      expect(governanceActivityService.record).toHaveBeenCalledTimes(2);
+      expect(governanceActivityService.record).toHaveBeenCalledWith(
+        'org-1',
+        expect.objectContaining({ activityType: 'StatusChanged' }),
+      );
+      expect(governanceActivityService.record).toHaveBeenCalledWith(
+        'org-1',
+        expect.objectContaining({ activityType: 'IssueAssigned' }),
+      );
     });
   });
 

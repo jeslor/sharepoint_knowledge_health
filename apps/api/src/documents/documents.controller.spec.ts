@@ -96,9 +96,9 @@ describe('DocumentsController', () => {
   });
 
   describe('removeOwner', () => {
-    it('delegates organizationId, documentId, and ownerId', async () => {
-      await controller.removeOwner('org-1', 'doc-1', 'owner-1');
-      expect(service.removeOwner).toHaveBeenCalledWith('org-1', 'doc-1', 'owner-1');
+    it('delegates organizationId, documentId, ownerId, and the current user id', async () => {
+      await controller.removeOwner('org-1', 'doc-1', 'owner-1', { id: 'admin-1' } as never);
+      expect(service.removeOwner).toHaveBeenCalledWith('org-1', 'doc-1', 'owner-1', 'admin-1');
     });
   });
 

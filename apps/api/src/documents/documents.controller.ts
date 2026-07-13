@@ -103,8 +103,9 @@ export class DocumentsController {
     @Param('id') organizationId: string,
     @Param('documentId') documentId: string,
     @Param('ownerId') ownerId: string,
+    @CurrentUser() user: User,
   ): Promise<void> {
-    return this.documentsService.removeOwner(organizationId, documentId, ownerId);
+    return this.documentsService.removeOwner(organizationId, documentId, ownerId, user.id);
   }
 
   @Get('document-health')

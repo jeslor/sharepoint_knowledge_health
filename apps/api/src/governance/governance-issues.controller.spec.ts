@@ -1,6 +1,10 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
+import type { User } from '@sph/database';
 import { GovernanceIssuesController } from './governance-issues.controller';
+import type { GovernanceActivityService } from './governance-activity.service';
 import type { GovernanceIssuesService } from './governance-issues.service';
+
+const actor = { id: 'actor-1' } as User;
 
 describe('GovernanceIssuesController', () => {
   const service = {
@@ -11,7 +15,14 @@ describe('GovernanceIssuesController', () => {
     getSummary: jest.fn(),
     listAssignableUsers: jest.fn(),
   };
-  const controller = new GovernanceIssuesController(service as unknown as GovernanceIssuesService);
+  const activityService = {
+    listIssueActivity: jest.fn(),
+    listOrganizationActivity: jest.fn(),
+  };
+  const controller = new GovernanceIssuesController(
+    service as unknown as GovernanceIssuesService,
+    activityService as unknown as GovernanceActivityService,
+  );
 
   beforeEach(() => jest.clearAllMocks());
 
@@ -90,46 +101,46 @@ describe('GovernanceIssuesController', () => {
 
   describe('createIssue', () => {
     it('rejects a missing documentId with 400', async () => {
-      await expect(controller.createIssue('org-1', { documentId: '', issueType: 'Freshness' })).rejects.toThrow(
-        BadRequestException,
-      );
+      await expect(
+        controller.createIssue('org-1', actor, { documentId: '', issueType: 'Freshness' }),
+      ).rejects.toThrow(BadRequestException);
     });
 
     it('rejects an invalid issueType with 400', async () => {
       await expect(
-        controller.createIssue('org-1', { documentId: 'doc-1', issueType: 'Bogus' as never }),
+        controller.createIssue('org-1', actor, { documentId: 'doc-1', issueType: 'Bogus' as never }),
       ).rejects.toThrow(BadRequestException);
     });
 
-    it('delegates a valid request to the service', async () => {
+    it('delegates a valid request to the service with the current user id', async () => {
       service.createIssue.mockResolvedValue({ id: 'issue-1' });
-      await controller.createIssue('org-1', { documentId: 'doc-1', issueType: 'Freshness' });
-      expect(service.createIssue).toHaveBeenCalledWith('org-1', { documentId: 'doc-1', issueType: 'Freshness' });
+      await controller.createIssue('org-1', actor, { documentId: 'doc-1', issueType: 'Freshness' });
+      expect(service.createIssue).toHaveBeenCalledWith('org-1', 'actor-1', { documentId: 'doc-1', issueType: 'Freshness' });
     });
   });
 
   describe('updateIssue', () => {
     it('rejects an empty body with 400', async () => {
-      await expect(controller.updateIssue('org-1', 'issue-1', {})).rejects.toThrow(BadRequestException);
+      await expect(controller.updateIssue('org-1', 'issue-1', actor, {})).rejects.toThrow(BadRequestException);
     });
 
     it('rejects an invalid status value with 400', async () => {
-      await expect(controller.updateIssue('org-1', 'issue-1', { status: 'Bogus' as never })).rejects.toThrow(
-        BadRequestException,
-      );
+      await expect(
+        controller.updateIssue('org-1', 'issue-1', actor, { status: 'Bogus' as never }),
+      ).rejects.toThrow(BadRequestException);
     });
 
     it('throws 404 when the service resolves null', async () => {
       service.updateIssue.mockResolvedValue(null);
-      await expect(controller.updateIssue('org-1', 'issue-missing', { status: 'InProgress' })).rejects.toThrow(
-        NotFoundException,
-      );
+      await expect(
+        controller.updateIssue('org-1', 'issue-missing', actor, { status: 'InProgress' }),
+      ).rejects.toThrow(NotFoundException);
     });
 
-    it('delegates a valid update to the service', async () => {
+    it('delegates a valid update to the service with the current user id', async () => {
       service.updateIssue.mockResolvedValue({ id: 'issue-1', status: 'InProgress' });
-      await controller.updateIssue('org-1', 'issue-1', { status: 'InProgress' });
-      expect(service.updateIssue).toHaveBeenCalledWith('org-1', 'issue-1', { status: 'InProgress' });
+      await controller.updateIssue('org-1', 'issue-1', actor, { status: 'InProgress' });
+      expect(service.updateIssue).toHaveBeenCalledWith('org-1', 'issue-1', 'actor-1', { status: 'InProgress' });
     });
   });
 
@@ -146,6 +157,51 @@ describe('GovernanceIssuesController', () => {
       service.listAssignableUsers.mockResolvedValue([]);
       await controller.listAssignableUsers('org-1');
       expect(service.listAssignableUsers).toHaveBeenCalledWith('org-1');
+    });
+  });
+
+  describe('listIssueActivity', () => {
+    it('delegates organizationId, issueId, and default-parsed query', async () => {
+      activityService.listIssueActivity.mockResolvedValue({ data: [], pagination: { page: 1, pageSize: 25, total: 0, totalPages: 1 } });
+
+      await controller.listIssueActivity('org-1', 'issue-1', {});
+
+      expect(activityService.listIssueActivity).toHaveBeenCalledWith('org-1', 'issue-1', {
+        page: undefined,
+        pageSize: undefined,
+        activityType: undefined,
+        sortDir: undefined,
+        since: undefined,
+        until: undefined,
+      });
+    });
+
+    it.each([
+      ['page', { page: '0' }],
+      ['pageSize', { pageSize: '101' }],
+      ['activityType', { activityType: 'Bogus' }],
+      ['sortDir', { sortDir: 'bogus' }],
+      ['since', { since: 'not-a-date' }],
+      ['until', { until: 'not-a-date' }],
+    ])('rejects an invalid %s value with 400', async (_label, badQuery) => {
+      await expect(controller.listIssueActivity('org-1', 'issue-1', badQuery)).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  describe('listOrganizationActivity', () => {
+    it('delegates organizationId and default-parsed query', async () => {
+      activityService.listOrganizationActivity.mockResolvedValue({ data: [], pagination: { page: 1, pageSize: 25, total: 0, totalPages: 1 } });
+
+      await controller.listOrganizationActivity('org-1', { activityType: 'IssueCreated' });
+
+      expect(activityService.listOrganizationActivity).toHaveBeenCalledWith('org-1', {
+        page: undefined,
+        pageSize: undefined,
+        activityType: 'IssueCreated',
+        sortDir: undefined,
+        since: undefined,
+        until: undefined,
+      });
     });
   });
 });

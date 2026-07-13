@@ -28,6 +28,7 @@ export type {
   HealthSnapshot,
   ScanSchedule,
   GovernanceIssue,
+  GovernanceActivity,
 } from '@prisma/client';
 
 export {
@@ -46,4 +47,5 @@ export {
   ScanScheduleFrequency,
   GovernanceIssueStatus,
   DocumentReviewDateSource,
+  GovernanceActivityType,
 } from '@prisma/client';

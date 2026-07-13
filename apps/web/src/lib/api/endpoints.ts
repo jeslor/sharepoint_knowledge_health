@@ -9,6 +9,8 @@ import type {
   DocumentOwnerResponse,
   DocumentResponse,
   DocumentScoreHistoryResponse,
+  GovernanceActivityListQuery,
+  GovernanceActivityResponse,
   GovernanceIssueListQuery,
   GovernanceIssueResponse,
   GovernanceSummaryResponse,
@@ -198,4 +200,23 @@ export function removeDocumentOwner(organizationId: string, documentId: string, 
   return apiRequest(`/organizations/${organizationId}/documents/${documentId}/owners/${ownerId}`, token, {
     method: 'DELETE',
   });
+}
+
+export function getIssueActivity(
+  organizationId: string,
+  issueId: string,
+  token: string,
+  query: GovernanceActivityListQuery = {},
+): Promise<PaginatedResponse<GovernanceActivityResponse>> {
+  const queryString = buildQueryString(query);
+  return apiRequest(`/organizations/${organizationId}/governance/issues/${issueId}/activity${queryString}`, token);
+}
+
+export function getOrganizationActivity(
+  organizationId: string,
+  token: string,
+  query: GovernanceActivityListQuery = {},
+): Promise<PaginatedResponse<GovernanceActivityResponse>> {
+  const queryString = buildQueryString(query);
+  return apiRequest(`/organizations/${organizationId}/governance/activity${queryString}`, token);
 }

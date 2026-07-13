@@ -10,6 +10,7 @@ import type {
   DocumentScoreHistoryResponse,
   PaginatedResponse,
 } from '@sph/types';
+import { GovernanceActivityService } from '../governance/governance-activity.service';
 
 function toDocumentOwnerResponse(owner: {
   id: string;
@@ -39,6 +40,8 @@ const ORDER_BY_MAP = {
 
 @Injectable()
 export class DocumentsService {
+  constructor(private readonly governanceActivityService: GovernanceActivityService) {}
+
   async listDocuments(organizationId: string): Promise<DocumentResponse[]> {
     const context = createTenantContext(organizationId);
     const documents = await context.documents.findMany({ orderBy: { name: 'asc' } });
@@ -160,12 +163,19 @@ export class DocumentsService {
       assignedAt: new Date(),
     });
 
+    await this.governanceActivityService.record(organizationId, {
+      documentId,
+      actorUserId: assignedByUserId,
+      activityType: 'OwnerAssigned',
+      newValue: owner.displayName ?? owner.email,
+    });
+
     return toDocumentOwnerResponse(owner);
   }
 
   // Only ever removes a source: ManualAssignment row — a GraphMetadata row
   // is worker-owned and not deletable through this path (ADR-0016 §4.2).
-  async removeOwner(organizationId: string, documentId: string, ownerId: string): Promise<void> {
+  async removeOwner(organizationId: string, documentId: string, ownerId: string, actorUserId: string): Promise<void> {
     const context = createTenantContext(organizationId);
     const owner = await context.documentOwners.findMany({ where: { id: ownerId, documentId }, take: 1 });
     const [existing] = owner;
@@ -174,6 +184,13 @@ export class DocumentsService {
       throw new ConflictException('Only a manually assigned owner can be removed');
     }
     await context.documentOwners.deleteById(ownerId);
+
+    await this.governanceActivityService.record(organizationId, {
+      documentId,
+      actorUserId,
+      activityType: 'OwnerRemoved',
+      previousValue: existing.displayName ?? existing.email,
+    });
   }
 
   async listDocumentHealth(

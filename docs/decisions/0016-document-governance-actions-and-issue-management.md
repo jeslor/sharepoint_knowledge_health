@@ -777,6 +777,95 @@ production data):
    ahead, consistent with how ADR-0015's own phased rollout treated its
    later phases.
 
+## 14. Implementation Notes (Phase 8C — Governance Audit Trail)
+
+Phase 8C added the audit trail this ADR's original data model didn't yet
+include. No architectural intent from §4–§13 above changed; this section
+documents what was actually built.
+
+**`GovernanceActivity` model** — one immutable row per recorded governance
+action:
+
+```prisma
+enum GovernanceActivityType {
+  IssueCreated
+  IssueAssigned
+  AssigneeChanged
+  StatusChanged
+  ResolutionNoteUpdated
+  OwnerAssigned
+  OwnerRemoved
+  IssueReopened
+  IssueResolved
+}
+
+model GovernanceActivity {
+  id                String                 @id @default(cuid())
+  organizationId    String
+  governanceIssueId String?
+  documentId        String
+  actorUserId       String
+  activityType      GovernanceActivityType
+  previousValue     String?
+  newValue          String?
+  metadata          Json?
+  createdAt         DateTime               @default(now())
+}
+```
+
+PascalCase enum values, matching this schema's existing convention — the
+brief's own SCREAMING_SNAKE_CASE examples (`ISSUE_CREATED`, etc.) are
+translated the same way every prior phase has translated illustrative
+naming onto this codebase's real conventions (e.g. Phase 7B's
+`OPEN`/`IN_PROGRESS` sketch became `Open`/`InProgress`).
+
+**Why append-only, and how it's enforced**: `GovernanceActivityRepository`
+exposes only `findMany`/`findFirstById`/`count`/`create` — there is no
+`updateById` or `deleteById` method to call, even by mistake. This is the
+same discipline ADR-0013 §8 already established for
+`packages/graph-client`'s read-only public API ("read-only is enforced by
+the public API shape itself, not just by the granted permissions") —
+applied here to writes instead of reads. No database trigger or rule was
+added; this codebase has never used that mechanism anywhere else
+(`HealthScore`/`HealthIssue`'s immutability, ADR-0007, is enforced the
+same repository-shape way), and introducing one here would be a new,
+unjustified pattern. An audit trail is only trustworthy if it cannot be
+rewritten after the fact — that's the entire reason it's append-only, not
+a stylistic preference.
+
+**Relationship with `GovernanceIssue`**: a logical key, not a stored join.
+`governanceIssueId` is set on every issue-lifecycle activity type
+(`IssueCreated`, `IssueAssigned`, `AssigneeChanged`, `StatusChanged`,
+`ResolutionNoteUpdated`, `IssueReopened`, `IssueResolved`) and left `null`
+on the two document-ownership activity types (`OwnerAssigned`,
+`OwnerRemoved`), which aren't tied to any specific `GovernanceIssue` — a
+manual ownership assignment can happen on a document with zero open
+issues. `documentId` is required on every row instead, since every
+governance action, issue-related or not, happens in the context of
+exactly one document. Many `GovernanceActivity` rows accumulate against
+one `GovernanceIssue` over its lifetime (one scan didn't produce this
+history — a sequence of human actions did); there is no cap and no
+archival step, matching the "never delete" requirement directly.
+
+**Centralized recording**: a single `GovernanceActivityService.record()`
+(new, shared module `GovernanceActivityModule`) is the only write path,
+called from `GovernanceIssuesService` (create/update) and
+`DocumentsService` (owner assign/remove) — never from a controller
+directly, and never left to a call site to remember. `previousValue`/
+`newValue` are resolved to display-ready strings (e.g. an assignee's
+`displayName`) at write time, not raw ids — this is what keeps every read
+path (list, paginate, filter) a single query with no secondary batch
+lookup just to render human-readable text, the same "resolve once, read
+cheaply" tradeoff ADR-0015 §3 already made for `HealthSnapshot`.
+
+**Status-edge mapping**: `StatusChanged`/`IssueResolved`/`IssueReopened`
+map exactly onto the 3-edge transition cycle §4.5 already defined
+(`Open→InProgress` = `StatusChanged`; `InProgress→Resolved` =
+`IssueResolved`; `Resolved→Open` = `IssueReopened`) — no new states, just
+naming the three existing edges individually so a reader scanning the
+activity feed doesn't have to infer resolution/reopening from a generic
+"status changed" line.
+
 ## ADRs Requiring Amendment
 
 - **ADR-0002** (Document Health Score Algorithm) — a **proposed amendment

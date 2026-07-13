@@ -1,4 +1,5 @@
 import { createTenantContext } from '@sph/database';
+import type { GovernanceActivityService } from '../governance/governance-activity.service';
 import { DocumentsService } from './documents.service';
 
 jest.mock('@sph/database');
@@ -6,7 +7,8 @@ jest.mock('@sph/database');
 const mockedCreateContext = createTenantContext as jest.MockedFunction<typeof createTenantContext>;
 
 describe('DocumentsService', () => {
-  const service = new DocumentsService();
+  const governanceActivityService = { record: jest.fn() };
+  const service = new DocumentsService(governanceActivityService as unknown as GovernanceActivityService);
 
   const documents = { findMany: jest.fn(), count: jest.fn(), findFirstById: jest.fn() };
   const healthScores = { findMany: jest.fn() };
@@ -211,7 +213,7 @@ describe('DocumentsService', () => {
       expect(result).toBeNull();
     });
 
-    it('always creates a ManualAssignment / AssignedOwner row, stamped with the assigning user and now (ADR-0016 §4.2)', async () => {
+    it('always creates a ManualAssignment / AssignedOwner row, stamped with the assigning user and now (ADR-0016 §4.2), and records OwnerAssigned activity', async () => {
       documents.findFirstById.mockResolvedValue({ id: 'doc-1' });
       documentOwners.create.mockResolvedValue({
         id: 'owner-new',
@@ -234,30 +236,54 @@ describe('DocumentsService', () => {
         assignedByUserId: 'admin-1',
         assignedAt: expect.any(Date),
       });
+      expect(governanceActivityService.record).toHaveBeenCalledWith('org-1', {
+        documentId: 'doc-1',
+        actorUserId: 'admin-1',
+        activityType: 'OwnerAssigned',
+        newValue: 'Sarah',
+      });
+    });
+
+    it('does not record activity when the document does not exist', async () => {
+      documents.findFirstById.mockResolvedValue(null);
+      await service.assignOwner('org-1', 'doc-missing', 'admin-1', { displayName: 'Sarah' });
+      expect(governanceActivityService.record).not.toHaveBeenCalled();
     });
   });
 
   describe('removeOwner', () => {
     it('throws NotFoundException when the owner does not exist for this document/organization', async () => {
       documentOwners.findMany.mockResolvedValue([]);
-      await expect(service.removeOwner('org-1', 'doc-1', 'owner-missing')).rejects.toThrow('Document owner not found');
+      await expect(service.removeOwner('org-1', 'doc-1', 'owner-missing', 'admin-1')).rejects.toThrow(
+        'Document owner not found',
+      );
+      expect(governanceActivityService.record).not.toHaveBeenCalled();
     });
 
     it('throws ConflictException and never deletes a GraphMetadata-sourced owner (ADR-0016 §4.2 — worker-owned)', async () => {
       documentOwners.findMany.mockResolvedValue([{ id: 'owner-1', source: 'GraphMetadata' }]);
 
-      await expect(service.removeOwner('org-1', 'doc-1', 'owner-1')).rejects.toThrow(
+      await expect(service.removeOwner('org-1', 'doc-1', 'owner-1', 'admin-1')).rejects.toThrow(
         'Only a manually assigned owner can be removed',
       );
       expect(documentOwners.deleteById).not.toHaveBeenCalled();
+      expect(governanceActivityService.record).not.toHaveBeenCalled();
     });
 
-    it('deletes a ManualAssignment-sourced owner', async () => {
-      documentOwners.findMany.mockResolvedValue([{ id: 'owner-2', source: 'ManualAssignment' }]);
+    it('deletes a ManualAssignment-sourced owner and records OwnerRemoved activity', async () => {
+      documentOwners.findMany.mockResolvedValue([
+        { id: 'owner-2', source: 'ManualAssignment', displayName: 'Sarah', email: 'sarah@example.com' },
+      ]);
 
-      await service.removeOwner('org-1', 'doc-1', 'owner-2');
+      await service.removeOwner('org-1', 'doc-1', 'owner-2', 'admin-1');
 
       expect(documentOwners.deleteById).toHaveBeenCalledWith('owner-2');
+      expect(governanceActivityService.record).toHaveBeenCalledWith('org-1', {
+        documentId: 'doc-1',
+        actorUserId: 'admin-1',
+        activityType: 'OwnerRemoved',
+        previousValue: 'Sarah',
+      });
     });
   });
 

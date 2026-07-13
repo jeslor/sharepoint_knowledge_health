@@ -14,6 +14,17 @@ import type {
   PaginatedResponse,
   UpdateGovernanceIssueRequest,
 } from '@sph/types';
+import { GovernanceActivityService } from './governance-activity.service';
+
+// ADR-0016 §4.5's StatusChanged/IssueResolved/IssueReopened activity types
+// map exactly onto this 3-edge cycle, one edge each — see the schema
+// comment on GovernanceActivityType for why StatusChanged only ever means
+// the Open->InProgress edge.
+const STATUS_ACTIVITY_TYPE: Record<GovernanceIssueStatus, 'StatusChanged' | 'IssueResolved' | 'IssueReopened'> = {
+  InProgress: 'StatusChanged',
+  Resolved: 'IssueResolved',
+  Open: 'IssueReopened',
+};
 
 // ADR-0016 §4.5, confirmed on Phase 8B review: a strict 3-edge cycle, not
 // the full bidirectional graph a literal reading of the ADR's ASCII
@@ -37,6 +48,8 @@ const ALLOWED_TRANSITIONS: Record<GovernanceIssueStatus, GovernanceIssueStatus[]
  */
 @Injectable()
 export class GovernanceIssuesService {
+  constructor(private readonly governanceActivityService: GovernanceActivityService) {}
+
   async listIssues(
     organizationId: string,
     query: GovernanceIssueListQuery,
@@ -85,6 +98,7 @@ export class GovernanceIssuesService {
   // later scans).
   async createIssue(
     organizationId: string,
+    actorUserId: string,
     request: CreateGovernanceIssueRequest,
   ): Promise<GovernanceIssueResponse> {
     const context = createTenantContext(organizationId);
@@ -119,6 +133,14 @@ export class GovernanceIssuesService {
       severity: matchingHealthIssue.severity,
     });
 
+    await this.governanceActivityService.record(organizationId, {
+      governanceIssueId: created.id,
+      documentId: request.documentId,
+      actorUserId,
+      activityType: 'IssueCreated',
+      metadata: { issueType: request.issueType, severity: matchingHealthIssue.severity },
+    });
+
     const [enriched] = await this.enrichIssues(context, [created]);
     if (!enriched) throw new Error('Failed to enrich newly created GovernanceIssue');
     return enriched;
@@ -127,6 +149,7 @@ export class GovernanceIssuesService {
   async updateIssue(
     organizationId: string,
     issueId: string,
+    actorUserId: string,
     request: UpdateGovernanceIssueRequest,
   ): Promise<GovernanceIssueResponse | null> {
     const context = createTenantContext(organizationId);
@@ -149,6 +172,7 @@ export class GovernanceIssuesService {
       updateData.resolvedAt = request.status === 'Resolved' ? new Date() : null;
     }
 
+    let newAssigneeName: string | null | undefined;
     if (request.assignedUserId !== undefined) {
       if (request.assignedUserId !== null) {
         // Tenant-scoped by construction (ADR-0001) — findFirstById already
@@ -161,6 +185,9 @@ export class GovernanceIssuesService {
         if (assignee.status !== 'Active') {
           throw new BadRequestException('Cannot assign a governance issue to an inactive user');
         }
+        newAssigneeName = assignee.displayName;
+      } else {
+        newAssigneeName = null;
       }
       updateData.assignedUserId = request.assignedUserId;
     }
@@ -172,8 +199,65 @@ export class GovernanceIssuesService {
     const updated = await context.governanceIssues.updateById(issueId, updateData);
     if (!updated) return null;
 
+    await this.recordUpdateActivity(context, organizationId, existing, updated, actorUserId, newAssigneeName);
+
     const [enriched] = await this.enrichIssues(context, [updated]);
     return enriched ?? null;
+  }
+
+  // Centralizes "what changed, therefore what to log" so updateIssue's
+  // API-facing logic stays about validation/persistence, not activity
+  // bookkeeping — one PATCH can legitimately record more than one
+  // GovernanceActivity row (e.g. status + assignment changed together).
+  private async recordUpdateActivity(
+    context: TenantContext,
+    organizationId: string,
+    previous: GovernanceIssue,
+    updated: GovernanceIssue,
+    actorUserId: string,
+    newAssigneeName: string | null | undefined,
+  ): Promise<void> {
+    const documentId = updated.documentId;
+
+    if (updated.status !== previous.status) {
+      await this.governanceActivityService.record(organizationId, {
+        governanceIssueId: updated.id,
+        documentId,
+        actorUserId,
+        activityType: STATUS_ACTIVITY_TYPE[updated.status],
+        previousValue: previous.status,
+        newValue: updated.status,
+      });
+    }
+
+    if (updated.assignedUserId !== previous.assignedUserId) {
+      // Both sides are resolved to display names before writing — an
+      // activity row is always human-readable on its own, with no reader
+      // ever needing a second lookup to make sense of previousValue.
+      const previousAssigneeName = previous.assignedUserId
+        ? ((await context.users.findFirstById(previous.assignedUserId))?.displayName ?? null)
+        : null;
+
+      await this.governanceActivityService.record(organizationId, {
+        governanceIssueId: updated.id,
+        documentId,
+        actorUserId,
+        activityType: previous.assignedUserId === null ? 'IssueAssigned' : 'AssigneeChanged',
+        previousValue: previousAssigneeName,
+        newValue: newAssigneeName ?? null,
+      });
+    }
+
+    if (updated.resolutionNotes !== previous.resolutionNotes) {
+      await this.governanceActivityService.record(organizationId, {
+        governanceIssueId: updated.id,
+        documentId,
+        actorUserId,
+        activityType: 'ResolutionNoteUpdated',
+        previousValue: previous.resolutionNotes,
+        newValue: updated.resolutionNotes,
+      });
+    }
   }
 
   // Scoped narrowly to "who can this issue be assigned to" — not a general
