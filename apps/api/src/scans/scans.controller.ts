@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
 import type { ScanJob, User } from '@sph/database';
-import type { ScanResponse, TriggerScanRequest } from '@sph/types';
+import type { ScanComparisonResponse, ScanResponse, TriggerScanRequest } from '@sph/types';
 import { EntraJwtGuard } from '../auth/entra-jwt.guard';
 import { TenantContextGuard } from '../auth/tenant-context.guard';
 import { RolesGuard } from '../auth/roles.guard';
@@ -44,5 +44,13 @@ export class ScansController {
   @Get('scans/:scanId')
   async getScan(@Param('id') organizationId: string, @Param('scanId') scanId: string): Promise<ScanJob> {
     return this.scansService.getScan(organizationId, scanId);
+  }
+
+  @Get('scans/:scanId/comparison')
+  async getScanComparison(
+    @Param('id') organizationId: string,
+    @Param('scanId') scanId: string,
+  ): Promise<ScanComparisonResponse> {
+    return this.scansService.getScanComparison(organizationId, scanId);
   }
 }

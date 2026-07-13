@@ -13,6 +13,7 @@ export {
   resolveOrProvisionFromConsent,
 } from './onboarding';
 export type { EntraProfile, BootstrapResult, ConsentResolution } from './onboarding';
+export { findDueScanSchedules } from './scheduler';
 
 export type {
   Organization,
@@ -24,6 +25,9 @@ export type {
   ScanJob,
   HealthScore,
   HealthIssue,
+  HealthSnapshot,
+  ScanSchedule,
+  GovernanceIssue,
 } from '@prisma/client';
 
 export {
@@ -35,7 +39,11 @@ export {
   DocumentOwnerType,
   DocumentOwnerSource,
   ScanJobStatus,
+  ScanJobTriggerSource,
   HealthBand,
   HealthIssueCriterion,
   HealthIssueSeverity,
+  ScanScheduleFrequency,
+  GovernanceIssueStatus,
+  DocumentReviewDateSource,
 } from '@prisma/client';

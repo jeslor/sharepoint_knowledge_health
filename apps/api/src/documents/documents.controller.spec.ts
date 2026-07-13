@@ -6,6 +6,10 @@ describe('DocumentsController', () => {
   const service = {
     listDocuments: jest.fn(),
     getDocument: jest.fn(),
+    getDocumentHistory: jest.fn(),
+    listOwners: jest.fn(),
+    assignOwner: jest.fn(),
+    removeOwner: jest.fn(),
     listDocumentHealth: jest.fn(),
   };
   const controller = new DocumentsController(service as unknown as DocumentsService);
@@ -33,6 +37,68 @@ describe('DocumentsController', () => {
       service.getDocument.mockResolvedValue(null);
 
       await expect(controller.getDocument('org-1', 'doc-from-another-org')).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('getDocumentHistory', () => {
+    it('delegates organizationId and documentId from the route', async () => {
+      service.getDocumentHistory.mockResolvedValue({ documentId: 'doc-1', points: [] });
+
+      await controller.getDocumentHistory('org-1', 'doc-1');
+
+      expect(service.getDocumentHistory).toHaveBeenCalledWith('org-1', 'doc-1');
+    });
+
+    it('throws 404 when the service resolves null (not found in this organization)', async () => {
+      service.getDocumentHistory.mockResolvedValue(null);
+
+      await expect(controller.getDocumentHistory('org-1', 'doc-from-another-org')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+  });
+
+  describe('listOwners', () => {
+    it('delegates organizationId and documentId from the route', async () => {
+      service.listOwners.mockResolvedValue([]);
+      await controller.listOwners('org-1', 'doc-1');
+      expect(service.listOwners).toHaveBeenCalledWith('org-1', 'doc-1');
+    });
+
+    it('throws 404 when the service resolves null', async () => {
+      service.listOwners.mockResolvedValue(null);
+      await expect(controller.listOwners('org-1', 'doc-from-another-org')).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('assignOwner', () => {
+    it('rejects a body with neither displayName nor email with 400', async () => {
+      await expect(
+        controller.assignOwner('org-1', 'doc-1', { id: 'admin-1' } as never, {}),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('delegates organizationId, documentId, the current user id, and the request body', async () => {
+      service.assignOwner.mockResolvedValue({ id: 'owner-1' });
+
+      await controller.assignOwner('org-1', 'doc-1', { id: 'admin-1' } as never, { displayName: 'Sarah' });
+
+      expect(service.assignOwner).toHaveBeenCalledWith('org-1', 'doc-1', 'admin-1', { displayName: 'Sarah' });
+    });
+
+    it('throws 404 when the service resolves null (document not found)', async () => {
+      service.assignOwner.mockResolvedValue(null);
+
+      await expect(
+        controller.assignOwner('org-1', 'doc-missing', { id: 'admin-1' } as never, { displayName: 'Sarah' }),
+      ).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('removeOwner', () => {
+    it('delegates organizationId, documentId, and ownerId', async () => {
+      await controller.removeOwner('org-1', 'doc-1', 'owner-1');
+      expect(service.removeOwner).toHaveBeenCalledWith('org-1', 'doc-1', 'owner-1');
     });
   });
 

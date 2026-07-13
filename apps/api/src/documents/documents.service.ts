@@ -1,12 +1,35 @@
-import { Injectable } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { createTenantContext, type HealthIssue, type HealthScore } from '@sph/database';
 import type {
+  AssignDocumentOwnerRequest,
   DocumentDetailResponse,
   DocumentHealthQuery,
   DocumentHealthResponse,
+  DocumentOwnerResponse,
   DocumentResponse,
+  DocumentScoreHistoryResponse,
   PaginatedResponse,
 } from '@sph/types';
+
+function toDocumentOwnerResponse(owner: {
+  id: string;
+  ownerType: string;
+  displayName: string | null;
+  email: string | null;
+  source: string;
+  assignedByUserId: string | null;
+  assignedAt: Date | null;
+}): DocumentOwnerResponse {
+  return {
+    id: owner.id,
+    ownerType: owner.ownerType,
+    displayName: owner.displayName,
+    email: owner.email,
+    source: owner.source,
+    assignedByUserId: owner.assignedByUserId,
+    assignedAt: owner.assignedAt?.toISOString() ?? null,
+  };
+}
 
 const ORDER_BY_MAP = {
   score: (dir: 'asc' | 'desc') => ({ currentHealthScore: { compositeScore: dir } }),
@@ -76,6 +99,81 @@ export class DocumentsService {
       calculatedAt: score?.calculatedAt.toISOString() ?? null,
       issues: issues.map((issue) => ({ type: issue.criterion, severity: issue.severity, message: issue.message })),
     };
+  }
+
+  // ADR-0015 §4: HealthScore already accumulates one row per document per
+  // scan today — no schema change, no recalculation, just an ordered read
+  // of data already written by the scoring pipeline.
+  async getDocumentHistory(organizationId: string, documentId: string): Promise<DocumentScoreHistoryResponse | null> {
+    const context = createTenantContext(organizationId);
+    const document = await context.documents.findFirstById(documentId);
+    if (!document) return null;
+
+    const scores = await context.healthScores.findMany({
+      where: { documentId },
+      orderBy: { calculatedAt: 'asc' },
+    });
+
+    return {
+      documentId,
+      points: scores.map((score) => ({
+        calculatedAt: score.calculatedAt.toISOString(),
+        score: score.compositeScore,
+        band: score.healthBand,
+      })),
+    };
+  }
+
+  // ADR-0016 §4.2: returns every DocumentOwner row regardless of source —
+  // apps/web distinguishes Graph-derived (read-only display) from
+  // ManualAssignment (removable) using the `source` field on each row.
+  async listOwners(organizationId: string, documentId: string): Promise<DocumentOwnerResponse[] | null> {
+    const context = createTenantContext(organizationId);
+    const document = await context.documents.findFirstById(documentId);
+    if (!document) return null;
+
+    const owners = await context.documentOwners.findMany({ where: { documentId } });
+    return owners.map(toDocumentOwnerResponse);
+  }
+
+  // ADR-0016 §4.2: always source: ManualAssignment, ownerType:
+  // AssignedOwner — apps/worker's syncOwner() never touches these rows
+  // (Phase 8A fix), so this assignment survives every future rescan
+  // unchanged until a human explicitly removes it.
+  async assignOwner(
+    organizationId: string,
+    documentId: string,
+    assignedByUserId: string,
+    request: AssignDocumentOwnerRequest,
+  ): Promise<DocumentOwnerResponse | null> {
+    const context = createTenantContext(organizationId);
+    const document = await context.documents.findFirstById(documentId);
+    if (!document) return null;
+
+    const owner = await context.documentOwners.create({
+      documentId,
+      ownerType: 'AssignedOwner',
+      displayName: request.displayName ?? null,
+      email: request.email ?? null,
+      source: 'ManualAssignment',
+      assignedByUserId,
+      assignedAt: new Date(),
+    });
+
+    return toDocumentOwnerResponse(owner);
+  }
+
+  // Only ever removes a source: ManualAssignment row — a GraphMetadata row
+  // is worker-owned and not deletable through this path (ADR-0016 §4.2).
+  async removeOwner(organizationId: string, documentId: string, ownerId: string): Promise<void> {
+    const context = createTenantContext(organizationId);
+    const owner = await context.documentOwners.findMany({ where: { id: ownerId, documentId }, take: 1 });
+    const [existing] = owner;
+    if (!existing) throw new NotFoundException('Document owner not found');
+    if (existing.source !== 'ManualAssignment') {
+      throw new ConflictException('Only a manually assigned owner can be removed');
+    }
+    await context.documentOwners.deleteById(ownerId);
   }
 
   async listDocumentHealth(

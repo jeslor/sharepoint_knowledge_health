@@ -16,6 +16,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }): 
             </Link>
             <Link href="/dashboard/documents">Documents</Link>
             <Link href="/dashboard/scans">Scans</Link>
+            <Link href="/dashboard/governance">Governance</Link>
           </nav>
           <SignOutButton />
         </header>

@@ -86,3 +86,21 @@ export interface DocumentHealthQuery {
   minScore?: number;
   maxScore?: number;
 }
+
+// Phase 8B / ADR-0016 §4.2: source distinguishes worker-owned (GraphMetadata)
+// from governance-API-owned (ManualAssignment) rows — apps/web only ever
+// mutates ManualAssignment rows through the ownership endpoints.
+export interface DocumentOwnerResponse {
+  id: string;
+  ownerType: string;
+  displayName: string | null;
+  email: string | null;
+  source: string;
+  assignedByUserId: string | null;
+  assignedAt: string | null;
+}
+
+export interface AssignDocumentOwnerRequest {
+  displayName?: string | null;
+  email?: string | null;
+}

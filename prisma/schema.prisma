@@ -18,6 +18,11 @@ enum OrganizationStatus {
 
 enum UserRole {
   Admin
+  // Phase 8A / ADR-0016 §4.6: scoped to governance only (issues, document
+  // ownership assignment, review workflows) — never tenant connections,
+  // site approval, or scan scheduling, which remain Admin-only. Admin is a
+  // strict superset of this role's capabilities.
+  GovernanceManager
   Member
 }
 
@@ -71,6 +76,21 @@ enum ScanJobStatus {
   Cancelled
 }
 
+// ADR-0015 §1 / Phase 7B: distinguishes a human-clicked scan from one the
+// scheduler produced — triggeredByUserId is null exactly when this is
+// Scheduled (no human to attribute it to).
+enum ScanJobTriggerSource {
+  Manual
+  Scheduled
+}
+
+// Deliberately narrow (no free-form cron) — avoids a new cron-parsing
+// dependency for an MVP that only needs two options (ADR-0015 §1).
+enum ScanScheduleFrequency {
+  Daily
+  Weekly
+}
+
 enum HealthBand {
   Healthy
   NeedsAttention
@@ -91,6 +111,24 @@ enum HealthIssueSeverity {
   RequiresReview
 }
 
+// ADR-0016 §4.5: deliberately 3 states, not 5 — ASSIGNED is modeled as the
+// orthogonal GovernanceIssue.assignedUserId field, not a status; VERIFIED
+// is replaced by a derived, read-time "still detected in latest scan" flag
+// (never stored) computed against the document's current HealthIssues.
+enum GovernanceIssueStatus {
+  Open
+  InProgress
+  Resolved
+}
+
+// ADR-0016 §4.3: same reserved-until-later shape as DocumentOwnerSource.
+// GraphMetadata is unused until a future Graph List Items API integration
+// (ADR-0016 §9) — Phase 8A only ever writes Manual.
+enum DocumentReviewDateSource {
+  Manual
+  GraphMetadata
+}
+
 // ---------------------------------------------------------------------------
 // Models
 // ---------------------------------------------------------------------------
@@ -109,8 +147,11 @@ model Organization {
   documents        Document[]
   documentOwners   DocumentOwner[]
   scanJobs         ScanJob[]
+  scanSchedule     ScanSchedule?
   healthScores     HealthScore[]
   healthIssues     HealthIssue[]
+  healthSnapshots  HealthSnapshot[]
+  governanceIssues GovernanceIssue[]
 
   @@index([status])
 }
@@ -131,9 +172,11 @@ model User {
   organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   microsoftTenant MicrosoftTenant @relation("UserHomeMicrosoftTenant", fields: [microsoftTenantId], references: [id], onDelete: Restrict)
 
-  consentedMicrosoftTenants  MicrosoftTenant[] @relation("MicrosoftTenantConsentedBy")
-  triggeredScanJobs          ScanJob[]         @relation("ScanJobTriggeredBy")
-  approvedSharePointSites    SharePointSite[]  @relation("SharePointSiteApprovedBy")
+  consentedMicrosoftTenants MicrosoftTenant[] @relation("MicrosoftTenantConsentedBy")
+  triggeredScanJobs         ScanJob[]         @relation("ScanJobTriggeredBy")
+  approvedSharePointSites   SharePointSite[]  @relation("SharePointSiteApprovedBy")
+  assignedGovernanceIssues  GovernanceIssue[] @relation("GovernanceIssueAssignedTo")
+  assignedDocumentOwners    DocumentOwner[]   @relation("DocumentOwnerAssignedBy")
 
   // The Entra oid claim (entraObjectId) is only unique WITHIN the Azure AD
   // tenant that issued it (ADR-0010) — Microsoft's own multi-tenant app
@@ -216,19 +259,33 @@ model Document {
   currentHealthScoreId String?        @unique
   ingestedAt           DateTime       @default(now())
 
+  // ADR-0016 §4.3 / Proposed ADR-0002 amendment: platform-maintained review
+  // due date. Schema only in Phase 8A — NOT yet wired into the
+  // ReviewStatus scoring input (hasReviewDate is still hardcoded false in
+  // the worker until the separate ADR-0002 amendment is accepted).
+  nextReviewDueAt  DateTime?
+  reviewDateSource DocumentReviewDateSource @default(Manual)
+
   organization       Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   site               SharePointSite @relation(fields: [siteId], references: [id], onDelete: Cascade)
   currentHealthScore HealthScore?   @relation("CurrentHealthScore", fields: [currentHealthScoreId], references: [id], onDelete: SetNull)
 
-  owners       DocumentOwner[]
-  healthScores HealthScore[]   @relation("DocumentHealthScores")
+  owners           DocumentOwner[]
+  healthScores     HealthScore[]     @relation("DocumentHealthScores")
+  governanceIssues GovernanceIssue[]
 
   @@unique([siteId, graphItemId])
   @@index([organizationId, status])
   @@index([siteId, status])
+  @@index([organizationId, nextReviewDueAt])
 }
 
 /// Ownership signal(s) for a document (author / assigned owner / unknown).
+/// ADR-0016 §4.2: source partitions write ownership between two callers
+/// that must never overlap — apps/worker's syncOwner() only ever
+/// touches source: GraphMetadata rows; source: ManualAssignment rows are
+/// only ever created/deleted through the governance API (Phase 8B),
+/// guaranteeing a manual assignment survives every future rescan.
 model DocumentOwner {
   id             String              @id @default(cuid())
   documentId     String
@@ -238,8 +295,14 @@ model DocumentOwner {
   email          String?
   source         DocumentOwnerSource
 
-  document     Document     @relation(fields: [documentId], references: [id], onDelete: Cascade)
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  // Only set when source: ManualAssignment — same audit-trail shape as
+  // SharePointSite.approvedByUserId/approvedAt (ADR-0014).
+  assignedByUserId String?
+  assignedAt       DateTime?
+
+  document       Document     @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  assignedByUser User?        @relation("DocumentOwnerAssignedBy", fields: [assignedByUserId], references: [id], onDelete: SetNull)
 
   @@index([documentId])
   @@index([organizationId])
@@ -247,27 +310,63 @@ model DocumentOwner {
 
 /// A single execution of the scan pipeline (ADR-0004).
 model ScanJob {
-  id                String        @id @default(cuid())
+  id                String               @id @default(cuid())
   organizationId    String
   microsoftTenantId String
-  triggeredByUserId String
-  status            ScanJobStatus @default(Queued)
+  // Nullable since Phase 7B — a Scheduled scan has no human trigger.
+  // Distinguished by triggerSource, never inferred from nullness alone.
+  triggeredByUserId String?
+  triggerSource     ScanJobTriggerSource @default(Manual)
+  status            ScanJobStatus        @default(Queued)
   startedAt         DateTime?
   completedAt       DateTime?
-  documentsScanned  Int           @default(0)
-  documentsFailed   Int           @default(0)
+  documentsScanned  Int                  @default(0)
+  documentsFailed   Int                  @default(0)
   errorSummary      String?
-  createdAt         DateTime      @default(now())
+  createdAt         DateTime             @default(now())
+
+  // ADR-0015 §5: live progress while Running, written by the worker's
+  // existing per-site loop (not per-document — write-volume tradeoff
+  // already decided in the ADR). totalSites/currentSiteName are null
+  // before the worker's first update; currentSiteName is cleared back to
+  // null once the loop finishes, regardless of final status.
+  totalSites      Int?
+  sitesCompleted  Int     @default(0)
+  currentSiteName String?
 
   organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   microsoftTenant MicrosoftTenant @relation(fields: [microsoftTenantId], references: [id], onDelete: Cascade)
-  triggeredByUser User            @relation("ScanJobTriggeredBy", fields: [triggeredByUserId], references: [id], onDelete: Restrict)
+  triggeredByUser User?           @relation("ScanJobTriggeredBy", fields: [triggeredByUserId], references: [id], onDelete: Restrict)
 
-  healthScores HealthScore[]
+  healthScores   HealthScore[]
+  healthSnapshot HealthSnapshot?
 
   @@index([organizationId, status])
   @@index([microsoftTenantId, status])
   @@index([organizationId, createdAt])
+}
+
+/// An organization's recurring scan configuration (ADR-0015 §1, Phase 7B).
+/// One per organization (organizationId is unique) — which MicrosoftTenant
+/// actually gets scanned is resolved the same way manual org-level scan
+/// triggers already resolve it (the org's single Consented tenant), not
+/// stored here. Postgres is the sole source of truth for scheduling state;
+/// the worker's repeatable heartbeat job is only a trigger, never a
+/// registry (ADR-0015 §1, Option B).
+model ScanSchedule {
+  id             String                @id @default(cuid())
+  organizationId String                @unique
+  frequency      ScanScheduleFrequency
+  enabled        Boolean               @default(true)
+  nextRunAt      DateTime
+  lastRunAt      DateTime?
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  // Exactly the scheduler tick's WHERE clause (findDueScanSchedules).
+  @@index([enabled, nextRunAt])
 }
 
 /// Result of scoring one document during one scan. Immutable once written.
@@ -300,6 +399,26 @@ model HealthScore {
   @@index([scanJobId])
 }
 
+/// Org-level health aggregate captured once per successfully Completed
+/// scan (ADR-0015 §3) — persists what health-summary otherwise only ever
+/// computes live, so it can be read back historically. Never written for
+/// a Failed scan. One per ScanJob, enforced by the unique scanJobId.
+model HealthSnapshot {
+  id                    String   @id @default(cuid())
+  organizationId        String
+  scanJobId             String   @unique
+  totalDocumentsScanned Int
+  averageHealthScore    Int?
+  criticalIssuesCount   Int
+  warningIssuesCount    Int
+  capturedAt            DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  scanJob      ScanJob      @relation(fields: [scanJobId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, capturedAt])
+}
+
 /// A flagged problem on one scoring criterion for one HealthScore. Immutable.
 model HealthIssue {
   id             String               @id @default(cuid())
@@ -315,4 +434,39 @@ model HealthIssue {
 
   @@index([healthScoreId])
   @@index([organizationId, criterion])
+}
+
+/// User workflow state for a governed problem (ADR-0016 §4.1) — kept
+/// entirely separate from HealthIssue, which stays calculated, immutable,
+/// scan-owned evidence. Written only by apps/api, never by apps/worker.
+///
+/// Keyed by (documentId, issueType), not a specific HealthIssue row: a
+/// HealthIssue has no identity across scans (a new row every scan that
+/// still detects the problem), so a GovernanceIssue is a durable workflow
+/// thread for "this problem type on this document," reused across
+/// resolve/reopen cycles rather than a new row per cycle (a deliberate v1
+/// simplification — no per-transition audit log yet). Whether the
+/// underlying HealthIssue is still present in the latest scan is a
+/// read-time derived flag (Document.currentHealthScore.healthIssues),
+/// never stored here.
+model GovernanceIssue {
+  id              String                @id @default(cuid())
+  organizationId  String
+  documentId      String
+  issueType       HealthIssueCriterion
+  severity        HealthIssueSeverity
+  status          GovernanceIssueStatus @default(Open)
+  assignedUserId  String?
+  resolutionNotes String?
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+  resolvedAt      DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  document     Document     @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  assignedUser User?        @relation("GovernanceIssueAssignedTo", fields: [assignedUserId], references: [id], onDelete: SetNull)
+
+  @@unique([documentId, issueType])
+  @@index([organizationId, status])
+  @@index([assignedUserId])
 }

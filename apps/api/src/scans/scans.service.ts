@@ -1,8 +1,8 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
-import { createTenantContext, type ScanJob } from '@sph/database';
-import { SCAN_QUEUE, type ScanJobPayload, type ScanResponse } from '@sph/types';
+import { createTenantContext, type HealthIssue, type HealthScore, type ScanJob, type TenantContext } from '@sph/database';
+import { SCAN_QUEUE, type ScanComparisonIssue, type ScanComparisonResponse, type ScanJobPayload, type ScanResponse } from '@sph/types';
 
 const MOST_RECENT_SCANS_LIMIT = 50;
 
@@ -11,6 +11,7 @@ function toScanResponse(scanJob: ScanJob): ScanResponse {
     id: scanJob.id,
     microsoftTenantId: scanJob.microsoftTenantId,
     triggeredByUserId: scanJob.triggeredByUserId,
+    triggerSource: scanJob.triggerSource,
     status: scanJob.status,
     startedAt: scanJob.startedAt?.toISOString() ?? null,
     completedAt: scanJob.completedAt?.toISOString() ?? null,
@@ -18,6 +19,9 @@ function toScanResponse(scanJob: ScanJob): ScanResponse {
     documentsFailed: scanJob.documentsFailed,
     errorSummary: scanJob.errorSummary,
     createdAt: scanJob.createdAt.toISOString(),
+    totalSites: scanJob.totalSites,
+    sitesCompleted: scanJob.sitesCompleted,
+    currentSiteName: scanJob.currentSiteName,
   };
 }
 
@@ -110,5 +114,117 @@ export class ScansService {
       take: MOST_RECENT_SCANS_LIMIT,
     });
     return scanJobs.map(toScanResponse);
+  }
+
+  /**
+   * Recommendation #5 (historical comparisons): highlight what changed
+   * between this scan and the one immediately before it. Reads only
+   * already-persisted rows (HealthSnapshot for the aggregate deltas,
+   * HealthScore/HealthIssue for the per-document diff) — no recalculation,
+   * no new scoring. Returns an all-null/empty shape rather than 404 when
+   * there's nothing to compare yet (this scan hasn't completed, or it's
+   * the organization's first scan), matching health-summary's
+   * null-friendly convention elsewhere in this API.
+   */
+  async getScanComparison(organizationId: string, scanId: string): Promise<ScanComparisonResponse> {
+    const context = createTenantContext(organizationId);
+
+    const scanJob = await context.scanJobs.findFirstById(scanId);
+    if (!scanJob) throw new NotFoundException('Scan job not found');
+
+    const empty: ScanComparisonResponse = {
+      scanId,
+      previousScanId: null,
+      scoreChange: null,
+      criticalIssuesChange: null,
+      warningIssuesChange: null,
+      documentCountChange: null,
+      newIssues: [],
+      resolvedIssues: [],
+    };
+
+    const [currentSnapshot] = await context.healthSnapshots.findMany({ where: { scanJobId: scanId }, take: 1 });
+    if (!currentSnapshot) return empty;
+
+    const [previousSnapshot] = await context.healthSnapshots.findMany({
+      where: { capturedAt: { lt: currentSnapshot.capturedAt } },
+      orderBy: { capturedAt: 'desc' },
+      take: 1,
+    });
+    if (!previousSnapshot) return empty;
+
+    const scoreChange =
+      currentSnapshot.averageHealthScore !== null && previousSnapshot.averageHealthScore !== null
+        ? currentSnapshot.averageHealthScore - previousSnapshot.averageHealthScore
+        : null;
+
+    const [currentIssues, previousIssues] = await Promise.all([
+      this.issuesForScan(context, currentSnapshot.scanJobId),
+      this.issuesForScan(context, previousSnapshot.scanJobId),
+    ]);
+
+    const documentIds = [...new Set([...currentIssues, ...previousIssues].map((issue) => issue.documentId))];
+    const documents =
+      documentIds.length > 0 ? await context.documents.findMany({ where: { id: { in: documentIds } } }) : [];
+    const documentNameById = new Map(documents.map((document) => [document.id, document.name]));
+
+    const toKey = (issue: { documentId: string; criterion: string }): string => `${issue.documentId}:${issue.criterion}`;
+    const currentByKey = new Map(currentIssues.map((issue) => [toKey(issue), issue]));
+    const previousByKey = new Map(previousIssues.map((issue) => [toKey(issue), issue]));
+
+    const toComparisonIssue = (issue: {
+      documentId: string;
+      criterion: string;
+      severity: string;
+      message: string;
+    }): ScanComparisonIssue => ({
+      documentId: issue.documentId,
+      documentName: documentNameById.get(issue.documentId) ?? 'Unknown document',
+      criterion: issue.criterion,
+      severity: issue.severity,
+      message: issue.message,
+    });
+
+    const newIssues = [...currentByKey.entries()]
+      .filter(([key]) => !previousByKey.has(key))
+      .map(([, issue]) => toComparisonIssue(issue));
+    const resolvedIssues = [...previousByKey.entries()]
+      .filter(([key]) => !currentByKey.has(key))
+      .map(([, issue]) => toComparisonIssue(issue));
+
+    return {
+      scanId,
+      previousScanId: previousSnapshot.scanJobId,
+      scoreChange,
+      criticalIssuesChange: currentSnapshot.criticalIssuesCount - previousSnapshot.criticalIssuesCount,
+      warningIssuesChange: currentSnapshot.warningIssuesCount - previousSnapshot.warningIssuesCount,
+      documentCountChange: currentSnapshot.totalDocumentsScanned - previousSnapshot.totalDocumentsScanned,
+      newIssues,
+      resolvedIssues,
+    };
+  }
+
+  // HealthIssue rows don't carry documentId directly — resolved via the
+  // HealthScore they belong to (HealthScore.scanJobId + .documentId), the
+  // same relation chain documents.service.ts already walks for the
+  // current health view. No schema change, just a two-step batched read.
+  private async issuesForScan(
+    context: TenantContext,
+    scanJobId: string,
+  ): Promise<{ documentId: string; criterion: string; severity: string; message: string }[]> {
+    const scores: HealthScore[] = await context.healthScores.findMany({ where: { scanJobId } });
+    if (scores.length === 0) return [];
+
+    const documentIdByScoreId = new Map(scores.map((score) => [score.id, score.documentId]));
+    const issues: HealthIssue[] = await context.healthIssues.findMany({
+      where: { healthScoreId: { in: scores.map((score) => score.id) } },
+    });
+
+    return issues.map((issue) => ({
+      documentId: documentIdByScoreId.get(issue.healthScoreId) ?? '',
+      criterion: issue.criterion,
+      severity: issue.severity,
+      message: issue.message,
+    }));
   }
 }

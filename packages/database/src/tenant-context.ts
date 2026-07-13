@@ -8,6 +8,9 @@ import { DocumentOwnerRepository } from './repositories/document-owner-repositor
 import { ScanJobRepository } from './repositories/scan-job-repository';
 import { HealthScoreRepository } from './repositories/health-score-repository';
 import { HealthIssueRepository } from './repositories/health-issue-repository';
+import { HealthSnapshotRepository } from './repositories/health-snapshot-repository';
+import { ScanScheduleRepository } from './repositories/scan-schedule-repository';
+import { GovernanceIssueRepository } from './repositories/governance-issue-repository';
 
 export interface TenantContext {
   readonly organizationId: string;
@@ -20,6 +23,9 @@ export interface TenantContext {
   readonly scanJobs: ScanJobRepository;
   readonly healthScores: HealthScoreRepository;
   readonly healthIssues: HealthIssueRepository;
+  readonly healthSnapshots: HealthSnapshotRepository;
+  readonly scanSchedules: ScanScheduleRepository;
+  readonly governanceIssues: GovernanceIssueRepository;
 }
 
 /**
@@ -40,5 +46,8 @@ export function createTenantContext(organizationId: string): TenantContext {
     scanJobs: new ScanJobRepository(organizationId, prisma),
     healthScores: new HealthScoreRepository(organizationId, prisma),
     healthIssues: new HealthIssueRepository(organizationId, prisma),
+    healthSnapshots: new HealthSnapshotRepository(organizationId, prisma),
+    scanSchedules: new ScanScheduleRepository(organizationId, prisma),
+    governanceIssues: new GovernanceIssueRepository(organizationId, prisma),
   };
 }

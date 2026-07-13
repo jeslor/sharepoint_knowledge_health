@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo } from 'react';
 import { ScanList } from '@/components/scans/scan-list';
+import { ScanScheduleSettings } from '@/components/scans/scan-schedule-settings';
 import { ACTIVE_SCAN_STATUSES } from '@/components/scans/scan-status-badge';
 import { TriggerScanButton } from '@/components/scans/trigger-scan-button';
 import { ErrorState, LoadingState } from '@/components/ui/query-state';
@@ -22,6 +23,8 @@ export default function ScansPage(): JSX.Element {
 
   return (
     <div className="space-y-6">
+      <ScanScheduleSettings />
+
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold text-slate-900">Scans</h1>
         <TriggerScanButton disabled={hasActiveScan} onTriggered={refetch} />

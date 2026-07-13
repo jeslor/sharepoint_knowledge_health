@@ -84,3 +84,118 @@ This keeps the weights/thresholds as data, not logic, so v2's per-organization c
 - v2: allow per-organization weight and threshold configuration once there's evidence different customers value criteria differently — the config-object design above makes this a data-source change, not an engine rewrite.
 - v2: replace the basic duplication signal with the full Duplicate Detection feature (ADR-0005) as an input.
 - Consider exposing the scoring rationale via API so it can be audited or exported, reinforcing the "governance not generation" positioning.
+
+---
+
+## Proposed Amendment (2026-07-13, Phase 8 review — NOT YET ACCEPTED)
+
+**Amendment status: Proposed.** This section proposes a change to a
+scoring *input*; it does not take effect on its own. It requires its own
+explicit review and acceptance, separate from ADR-0016 (Document
+Governance Actions and Issue Management), which references this amendment
+but deliberately does not implement it — see ADR-0016 §10 (Scope
+Discipline) and §13 (Phase 8A is schema-only for review metadata; this
+amendment is what would eventually wire that schema into scoring).
+
+### Current behavior
+
+`ReviewStatus`'s scoring input, `hasReviewDate: boolean`, is **hardcoded to
+`false`** at the single call site that constructs it
+(`apps/worker/src/queue/document-collector.processor.ts:277`). The
+surrounding code comment states this plainly: *"Graph's driveItem endpoint
+has no native 'review date' — that's a SharePoint custom list column,
+which requires the separate List Items API (out of scope here).
+`hasReviewDate` is always `false` until that's built, so every document
+currently reports a ReviewStatus issue. This is a real gap, not a
+placeholder oversight."*
+
+The scoring rule itself (`packages/scoring/src/rules/review-status.ts`)
+is simple and unchanged by anything in this amendment:
+
+```typescript
+export function scoreReviewStatus(input: ScoringInput): CriterionResult {
+  if (input.hasReviewDate) return { score: 100 };
+  return { score: 0, issue: { type: 'ReviewStatus', severity: 'RequiresReview', message: 'Document has no scheduled review date.' } };
+}
+```
+
+Because the input is always `false`, this function has returned `{ score:
+0, issue: {...} }` for **every document ever scored**, unconditionally,
+since Phase 5. There is no code path today that can produce `score: 100`
+for this criterion.
+
+### Why it is inaccurate
+
+`ReviewStatus` is meant to measure something real and variable: does this
+document have an established review cadence, yes or no. As implemented,
+it measures nothing — it is a constant, not a signal. Concretely, this
+means, for every organization using the product today:
+
+- The `ReviewStatus` sub-score contributes its full 15% weight (ADR-0002's
+  MVP Weights table) to every composite score as a fixed 0, uniformly
+  depressing every document's composite score by the same amount,
+  regardless of the document's actual governance quality.
+- Every scored document generates a `RequiresReview`-severity
+  `HealthIssue` for `ReviewStatus`, unconditionally — inflating the
+  critical-issue counts surfaced on the dashboard (`HealthSummaryResponse`,
+  `HealthTrendResponse`) with an issue type that carries zero
+  discriminating information between a well-governed document and a
+  neglected one.
+- Nothing about this is visible as a "known limitation" anywhere a customer
+  would see it — the dashboard presents it as a real finding, indistinguishable
+  from the other five criteria's genuine signals.
+
+### Future review date sources
+
+Two sources, deliberately given the same `source`-tagged shape ADR-0007
+already established for `DocumentOwner` (`GraphMetadata` vs.
+`ManualAssignment`), so this isn't a new pattern:
+
+1. **`Manual`** — a customer or admin sets `Document.nextReviewDueAt`
+   directly inside the application (proposed schema, ADR-0016 §6). This is
+   the only source available in the near term, since it requires no new
+   Graph capability.
+2. **`GraphMetadata`** — sourced from a SharePoint custom list/library
+   column via the Microsoft Graph **List Items API**, which
+   `packages/graph-client` does not implement today (ADR-0013 §8 exposes
+   only `listSites`/`listDrives`/`listDocuments`/`getSite`/`getDrive`/
+   `getDocument` — no list-item surface). Adding this is a distinct,
+   future integration decision (ADR-0016 §9), not part of this amendment.
+
+### Scoring impact
+
+**The scoring rule (`scoreReviewStatus`) and its weight (15%, per the MVP
+Weights table above) are unchanged by this amendment.** What changes is
+only the value the worker passes as `hasReviewDate`:
+
+- **Before**: `hasReviewDate: false` (hardcoded constant).
+- **Proposed**: `hasReviewDate: document.nextReviewDueAt !== null` — "has
+  any review date been established at all," preserving the rule's existing
+  binary shape and stated rationale ("missing review date → reduce
+  score") exactly, just backed by a real field instead of a stub.
+
+Deliberately **not** proposed by this amendment: distinguishing "has a
+review date" from "review date has not yet passed" (i.e., an
+overdue-vs-scheduled distinction within the score itself). That would be a
+genuine algorithm change — a new condition, not a new input — and is left
+as an explicit open question for a future amendment if there's evidence
+it's needed, not decided here.
+
+**Rollout impact, if accepted and implemented**: the first scan to run
+after this change deploys will shift every organization's average health
+score and `ReviewStatus` issue counts as a one-time step function —
+documents with a manually-set review date will newly pass; documents
+without one will continue failing, exactly as today. This is an expected,
+one-time correction (matching this same ADR's own precedent of treating
+weight/threshold changes as a customer-visible event, per "Treat the first
+weight set as provisional"), not a regression — but should be flagged to
+customers/support as a known one-time scoring shift when it ships.
+
+### Explicit scope note
+
+This amendment is **not implemented by Phase 8A/8B/8C/8D**. Phase 8A adds
+the `Document.nextReviewDueAt`/`reviewDateSource` schema (ADR-0016 §6) but
+does **not** wire it into `hasReviewDate` — that wiring only happens once
+this amendment itself is separately reviewed and accepted, keeping
+governance-feature delivery and scoring-input changes on two independent
+approval tracks, per the explicit instruction to keep them separate.
