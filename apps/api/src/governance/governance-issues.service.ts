@@ -285,7 +285,49 @@ export class GovernanceIssuesService {
       byType[issue.issueType] = (byType[issue.issueType] ?? 0) + 1;
     }
 
-    return { openCount, inProgressCount, resolvedCount, criticalCount, assignedCount, byType };
+    const totalCount = issues.length;
+    const completionRate = totalCount > 0 ? Math.round((resolvedCount / totalCount) * 100) : 0;
+
+    // Calendar-month-to-date, UTC — a fixed snapshot window, deliberately
+    // not the same as the analytics endpoint's queryable since/until
+    // (Phase 8D §1 vs §2: the summary is "right now," analytics is
+    // "over a window you pick").
+    const now = new Date();
+    const startOfMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+    const createdThisMonth = issues.filter((issue) => issue.createdAt >= startOfMonth).length;
+    const resolvedThisMonth = issues.filter(
+      (issue) => issue.status === 'Resolved' && issue.resolvedAt !== null && issue.resolvedAt >= startOfMonth,
+    ).length;
+
+    // Mean(resolvedAt - createdAt) across currently Resolved issues. Since
+    // resolvedAt is cleared on reopen (§4.5), this reflects each issue's
+    // latest resolution cycle only, not the sum of every cycle if it was
+    // reopened and resolved more than once — a deliberate simplification,
+    // not a GovernanceIssue redesign; see ADR-0016 implementation notes.
+    const resolvedWithTimestamps = issues.filter((issue) => issue.status === 'Resolved' && issue.resolvedAt !== null);
+    const averageResolutionTimeHours =
+      resolvedWithTimestamps.length > 0
+        ? resolvedWithTimestamps.reduce(
+            (sum, issue) => sum + (issue.resolvedAt!.getTime() - issue.createdAt.getTime()),
+            0,
+          ) /
+          resolvedWithTimestamps.length /
+          (60 * 60 * 1000)
+        : null;
+
+    return {
+      openCount,
+      inProgressCount,
+      resolvedCount,
+      criticalCount,
+      assignedCount,
+      byType,
+      totalCount,
+      averageResolutionTimeHours,
+      createdThisMonth,
+      resolvedThisMonth,
+      completionRate,
+    };
   }
 
   // Batched enrichment (documentName/siteName/assignedUserName/stillDetected)

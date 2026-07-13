@@ -11,6 +11,8 @@ import type {
   DocumentScoreHistoryResponse,
   GovernanceActivityListQuery,
   GovernanceActivityResponse,
+  GovernanceAnalyticsQuery,
+  GovernanceAnalyticsResponse,
   GovernanceIssueListQuery,
   GovernanceIssueResponse,
   GovernanceSummaryResponse,
@@ -219,4 +221,13 @@ export function getOrganizationActivity(
 ): Promise<PaginatedResponse<GovernanceActivityResponse>> {
   const queryString = buildQueryString(query);
   return apiRequest(`/organizations/${organizationId}/governance/activity${queryString}`, token);
+}
+
+export function getGovernanceAnalytics(
+  organizationId: string,
+  token: string,
+  query: GovernanceAnalyticsQuery = {},
+): Promise<GovernanceAnalyticsResponse> {
+  const queryString = buildQueryString(query);
+  return apiRequest(`/organizations/${organizationId}/governance/analytics${queryString}`, token);
 }

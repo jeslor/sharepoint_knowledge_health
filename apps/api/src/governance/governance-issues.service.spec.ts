@@ -380,24 +380,72 @@ describe('GovernanceIssuesService', () => {
   });
 
   describe('getSummary', () => {
+    const fixedNow = new Date('2026-07-15T12:00:00.000Z');
+
+    beforeEach(() => {
+      jest.useFakeTimers().setSystemTime(fixedNow);
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
     it('counts open/inProgress/resolved/critical/assigned and groups open+inProgress by issueType', async () => {
       governanceIssues.findMany.mockResolvedValue([
-        { status: 'Open', severity: 'RequiresReview', assignedUserId: 'user-1', issueType: 'Freshness' },
-        { status: 'Open', severity: 'NeedsAttention', assignedUserId: null, issueType: 'Ownership' },
-        { status: 'InProgress', severity: 'RequiresReview', assignedUserId: 'user-2', issueType: 'Freshness' },
-        { status: 'Resolved', severity: 'RequiresReview', assignedUserId: 'user-1', issueType: 'Freshness' },
+        { status: 'Open', severity: 'RequiresReview', assignedUserId: 'user-1', issueType: 'Freshness', createdAt: new Date('2026-06-01T00:00:00.000Z'), resolvedAt: null },
+        { status: 'Open', severity: 'NeedsAttention', assignedUserId: null, issueType: 'Ownership', createdAt: new Date('2026-06-01T00:00:00.000Z'), resolvedAt: null },
+        { status: 'InProgress', severity: 'RequiresReview', assignedUserId: 'user-2', issueType: 'Freshness', createdAt: new Date('2026-06-01T00:00:00.000Z'), resolvedAt: null },
+        { status: 'Resolved', severity: 'RequiresReview', assignedUserId: 'user-1', issueType: 'Freshness', createdAt: new Date('2026-06-01T00:00:00.000Z'), resolvedAt: new Date('2026-06-05T00:00:00.000Z') },
       ]);
 
       const result = await service.getSummary('org-1');
 
-      expect(result).toEqual({
-        openCount: 2,
-        inProgressCount: 1,
-        resolvedCount: 1,
-        criticalCount: 2, // Open+RequiresReview, InProgress+RequiresReview — Resolved excluded
-        assignedCount: 2, // Open+assigned, InProgress+assigned — Resolved excluded
-        byType: { Freshness: 2, Ownership: 1 }, // Resolved excluded from byType
-      });
+      expect(result).toEqual(
+        expect.objectContaining({
+          openCount: 2,
+          inProgressCount: 1,
+          resolvedCount: 1,
+          criticalCount: 2, // Open+RequiresReview, InProgress+RequiresReview — Resolved excluded
+          assignedCount: 2, // Open+assigned, InProgress+assigned — Resolved excluded
+          byType: { Freshness: 2, Ownership: 1 }, // Resolved excluded from byType
+          totalCount: 4,
+          completionRate: 25,
+        }),
+      );
+    });
+
+    it('returns totalCount 0 and completionRate 0 when the organization has no governance issues', async () => {
+      governanceIssues.findMany.mockResolvedValue([]);
+      const result = await service.getSummary('org-1');
+      expect(result.totalCount).toBe(0);
+      expect(result.completionRate).toBe(0);
+      expect(result.averageResolutionTimeHours).toBeNull();
+    });
+
+    it('computes averageResolutionTimeHours across currently Resolved issues only', async () => {
+      governanceIssues.findMany.mockResolvedValue([
+        { status: 'Resolved', severity: 'NeedsAttention', assignedUserId: null, issueType: 'Freshness', createdAt: new Date('2026-06-01T00:00:00.000Z'), resolvedAt: new Date('2026-06-02T00:00:00.000Z') }, // 24h
+        { status: 'Resolved', severity: 'NeedsAttention', assignedUserId: null, issueType: 'Freshness', createdAt: new Date('2026-06-01T00:00:00.000Z'), resolvedAt: new Date('2026-06-04T00:00:00.000Z') }, // 72h
+        { status: 'Open', severity: 'NeedsAttention', assignedUserId: null, issueType: 'Freshness', createdAt: new Date('2026-06-01T00:00:00.000Z'), resolvedAt: null }, // excluded — not Resolved
+      ]);
+
+      const result = await service.getSummary('org-1');
+
+      expect(result.averageResolutionTimeHours).toBe(48);
+    });
+
+    it('counts createdThisMonth and resolvedThisMonth against the current UTC calendar month only', async () => {
+      governanceIssues.findMany.mockResolvedValue([
+        { status: 'Open', severity: 'NeedsAttention', assignedUserId: null, issueType: 'Freshness', createdAt: new Date('2026-07-10T00:00:00.000Z'), resolvedAt: null }, // this month
+        { status: 'Open', severity: 'NeedsAttention', assignedUserId: null, issueType: 'Freshness', createdAt: new Date('2026-06-20T00:00:00.000Z'), resolvedAt: null }, // last month — excluded
+        { status: 'Resolved', severity: 'NeedsAttention', assignedUserId: null, issueType: 'Freshness', createdAt: new Date('2026-06-25T00:00:00.000Z'), resolvedAt: new Date('2026-07-05T00:00:00.000Z') }, // resolved this month
+        { status: 'Resolved', severity: 'NeedsAttention', assignedUserId: null, issueType: 'Freshness', createdAt: new Date('2026-06-01T00:00:00.000Z'), resolvedAt: new Date('2026-06-10T00:00:00.000Z') }, // resolved last month — excluded
+      ]);
+
+      const result = await service.getSummary('org-1');
+
+      expect(result.createdThisMonth).toBe(1);
+      expect(result.resolvedThisMonth).toBe(1);
     });
   });
 

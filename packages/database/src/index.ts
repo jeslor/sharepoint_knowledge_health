@@ -14,6 +14,7 @@ export {
 } from './onboarding';
 export type { EntraProfile, BootstrapResult, ConsentResolution } from './onboarding';
 export { findDueScanSchedules } from './scheduler';
+export { checkDatabaseConnection } from './health-check';
 
 export type {
   Organization,

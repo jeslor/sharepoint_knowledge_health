@@ -59,6 +59,16 @@ export interface GovernanceSummaryResponse {
   criticalCount: number;
   assignedCount: number;
   byType: Record<string, number>;
+  // Phase 8D — additive, backward compatible.
+  totalCount: number;
+  // Mean(resolvedAt - createdAt) across currently Resolved issues, in
+  // hours. null when there are none yet. See ADR-0016 implementation
+  // notes for why this reflects only the latest resolution cycle.
+  averageResolutionTimeHours: number | null;
+  createdThisMonth: number;
+  resolvedThisMonth: number;
+  // Rounded percentage: resolvedCount / totalCount * 100, 0 when totalCount is 0.
+  completionRate: number;
 }
 
 // Minimal shape for the assignment dropdown — not a general "list users"
@@ -109,4 +119,41 @@ export interface GovernanceActivityListQuery {
   sortDir?: SortDirection;
   since?: string;
   until?: string;
+}
+
+// Phase 8D — dashboard-chart-shaped analytics, distinct from the
+// list/pagination-shaped endpoints above. See ADR-0016 implementation
+// notes for why issueTrends/recentActivityByType are sourced from
+// GovernanceActivity (an append-only event log, correct across
+// reopen/resolve cycles) while the other four views are sourced from
+// GovernanceIssue's current-state fields (a point-in-time snapshot).
+export interface GovernanceAnalyticsQuery {
+  since?: string;
+  until?: string;
+  status?: GovernanceIssueStatusValue;
+  severity?: IssueSeverityFilter;
+  issueType?: GovernanceIssueTypeValue;
+  assignedUserId?: string;
+}
+
+export interface IssueTrendPoint {
+  date: string;
+  opened: number;
+  resolved: number;
+}
+
+export interface AnalyticsBucket {
+  label: string;
+  count: number;
+}
+
+export interface GovernanceAnalyticsResponse {
+  since: string;
+  until: string;
+  issueTrends: IssueTrendPoint[];
+  issuesByType: AnalyticsBucket[];
+  statusDistribution: AnalyticsBucket[];
+  resolutionTimeDistribution: AnalyticsBucket[];
+  issueAging: AnalyticsBucket[];
+  recentActivityByType: AnalyticsBucket[];
 }

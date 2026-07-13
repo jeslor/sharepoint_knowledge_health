@@ -6,6 +6,8 @@ import type {
   GovernanceActivityListQuery,
   GovernanceActivityResponse,
   GovernanceActivityTypeValue,
+  GovernanceAnalyticsQuery,
+  GovernanceAnalyticsResponse,
   GovernanceIssueListQuery,
   GovernanceIssueResponse,
   GovernanceIssueStatusValue,
@@ -23,6 +25,7 @@ import { Roles } from '../auth/roles.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { OrganizationAccessGuard } from '../common/organization-access.guard';
 import { GovernanceActivityService } from './governance-activity.service';
+import { GovernanceAnalyticsService } from './governance-analytics.service';
 import { GovernanceIssuesService } from './governance-issues.service';
 
 const STATUS_VALUES: GovernanceIssueStatusValue[] = ['Open', 'InProgress', 'Resolved'];
@@ -55,6 +58,7 @@ export class GovernanceIssuesController {
   constructor(
     private readonly governanceIssuesService: GovernanceIssuesService,
     private readonly governanceActivityService: GovernanceActivityService,
+    private readonly governanceAnalyticsService: GovernanceAnalyticsService,
   ) {}
 
   @Get('issues')
@@ -130,6 +134,41 @@ export class GovernanceIssuesController {
     @Query() query: Record<string, string>,
   ): Promise<PaginatedResponse<GovernanceActivityResponse>> {
     return this.governanceActivityService.listOrganizationActivity(organizationId, this.parseActivityQuery(query));
+  }
+
+  @Get('analytics')
+  async getAnalytics(
+    @Param('id') organizationId: string,
+    @Query() query: Record<string, string>,
+  ): Promise<GovernanceAnalyticsResponse> {
+    return this.governanceAnalyticsService.getAnalytics(organizationId, this.parseAnalyticsQuery(query));
+  }
+
+  private parseAnalyticsQuery(query: Record<string, string>): GovernanceAnalyticsQuery {
+    if (query.since !== undefined && Number.isNaN(Date.parse(query.since))) {
+      throw new BadRequestException('since must be a valid ISO date string');
+    }
+    if (query.until !== undefined && Number.isNaN(Date.parse(query.until))) {
+      throw new BadRequestException('until must be a valid ISO date string');
+    }
+    if (query.status !== undefined && !STATUS_VALUES.includes(query.status as GovernanceIssueStatusValue)) {
+      throw new BadRequestException(`status must be one of: ${STATUS_VALUES.join(', ')}`);
+    }
+    if (query.severity !== undefined && !SEVERITY_VALUES.includes(query.severity as IssueSeverityFilter)) {
+      throw new BadRequestException(`severity must be one of: ${SEVERITY_VALUES.join(', ')}`);
+    }
+    if (query.issueType !== undefined && !ISSUE_TYPE_VALUES.includes(query.issueType as GovernanceIssueTypeValue)) {
+      throw new BadRequestException(`issueType must be one of: ${ISSUE_TYPE_VALUES.join(', ')}`);
+    }
+
+    return {
+      since: query.since,
+      until: query.until,
+      status: query.status as GovernanceIssueStatusValue | undefined,
+      severity: query.severity as IssueSeverityFilter | undefined,
+      issueType: query.issueType as GovernanceIssueTypeValue | undefined,
+      assignedUserId: query.assignedUserId,
+    };
   }
 
   private parseActivityQuery(query: Record<string, string>): GovernanceActivityListQuery {

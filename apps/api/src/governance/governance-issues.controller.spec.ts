@@ -2,6 +2,7 @@ import { BadRequestException, NotFoundException } from '@nestjs/common';
 import type { User } from '@sph/database';
 import { GovernanceIssuesController } from './governance-issues.controller';
 import type { GovernanceActivityService } from './governance-activity.service';
+import type { GovernanceAnalyticsService } from './governance-analytics.service';
 import type { GovernanceIssuesService } from './governance-issues.service';
 
 const actor = { id: 'actor-1' } as User;
@@ -19,9 +20,13 @@ describe('GovernanceIssuesController', () => {
     listIssueActivity: jest.fn(),
     listOrganizationActivity: jest.fn(),
   };
+  const analyticsService = {
+    getAnalytics: jest.fn(),
+  };
   const controller = new GovernanceIssuesController(
     service as unknown as GovernanceIssuesService,
     activityService as unknown as GovernanceActivityService,
+    analyticsService as unknown as GovernanceAnalyticsService,
   );
 
   beforeEach(() => jest.clearAllMocks());
@@ -202,6 +207,55 @@ describe('GovernanceIssuesController', () => {
         since: undefined,
         until: undefined,
       });
+    });
+  });
+
+  describe('getAnalytics', () => {
+    it('delegates organizationId with default-parsed query when no params are supplied', async () => {
+      analyticsService.getAnalytics.mockResolvedValue({});
+
+      await controller.getAnalytics('org-1', {});
+
+      expect(analyticsService.getAnalytics).toHaveBeenCalledWith('org-1', {
+        since: undefined,
+        until: undefined,
+        status: undefined,
+        severity: undefined,
+        issueType: undefined,
+        assignedUserId: undefined,
+      });
+    });
+
+    it('parses valid query params through', async () => {
+      analyticsService.getAnalytics.mockResolvedValue({});
+
+      await controller.getAnalytics('org-1', {
+        since: '2026-06-01T00:00:00.000Z',
+        until: '2026-07-01T00:00:00.000Z',
+        status: 'Open',
+        severity: 'RequiresReview',
+        issueType: 'Freshness',
+        assignedUserId: 'user-1',
+      });
+
+      expect(analyticsService.getAnalytics).toHaveBeenCalledWith('org-1', {
+        since: '2026-06-01T00:00:00.000Z',
+        until: '2026-07-01T00:00:00.000Z',
+        status: 'Open',
+        severity: 'RequiresReview',
+        issueType: 'Freshness',
+        assignedUserId: 'user-1',
+      });
+    });
+
+    it.each([
+      ['since', { since: 'not-a-date' }],
+      ['until', { until: 'not-a-date' }],
+      ['status', { status: 'Bogus' }],
+      ['severity', { severity: 'HIGH' }],
+      ['issueType', { issueType: 'Bogus' }],
+    ])('rejects an invalid %s value with 400', async (_label, badQuery) => {
+      await expect(controller.getAnalytics('org-1', badQuery)).rejects.toThrow(BadRequestException);
     });
   });
 });

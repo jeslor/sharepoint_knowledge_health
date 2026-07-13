@@ -19,6 +19,8 @@ declare global {
       entraClaims?: EntraClaims;
       user?: User;
       tenantContext?: TenantContext;
+      // Phase 9: set by request-logger.middleware.ts, before any guard runs.
+      requestId?: string;
     }
   }
 }

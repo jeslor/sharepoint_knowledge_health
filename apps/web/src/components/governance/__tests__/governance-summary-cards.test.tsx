@@ -11,6 +11,11 @@ describe('GovernanceSummaryCards', () => {
       criticalCount: 3,
       assignedCount: 5,
       byType: {},
+      totalCount: 16,
+      averageResolutionTimeHours: 12,
+      createdThisMonth: 1,
+      resolvedThisMonth: 2,
+      completionRate: 63,
     };
     render(<GovernanceSummaryCards summary={summary} />);
 

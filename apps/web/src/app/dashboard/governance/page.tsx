@@ -1,6 +1,7 @@
 'use client';
 
 import { Suspense, useCallback, useMemo } from 'react';
+import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import type { GovernanceIssueListQuery, GovernanceIssueStatusValue, GovernanceIssueTypeValue, IssueSeverityFilter } from '@sph/types';
 import { ActivityList } from '@/components/governance/activity-list';
@@ -56,7 +57,12 @@ function GovernanceDashboardContent(): JSX.Element {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-semibold text-slate-900">Governance</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-xl font-semibold text-slate-900">Governance</h1>
+        <Link href="/dashboard/governance/analytics" className="text-sm font-medium text-slate-900 underline">
+          View executive analytics
+        </Link>
+      </div>
 
       {summaryLoading && <LoadingState label="Loading summary…" />}
       {summaryError && <ErrorState error={summaryError} />}

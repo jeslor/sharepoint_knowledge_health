@@ -866,6 +866,69 @@ naming the three existing edges individually so a reader scanning the
 activity feed doesn't have to infer resolution/reopening from a generic
 "status changed" line.
 
+## 15. Implementation Notes (Phase 8D — Governance Analytics & Executive Reporting)
+
+Phase 8D added analytics endpoints and an executive dashboard on top of
+`GovernanceIssue` and `GovernanceActivity` exactly as they already stood —
+no schema change, no new model, no change to either entity's write path.
+
+**The most noteworthy thing this phase surfaced**: `GovernanceIssue` and
+`GovernanceActivity` are correct sources for two genuinely different kinds
+of analytics question, and picking the right one per question mattered
+more than it first appeared —
+
+- **Point-in-time snapshot questions** ("what does my backlog look like
+  right now") are answered from `GovernanceIssue`'s current-state fields
+  — `issuesByType`, `statusDistribution`, `resolutionTimeDistribution`,
+  and `issueAging` all read `GovernanceIssue` directly.
+- **Time-series questions** ("is governance improving over time," "how
+  much activity happened recently") are answered from `GovernanceActivity`
+  — `issueTrends` and `recentActivityByType` read the append-only event
+  log instead. This is deliberate, not incidental: `GovernanceIssue.status`/
+  `resolvedAt` reflect only the *current* state (§4.5 — `resolvedAt` is
+  cleared on reopen), so a document resolved, reopened, and resolved again
+  would silently disappear from a `GovernanceIssue`-sourced trend the
+  first time around. `GovernanceActivity` has no such blind spot — every
+  `IssueResolved` event is its own permanent row with its own timestamp,
+  so a trend chart built from it is correct across any number of
+  reopen/resolve cycles. This is the same property that made
+  `GovernanceActivity` the right choice for an audit trail in the first
+  place (Phase 8C); Phase 8D is the first place that property paid for
+  itself analytically, not just for compliance/traceability.
+
+**Known, accepted limitation — not fixed this phase**: `GovernanceActivity`
+carries no `status`/`severity`/`issueType`/`assignedUserId` of its own (it
+records who did what, not the issue's current attributes), so
+`issueTrends` and `recentActivityByType` only respect the `since`/`until`
+date window, not the other four filter dimensions. Making them filterable
+the same way would require joining through `governanceIssueId` back to
+`GovernanceIssue` — doable, but a real join for a filter combination
+("show me the resolution trend for just Critical Freshness issues")
+nothing in this phase's brief asked for, and not built speculatively.
+
+**`averageResolutionTimeHours` reflects only the latest resolution cycle**:
+computed as `mean(resolvedAt - createdAt)` across currently `Resolved`
+issues. Since `createdAt` never changes but `resolvedAt` is overwritten on
+each new resolution (and cleared on reopen), an issue resolved once
+quickly, reopened, and resolved again months later would report a
+resolution time spanning its *entire* lifetime, not just the final cycle.
+Accepted as a reasonable v1 simplification — resolving it correctly would
+mean tracking a "current cycle started at" timestamp on `GovernanceIssue`,
+which is a schema change explicitly out of scope for this phase
+("do not redesign GovernanceIssue"). Flagged here rather than silently
+shipped as if it were exact.
+
+**"This month" vs. the analytics window are two different, intentional
+concepts**: the extended summary endpoint's `createdThisMonth`/
+`resolvedThisMonth` are a fixed UTC-calendar-month snapshot (matching the
+already-unparameterized `getSummary()` endpoint's existing "right now"
+shape); the analytics endpoint's `since`/`until` are a fully queryable
+window (default last 30 days). Deliberately not unified into one
+parameterization — the summary answers "how are we doing this month," the
+analytics endpoint answers "how are we doing over whatever period you
+pick," and conflating them would have made the simpler, more common
+question (the summary) carry a query-string dependency it doesn't need.
+
 ## ADRs Requiring Amendment
 
 - **ADR-0002** (Document Health Score Algorithm) — a **proposed amendment

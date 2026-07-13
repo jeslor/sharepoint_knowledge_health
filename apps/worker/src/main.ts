@@ -1,9 +1,15 @@
 import 'reflect-metadata';
+import { validateEnvOrExit } from '@sph/config';
 import { NestFactory } from '@nestjs/core';
 import { Logger } from '@nestjs/common';
 import { AppModule } from './app.module';
 
 async function bootstrap(): Promise<void> {
+  // Phase 9: same fail-fast rationale as apps/api — a worker that starts
+  // successfully but can't reach Postgres/Redis/Entra is far harder to
+  // diagnose than one that refuses to start at all.
+  validateEnvOrExit();
+
   // createApplicationContext never allocates an HTTP adapter — this is what
   // structurally enforces "worker never exposes a public HTTP endpoint"
   // (ADR-0009) in code, not just via Container Apps ingress configuration.

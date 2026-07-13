@@ -17,6 +17,10 @@ import { DocumentCollectorProcessor } from './document-collector.processor';
       defaultJobOptions: {
         attempts: 3,
         backoff: { type: 'exponential', delay: 5_000 },
+        // Phase 9: matches apps/api's scans.module.ts registration exactly
+        // — see that comment for why this is a required, not optional, fix.
+        removeOnComplete: { count: 500 },
+        removeOnFail: { count: 1000 },
       },
     }),
   ],
