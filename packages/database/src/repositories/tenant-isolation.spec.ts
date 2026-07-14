@@ -11,6 +11,10 @@ interface SeededOrg {
   scanJobId: string;
   healthScoreId: string;
   healthIssueId: string;
+  healthSnapshotId: string;
+  scanScheduleId: string;
+  governanceIssueId: string;
+  governanceActivityId: string;
   context: TenantContext;
 }
 
@@ -115,6 +119,44 @@ async function seedOrganization(label: string): Promise<SeededOrg> {
     },
   });
 
+  const healthSnapshot = await prisma.healthSnapshot.create({
+    data: {
+      organizationId: organization.id,
+      scanJobId: scanJob.id,
+      totalDocumentsScanned: 1,
+      averageHealthScore: 55,
+      criticalIssuesCount: 1,
+      warningIssuesCount: 0,
+    },
+  });
+
+  const scanSchedule = await prisma.scanSchedule.create({
+    data: {
+      organizationId: organization.id,
+      frequency: 'Daily',
+      nextRunAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+    },
+  });
+
+  const governanceIssue = await prisma.governanceIssue.create({
+    data: {
+      organizationId: organization.id,
+      documentId: document.id,
+      issueType: 'Freshness',
+      severity: 'RequiresReview',
+    },
+  });
+
+  const governanceActivity = await prisma.governanceActivity.create({
+    data: {
+      organizationId: organization.id,
+      governanceIssueId: governanceIssue.id,
+      documentId: document.id,
+      actorUserId: user.id,
+      activityType: 'IssueCreated',
+    },
+  });
+
   return {
     organizationId: organization.id,
     userId: user.id,
@@ -125,6 +167,10 @@ async function seedOrganization(label: string): Promise<SeededOrg> {
     scanJobId: scanJob.id,
     healthScoreId: healthScore.id,
     healthIssueId: healthIssue.id,
+    healthSnapshotId: healthSnapshot.id,
+    scanScheduleId: scanSchedule.id,
+    governanceIssueId: governanceIssue.id,
+    governanceActivityId: governanceActivity.id,
     context: createTenantContext(organization.id),
   };
 }
@@ -233,6 +279,38 @@ describe('Cross-tenant data isolation (ADR-0001)', () => {
       const list = await orgA.context.healthIssues.findMany();
       expect(list.some((h) => h.id === orgB.healthIssueId)).toBe(false);
       expect(await orgA.context.healthIssues.findFirstById(orgB.healthIssueId)).toBeNull();
+    });
+
+    it('HealthSnapshotRepository never leaks across organizations', async () => {
+      const list = await orgA.context.healthSnapshots.findMany();
+      expect(list.some((s) => s.id === orgB.healthSnapshotId)).toBe(false);
+      expect(await orgA.context.healthSnapshots.findFirstById(orgB.healthSnapshotId)).toBeNull();
+    });
+
+    it('ScanScheduleRepository never leaks across organizations', async () => {
+      const list = await orgA.context.scanSchedules.findMany();
+      expect(list.some((s) => s.id === orgB.scanScheduleId)).toBe(false);
+      expect(await orgA.context.scanSchedules.findFirstById(orgB.scanScheduleId)).toBeNull();
+    });
+
+    it('GovernanceIssueRepository never leaks across organizations', async () => {
+      const list = await orgA.context.governanceIssues.findMany();
+      expect(list.some((g) => g.id === orgB.governanceIssueId)).toBe(false);
+      expect(await orgA.context.governanceIssues.findFirstById(orgB.governanceIssueId)).toBeNull();
+    });
+
+    it('GovernanceActivityRepository never leaks across organizations', async () => {
+      const list = await orgA.context.governanceActivity.findMany();
+      expect(list.some((a) => a.id === orgB.governanceActivityId)).toBe(false);
+      expect(await orgA.context.governanceActivity.findFirstById(orgB.governanceActivityId)).toBeNull();
+    });
+  });
+
+  describe('GovernanceActivityRepository — append-only (Phase 8C)', () => {
+    it('has no updateById or deleteById method — immutability is enforced by the repository shape itself', () => {
+      const repo = orgA.context.governanceActivity as unknown as { updateById?: unknown; deleteById?: unknown };
+      expect(repo.updateById).toBeUndefined();
+      expect(repo.deleteById).toBeUndefined();
     });
   });
 

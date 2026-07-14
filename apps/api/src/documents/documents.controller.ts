@@ -1,9 +1,25 @@
-import { BadRequestException, Controller, Get, NotFoundException, Param, Query, UseGuards } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  NotFoundException,
+  Param,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
+import type { User } from '@sph/database';
 import type {
+  AssignDocumentOwnerRequest,
   DocumentDetailResponse,
   DocumentHealthQuery,
   DocumentHealthSortBy,
+  DocumentOwnerResponse,
   DocumentResponse,
+  DocumentScoreHistoryResponse,
   IssueSeverityFilter,
   PaginatedResponse,
   DocumentHealthResponse,
@@ -13,6 +29,9 @@ import type {
 const SEVERITY_VALUES: IssueSeverityFilter[] = ['NeedsAttention', 'RequiresReview'];
 import { EntraJwtGuard } from '../auth/entra-jwt.guard';
 import { TenantContextGuard } from '../auth/tenant-context.guard';
+import { RolesGuard } from '../auth/roles.guard';
+import { Roles } from '../auth/roles.decorator';
+import { CurrentUser } from '../auth/current-user.decorator';
 import { OrganizationAccessGuard } from '../common/organization-access.guard';
 import { DocumentsService } from './documents.service';
 
@@ -37,6 +56,56 @@ export class DocumentsController {
     const document = await this.documentsService.getDocument(organizationId, documentId);
     if (!document) throw new NotFoundException('Document not found');
     return document;
+  }
+
+  @Get('documents/:documentId/history')
+  async getDocumentHistory(
+    @Param('id') organizationId: string,
+    @Param('documentId') documentId: string,
+  ): Promise<DocumentScoreHistoryResponse> {
+    const history = await this.documentsService.getDocumentHistory(organizationId, documentId);
+    if (!history) throw new NotFoundException('Document not found');
+    return history;
+  }
+
+  @Get('documents/:documentId/owners')
+  async listOwners(
+    @Param('id') organizationId: string,
+    @Param('documentId') documentId: string,
+  ): Promise<DocumentOwnerResponse[]> {
+    const owners = await this.documentsService.listOwners(organizationId, documentId);
+    if (!owners) throw new NotFoundException('Document not found');
+    return owners;
+  }
+
+  @Post('documents/:documentId/owners')
+  @UseGuards(RolesGuard)
+  @Roles('Admin', 'GovernanceManager')
+  async assignOwner(
+    @Param('id') organizationId: string,
+    @Param('documentId') documentId: string,
+    @CurrentUser() user: User,
+    @Body() body: AssignDocumentOwnerRequest,
+  ): Promise<DocumentOwnerResponse> {
+    if (!body?.displayName && !body?.email) {
+      throw new BadRequestException('At least one of displayName or email must be provided');
+    }
+    const owner = await this.documentsService.assignOwner(organizationId, documentId, user.id, body);
+    if (!owner) throw new NotFoundException('Document not found');
+    return owner;
+  }
+
+  @Delete('documents/:documentId/owners/:ownerId')
+  @UseGuards(RolesGuard)
+  @Roles('Admin', 'GovernanceManager')
+  @HttpCode(204)
+  async removeOwner(
+    @Param('id') organizationId: string,
+    @Param('documentId') documentId: string,
+    @Param('ownerId') ownerId: string,
+    @CurrentUser() user: User,
+  ): Promise<void> {
+    return this.documentsService.removeOwner(organizationId, documentId, ownerId, user.id);
   }
 
   @Get('document-health')

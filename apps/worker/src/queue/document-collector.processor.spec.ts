@@ -30,6 +30,7 @@ describe('DocumentCollectorProcessor', () => {
   const users = { findMany: jest.fn() };
   const healthScores = { create: jest.fn() };
   const healthIssues = { create: jest.fn() };
+  const healthSnapshots = { create: jest.fn() };
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -42,6 +43,7 @@ describe('DocumentCollectorProcessor', () => {
       users,
       healthScores,
       healthIssues,
+      healthSnapshots,
     } as never);
 
     // Defaults so tests only override what they care about.
@@ -50,6 +52,7 @@ describe('DocumentCollectorProcessor', () => {
     documentOwners.findMany.mockResolvedValue([]);
     users.findMany.mockResolvedValue([]);
     healthScores.create.mockResolvedValue({ id: 'score-1' });
+    healthSnapshots.create.mockResolvedValue({ id: 'snapshot-1' });
   });
 
   it('returns early without touching the tenant when the ScanJob no longer exists', async () => {
@@ -148,6 +151,26 @@ describe('DocumentCollectorProcessor', () => {
         email: 'alice@example.com',
         source: 'GraphMetadata',
       });
+    });
+
+    it('rescan only deletes/recreates GraphMetadata-sourced owners — a ManualAssignment row is never queried or deleted (ADR-0016 §4.2, the Phase 8 prerequisite fix)', async () => {
+      mockedListDocuments.mockReturnValue(asyncGen([fileItem]));
+      const existing = { id: 'doc-1', siteId: 'site-1', graphItemId: 'item-1' };
+      documents.findMany.mockImplementation(async ({ where }: { where: Record<string, unknown> }) =>
+        'graphItemId' in where ? [existing] : [],
+      );
+      documents.updateById.mockResolvedValue(existing);
+      documentOwners.findMany.mockImplementation(async ({ where }: { where: Record<string, unknown> }) =>
+        where.source === 'GraphMetadata' ? [{ id: 'owner-graph-1' }] : [],
+      );
+
+      await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+      expect(documentOwners.findMany).toHaveBeenCalledWith({
+        where: { documentId: 'doc-1', source: 'GraphMetadata' },
+      });
+      expect(documentOwners.deleteById).toHaveBeenCalledTimes(1);
+      expect(documentOwners.deleteById).toHaveBeenCalledWith('owner-graph-1');
     });
 
     it('updates the existing Document on rediscovery instead of creating a duplicate', async () => {
@@ -268,6 +291,86 @@ describe('DocumentCollectorProcessor', () => {
       await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
 
       expect(healthScores.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('progress tracking and snapshots (ADR-0015 §3/§5)', () => {
+    const siteA = { id: 'site-a', graphSiteId: 'graph-a', displayName: 'Site A' };
+    const siteB = { id: 'site-b', graphSiteId: 'graph-b', displayName: 'Site B' };
+
+    beforeEach(() => {
+      scanJobs.findFirstById.mockResolvedValue({ id: 'scan-1', microsoftTenantId: 'tenant-1' });
+      microsoftTenants.findFirstById.mockResolvedValue({ id: 'tenant-1', entraTenantId: 'entra-1' });
+      sharePointSites.findMany.mockResolvedValue([siteA, siteB]);
+      mockedListDrives.mockReturnValue(asyncGen([]));
+      documents.findMany.mockResolvedValue([]);
+    });
+
+    it('reports totalSites once known, and progresses currentSiteName/sitesCompleted per site', async () => {
+      await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+      const calls = scanJobs.updateById.mock.calls.map(([, data]) => data);
+      expect(calls).toContainEqual({ totalSites: 2 });
+      expect(calls).toContainEqual({ currentSiteName: 'Site A' });
+      expect(calls).toContainEqual({ currentSiteName: 'Site B' });
+      expect(calls).toContainEqual({ sitesCompleted: 1 });
+      expect(calls).toContainEqual({ sitesCompleted: 2 });
+      // Cleared once the loop finishes, regardless of final status.
+      expect(calls).toContainEqual({ currentSiteName: null });
+    });
+
+    it('creates a HealthSnapshot with the tenant aggregate when the scan completes successfully', async () => {
+      documents.findMany.mockResolvedValue([
+        {
+          id: 'doc-1',
+          name: 'A.docx',
+          sourceCreatedAt: new Date('2026-06-01'),
+          sourceModifiedAt: new Date('2026-06-01'),
+          sizeBytes: BigInt(100),
+        },
+        {
+          id: 'doc-2',
+          name: 'B.docx',
+          sourceCreatedAt: new Date('2020-01-01'),
+          sourceModifiedAt: new Date('2020-01-01'),
+          sizeBytes: BigInt(200),
+        },
+      ]);
+      healthScores.create.mockResolvedValueOnce({ id: 'score-1' }).mockResolvedValueOnce({ id: 'score-2' });
+
+      await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+      expect(healthSnapshots.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          scanJobId: 'scan-1',
+          totalDocumentsScanned: 2,
+          averageHealthScore: expect.any(Number),
+          criticalIssuesCount: expect.any(Number),
+          warningIssuesCount: expect.any(Number),
+        }),
+      );
+    });
+
+    it('does not create a HealthSnapshot when the scan ends Failed', async () => {
+      mockedListDrives.mockReturnValue(
+        (async function* (): AsyncGenerator<GraphDrive> {
+          throw new GraphTransientError('boom');
+        })(),
+      );
+
+      await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+      expect(healthSnapshots.create).not.toHaveBeenCalled();
+    });
+
+    it('still creates a HealthSnapshot with zeroed values when the scan completes with nothing to score', async () => {
+      documents.findMany.mockResolvedValue([]);
+
+      await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+      expect(healthSnapshots.create).toHaveBeenCalledWith(
+        expect.objectContaining({ totalDocumentsScanned: 0, averageHealthScore: null }),
+      );
     });
   });
 

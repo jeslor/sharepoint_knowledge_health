@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { BullModule } from '@nestjs/bullmq';
 import { QueueModule } from './queue/queue.module';
+import { SchedulerModule } from './scheduler/scheduler.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { QueueModule } from './queue/queue.module';
       }),
     }),
     QueueModule,
+    SchedulerModule,
   ],
 })
 export class AppModule {}

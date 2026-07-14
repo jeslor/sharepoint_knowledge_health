@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z, ZodError } from 'zod';
 
 export const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -17,4 +17,30 @@ export type Env = z.infer<typeof envSchema>;
 
 export function parseEnv(source: NodeJS.ProcessEnv = process.env): Env {
   return envSchema.parse(source);
+}
+
+/**
+ * Phase 9 (production hardening): call this first thing in every app's
+ * bootstrap. Missing/invalid required config previously surfaced late and
+ * cryptically — e.g. Prisma throwing deep in a request handler, or Entra
+ * JWT validation failing with no clue why — instead of failing immediately
+ * at startup with a clear, actionable message. Exits the process rather
+ * than throwing, since an uncaught exception at this point would otherwise
+ * print a raw Zod stack trace with no indication of which variable is
+ * actually the problem.
+ */
+export function validateEnvOrExit(source: NodeJS.ProcessEnv = process.env): Env {
+  try {
+    return envSchema.parse(source);
+  } catch (error) {
+    console.error(`Invalid environment configuration:\n${formatEnvError(error)}`);
+    process.exit(1);
+  }
+}
+
+function formatEnvError(error: unknown): string {
+  if (error instanceof ZodError) {
+    return error.issues.map((issue) => `  - ${issue.path.join('.')}: ${issue.message}`).join('\n');
+  }
+  return error instanceof Error ? error.message : String(error);
 }

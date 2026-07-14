@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { BullModule } from '@nestjs/bullmq';
 import { HealthModule } from './health/health.module';
@@ -7,6 +7,10 @@ import { SharePointSitesModule } from './sharepoint-sites/sharepoint-sites.modul
 import { DocumentsModule } from './documents/documents.module';
 import { ScansModule } from './scans/scans.module';
 import { HealthSummaryModule } from './health-summary/health-summary.module';
+import { ScanScheduleModule } from './scan-schedule/scan-schedule.module';
+import { HealthTrendsModule } from './health-trends/health-trends.module';
+import { GovernanceIssuesModule } from './governance/governance-issues.module';
+import { requestLoggerMiddleware } from './common/request-logger.middleware';
 
 @Module({
   imports: [
@@ -28,6 +32,16 @@ import { HealthSummaryModule } from './health-summary/health-summary.module';
     DocumentsModule,
     ScansModule,
     HealthSummaryModule,
+    ScanScheduleModule,
+    HealthTrendsModule,
+    GovernanceIssuesModule,
   ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer): void {
+    // Phase 9: applied ahead of every route, including /health — a request
+    // ID and a logged line are wanted for liveness/readiness probe traffic
+    // too, not just authenticated routes.
+    consumer.apply(requestLoggerMiddleware).forRoutes('*');
+  }
+}

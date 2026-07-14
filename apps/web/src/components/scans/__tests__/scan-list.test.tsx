@@ -7,6 +7,7 @@ function scan(overrides: Partial<ScanResponse> = {}): ScanResponse {
     id: 'scan-1',
     microsoftTenantId: 'tenant-1',
     triggeredByUserId: 'user-1',
+    triggerSource: 'Manual',
     status: 'Completed',
     startedAt: '2026-07-01T00:00:00.000Z',
     completedAt: '2026-07-01T01:00:00.000Z',
@@ -14,6 +15,9 @@ function scan(overrides: Partial<ScanResponse> = {}): ScanResponse {
     documentsFailed: 1,
     errorSummary: null,
     createdAt: '2026-07-01T00:00:00.000Z',
+    totalSites: 3,
+    sitesCompleted: 3,
+    currentSiteName: null,
     ...overrides,
   };
 }
@@ -42,5 +46,33 @@ describe('ScanList', () => {
     expect(screen.getByText('10')).toBeInTheDocument();
     expect(screen.getByText('1')).toBeInTheDocument();
     expect(screen.getByText('Site X: Graph unavailable')).toBeInTheDocument();
+  });
+
+  describe('progress column (ADR-0015 §5)', () => {
+    it('shows "Preparing…" for a Running scan before the worker reports totalSites', () => {
+      render(<ScanList scans={[scan({ status: 'Running', totalSites: null, sitesCompleted: 0, currentSiteName: null })]} />);
+
+      expect(screen.getByText('Preparing…')).toBeInTheDocument();
+    });
+
+    it('shows the current site and count for a Running scan mid-progress', () => {
+      render(
+        <ScanList
+          scans={[scan({ status: 'Running', totalSites: 5, sitesCompleted: 2, currentSiteName: 'Marketing Docs' })]}
+        />,
+      );
+
+      expect(screen.getByText('Site 2 of 5: Marketing Docs')).toBeInTheDocument();
+    });
+
+    it('shows no progress text for a terminal-status scan, even if progress fields are populated', () => {
+      render(<ScanList scans={[scan({ status: 'Completed', totalSites: 5, sitesCompleted: 5, currentSiteName: null })]} />);
+
+      const [row] = screen.getAllByRole('row').slice(1);
+      expect(row).toBeDefined();
+      // Progress is the 2nd cell — "—" for a terminal scan, not stale progress text.
+      expect(row && within(row).getAllByText('—').length).toBeGreaterThan(0);
+      expect(screen.queryByText(/Site \d+ of \d+/)).not.toBeInTheDocument();
+    });
   });
 });

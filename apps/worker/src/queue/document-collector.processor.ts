@@ -7,6 +7,21 @@ import { listDrives, listDocuments, type GraphDriveItem, GraphClientError } from
 import { calculateScore, type DocumentOwnerInput, type SiblingDocumentInput } from '@sph/scoring';
 
 /**
+ * ADR-0015 §3 — the exact aggregate a HealthSnapshot needs, computed once
+ * as a side effect of scoring every document (no extra queries). Mirrors
+ * apps/api's HealthSummaryService aggregation intentionally — apps/worker
+ * cannot import from apps/api (ADR-0009), so this is a deliberate,
+ * self-contained duplication of the same small calculation, not a shared
+ * dependency.
+ */
+interface ScanAggregateSummary {
+  totalDocumentsScanned: number;
+  averageHealthScore: number | null;
+  criticalIssuesCount: number;
+  warningIssuesCount: number;
+}
+
+/**
  * The Document Collector (ADR-0004, ADR-0013, ADR-0014): consumes a queued
  * ScanJob, enumerates documents only within sites an Admin has explicitly
  * Approved, persists normalized metadata, and scores every document in the
@@ -65,11 +80,19 @@ export class DocumentCollectorProcessor extends WorkerHost {
       where: { microsoftTenantId: microsoftTenant.id, status: 'Approved' },
     });
 
+    // ADR-0015 §5: live progress, written at the same per-site granularity
+    // the collection loop already operates at — not per-document, which
+    // would be excessive write volume for a large tenant.
+    await context.scanJobs.updateById(scanJobId, { totalSites: approvedSites.length });
+
     let documentsScanned = 0;
     let documentsFailed = 0;
+    let sitesCompleted = 0;
     const errors: string[] = [];
 
     for (const site of approvedSites) {
+      await context.scanJobs.updateById(scanJobId, { currentSiteName: site.displayName });
+
       try {
         const result = await this.collectSite(context, microsoftTenant.entraTenantId, site, (count) => (documentsScanned += count));
         documentsFailed += result.itemFailures;
@@ -80,17 +103,37 @@ export class DocumentCollectorProcessor extends WorkerHost {
         this.logger.error(`Site enumeration failed for "${site.displayName}" (${site.id}): ${message}`);
         errors.push(`Site ${site.displayName}: ${message}`);
       }
+
+      sitesCompleted += 1;
+      await context.scanJobs.updateById(scanJobId, { sitesCompleted });
     }
 
-    await this.scoreTenantDocuments(context, scanJobId, microsoftTenant.id);
+    await context.scanJobs.updateById(scanJobId, { currentSiteName: null });
+
+    const summary = await this.scoreTenantDocuments(context, scanJobId, microsoftTenant.id);
+
+    const status = documentsScanned === 0 && documentsFailed > 0 ? 'Failed' : 'Completed';
 
     await context.scanJobs.updateById(scanJobId, {
-      status: documentsScanned === 0 && documentsFailed > 0 ? 'Failed' : 'Completed',
+      status,
       completedAt: new Date(),
       documentsScanned,
       documentsFailed,
       errorSummary: errors.length > 0 ? errors.slice(0, 20).join('; ') : null,
     });
+
+    // ADR-0015 §3: snapshot only a genuinely successful scan — a Failed
+    // scan's aggregate isn't a meaningful "current state" data point, and
+    // scanJobId is unique on HealthSnapshot (at most one per scan).
+    if (status === 'Completed') {
+      await context.healthSnapshots.create({
+        scanJobId,
+        totalDocumentsScanned: summary.totalDocumentsScanned,
+        averageHealthScore: summary.averageHealthScore,
+        criticalIssuesCount: summary.criticalIssuesCount,
+        warningIssuesCount: summary.warningIssuesCount,
+      });
+    }
   }
 
   private async collectSite(
@@ -161,9 +204,15 @@ export class DocumentCollectorProcessor extends WorkerHost {
     return document;
   }
 
+  // ADR-0016 §4.2: source partitions ownership writes between this worker
+  // and the governance API — only ever touches source: GraphMetadata rows.
+  // A ManualAssignment row (Phase 8B) is never read, deleted, or recreated
+  // here, so a manual assignment survives every future rescan unchanged.
   private async syncOwner(context: TenantContext, documentId: string, item: GraphDriveItem): Promise<void> {
-    const existingOwners = await context.documentOwners.findMany({ where: { documentId } });
-    for (const owner of existingOwners) {
+    const existingGraphOwners = await context.documentOwners.findMany({
+      where: { documentId, source: 'GraphMetadata' },
+    });
+    for (const owner of existingGraphOwners) {
       await context.documentOwners.deleteById(owner.id);
     }
 
@@ -179,11 +228,17 @@ export class DocumentCollectorProcessor extends WorkerHost {
     });
   }
 
-  private async scoreTenantDocuments(context: TenantContext, scanJobId: string, microsoftTenantId: string): Promise<void> {
+  private async scoreTenantDocuments(
+    context: TenantContext,
+    scanJobId: string,
+    microsoftTenantId: string,
+  ): Promise<ScanAggregateSummary> {
     const documents = await context.documents.findMany({
       where: { status: 'Active', site: { microsoftTenantId } },
     });
-    if (documents.length === 0) return;
+    if (documents.length === 0) {
+      return { totalDocumentsScanned: 0, averageHealthScore: null, criticalIssuesCount: 0, warningIssuesCount: 0 };
+    }
 
     const documentIds = documents.map((document) => document.id);
 
@@ -206,6 +261,10 @@ export class DocumentCollectorProcessor extends WorkerHost {
       list.push({ id: document.id, name: document.name, sizeBytes: Number(document.sizeBytes) });
       siblingsByKey.set(key, list);
     }
+
+    let totalScore = 0;
+    let criticalIssuesCount = 0;
+    let warningIssuesCount = 0;
 
     for (const document of documents) {
       const key = `${document.name}::${document.sizeBytes}`;
@@ -239,6 +298,8 @@ export class DocumentCollectorProcessor extends WorkerHost {
         healthBand: result.band,
       });
 
+      totalScore += result.score;
+
       for (const issue of result.issues) {
         await context.healthIssues.create({
           healthScoreId: healthScore.id,
@@ -246,9 +307,19 @@ export class DocumentCollectorProcessor extends WorkerHost {
           severity: issue.severity,
           message: issue.message,
         });
+
+        if (issue.severity === 'RequiresReview') criticalIssuesCount += 1;
+        if (issue.severity === 'NeedsAttention') warningIssuesCount += 1;
       }
 
       await context.documents.updateById(document.id, { currentHealthScoreId: healthScore.id });
     }
+
+    return {
+      totalDocumentsScanned: documents.length,
+      averageHealthScore: Math.round(totalScore / documents.length),
+      criticalIssuesCount,
+      warningIssuesCount,
+    };
   }
 }

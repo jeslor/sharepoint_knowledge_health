@@ -1,4 +1,5 @@
 import { createTenantContext } from '@sph/database';
+import type { GovernanceActivityService } from '../governance/governance-activity.service';
 import { DocumentsService } from './documents.service';
 
 jest.mock('@sph/database');
@@ -6,13 +7,14 @@ jest.mock('@sph/database');
 const mockedCreateContext = createTenantContext as jest.MockedFunction<typeof createTenantContext>;
 
 describe('DocumentsService', () => {
-  const service = new DocumentsService();
+  const governanceActivityService = { record: jest.fn() };
+  const service = new DocumentsService(governanceActivityService as unknown as GovernanceActivityService);
 
   const documents = { findMany: jest.fn(), count: jest.fn(), findFirstById: jest.fn() };
   const healthScores = { findMany: jest.fn() };
   const healthIssues = { findMany: jest.fn() };
   const sharePointSites = { findMany: jest.fn() };
-  const documentOwners = { findMany: jest.fn() };
+  const documentOwners = { findMany: jest.fn(), create: jest.fn(), deleteById: jest.fn() };
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -137,6 +139,151 @@ describe('DocumentsService', () => {
 
       expect(result?.owner).toBeNull();
       expect(result?.ownerEmail).toBeNull();
+    });
+  });
+
+  describe('getDocumentHistory', () => {
+    it('returns null when the document does not exist for this organization (org isolation)', async () => {
+      documents.findFirstById.mockResolvedValue(null);
+
+      const result = await service.getDocumentHistory('org-1', 'doc-from-another-org');
+
+      expect(result).toBeNull();
+    });
+
+    it('returns every HealthScore for the document, oldest first, without recalculating anything', async () => {
+      documents.findFirstById.mockResolvedValue({ id: 'doc-1' });
+      healthScores.findMany.mockResolvedValue([
+        { compositeScore: 60, healthBand: 'Fair', calculatedAt: new Date('2026-06-01T00:00:00.000Z') },
+        { compositeScore: 85, healthBand: 'Good', calculatedAt: new Date('2026-07-01T00:00:00.000Z') },
+      ]);
+
+      const result = await service.getDocumentHistory('org-1', 'doc-1');
+
+      expect(healthScores.findMany).toHaveBeenCalledWith({
+        where: { documentId: 'doc-1' },
+        orderBy: { calculatedAt: 'asc' },
+      });
+      expect(result).toEqual({
+        documentId: 'doc-1',
+        points: [
+          { calculatedAt: '2026-06-01T00:00:00.000Z', score: 60, band: 'Fair' },
+          { calculatedAt: '2026-07-01T00:00:00.000Z', score: 85, band: 'Good' },
+        ],
+      });
+    });
+
+    it('returns an empty points array for a document that has never been scored', async () => {
+      documents.findFirstById.mockResolvedValue({ id: 'doc-1' });
+      healthScores.findMany.mockResolvedValue([]);
+
+      const result = await service.getDocumentHistory('org-1', 'doc-1');
+
+      expect(result?.points).toEqual([]);
+    });
+  });
+
+  describe('listOwners', () => {
+    it('returns null when the document does not exist for this organization', async () => {
+      documents.findFirstById.mockResolvedValue(null);
+      const result = await service.listOwners('org-1', 'doc-from-another-org');
+      expect(result).toBeNull();
+    });
+
+    it('returns every DocumentOwner row regardless of source', async () => {
+      documents.findFirstById.mockResolvedValue({ id: 'doc-1' });
+      documentOwners.findMany.mockResolvedValue([
+        { id: 'owner-1', ownerType: 'Author', displayName: 'Alice', email: 'alice@example.com', source: 'GraphMetadata', assignedByUserId: null, assignedAt: null },
+        { id: 'owner-2', ownerType: 'AssignedOwner', displayName: 'Sarah', email: 'sarah@example.com', source: 'ManualAssignment', assignedByUserId: 'admin-1', assignedAt: new Date('2026-07-01T00:00:00.000Z') },
+      ]);
+
+      const result = await service.listOwners('org-1', 'doc-1');
+
+      expect(result).toEqual([
+        { id: 'owner-1', ownerType: 'Author', displayName: 'Alice', email: 'alice@example.com', source: 'GraphMetadata', assignedByUserId: null, assignedAt: null },
+        { id: 'owner-2', ownerType: 'AssignedOwner', displayName: 'Sarah', email: 'sarah@example.com', source: 'ManualAssignment', assignedByUserId: 'admin-1', assignedAt: '2026-07-01T00:00:00.000Z' },
+      ]);
+    });
+  });
+
+  describe('assignOwner', () => {
+    it('returns null when the document does not exist for this organization', async () => {
+      documents.findFirstById.mockResolvedValue(null);
+      const result = await service.assignOwner('org-1', 'doc-missing', 'admin-1', { displayName: 'Sarah' });
+      expect(result).toBeNull();
+    });
+
+    it('always creates a ManualAssignment / AssignedOwner row, stamped with the assigning user and now (ADR-0016 §4.2), and records OwnerAssigned activity', async () => {
+      documents.findFirstById.mockResolvedValue({ id: 'doc-1' });
+      documentOwners.create.mockResolvedValue({
+        id: 'owner-new',
+        ownerType: 'AssignedOwner',
+        displayName: 'Sarah',
+        email: 'sarah@example.com',
+        source: 'ManualAssignment',
+        assignedByUserId: 'admin-1',
+        assignedAt: new Date('2026-07-01T00:00:00.000Z'),
+      });
+
+      await service.assignOwner('org-1', 'doc-1', 'admin-1', { displayName: 'Sarah', email: 'sarah@example.com' });
+
+      expect(documentOwners.create).toHaveBeenCalledWith({
+        documentId: 'doc-1',
+        ownerType: 'AssignedOwner',
+        displayName: 'Sarah',
+        email: 'sarah@example.com',
+        source: 'ManualAssignment',
+        assignedByUserId: 'admin-1',
+        assignedAt: expect.any(Date),
+      });
+      expect(governanceActivityService.record).toHaveBeenCalledWith('org-1', {
+        documentId: 'doc-1',
+        actorUserId: 'admin-1',
+        activityType: 'OwnerAssigned',
+        newValue: 'Sarah',
+      });
+    });
+
+    it('does not record activity when the document does not exist', async () => {
+      documents.findFirstById.mockResolvedValue(null);
+      await service.assignOwner('org-1', 'doc-missing', 'admin-1', { displayName: 'Sarah' });
+      expect(governanceActivityService.record).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('removeOwner', () => {
+    it('throws NotFoundException when the owner does not exist for this document/organization', async () => {
+      documentOwners.findMany.mockResolvedValue([]);
+      await expect(service.removeOwner('org-1', 'doc-1', 'owner-missing', 'admin-1')).rejects.toThrow(
+        'Document owner not found',
+      );
+      expect(governanceActivityService.record).not.toHaveBeenCalled();
+    });
+
+    it('throws ConflictException and never deletes a GraphMetadata-sourced owner (ADR-0016 §4.2 — worker-owned)', async () => {
+      documentOwners.findMany.mockResolvedValue([{ id: 'owner-1', source: 'GraphMetadata' }]);
+
+      await expect(service.removeOwner('org-1', 'doc-1', 'owner-1', 'admin-1')).rejects.toThrow(
+        'Only a manually assigned owner can be removed',
+      );
+      expect(documentOwners.deleteById).not.toHaveBeenCalled();
+      expect(governanceActivityService.record).not.toHaveBeenCalled();
+    });
+
+    it('deletes a ManualAssignment-sourced owner and records OwnerRemoved activity', async () => {
+      documentOwners.findMany.mockResolvedValue([
+        { id: 'owner-2', source: 'ManualAssignment', displayName: 'Sarah', email: 'sarah@example.com' },
+      ]);
+
+      await service.removeOwner('org-1', 'doc-1', 'owner-2', 'admin-1');
+
+      expect(documentOwners.deleteById).toHaveBeenCalledWith('owner-2');
+      expect(governanceActivityService.record).toHaveBeenCalledWith('org-1', {
+        documentId: 'doc-1',
+        actorUserId: 'admin-1',
+        activityType: 'OwnerRemoved',
+        previousValue: 'Sarah',
+      });
     });
   });
 

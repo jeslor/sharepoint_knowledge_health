@@ -3,4 +3,7 @@ export * from './scan';
 export * from './api/documents';
 export * from './api/scans';
 export * from './api/health-summary';
+export * from './api/health-trends';
+export * from './api/governance';
 export * from './api/me';
+export * from './api/scan-schedule';

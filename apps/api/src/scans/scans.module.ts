@@ -18,6 +18,12 @@ import { ScansService } from './scans.service';
       defaultJobOptions: {
         attempts: 3,
         backoff: { type: 'exponential', delay: 5_000 },
+        // Phase 9: without this, every completed/failed job accumulates in
+        // Redis forever — a guaranteed, unbounded memory-growth issue in
+        // production, not a hypothetical one. Bounded rather than disabled
+        // outright so recent history is still inspectable for debugging.
+        removeOnComplete: { count: 500 },
+        removeOnFail: { count: 1000 },
       },
     }),
   ],

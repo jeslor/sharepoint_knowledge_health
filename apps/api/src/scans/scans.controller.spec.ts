@@ -7,6 +7,7 @@ describe('ScansController', () => {
     triggerScanForOrganization: jest.fn(),
     getScan: jest.fn(),
     listScans: jest.fn(),
+    getScanComparison: jest.fn(),
   };
   const controller = new ScansController(service as unknown as ScansService);
 
@@ -26,6 +27,14 @@ describe('ScansController', () => {
     await controller.getScan('org-1', 'scan-1');
 
     expect(service.getScan).toHaveBeenCalledWith('org-1', 'scan-1');
+  });
+
+  it('getScanComparison delegates organizationId and scanId', async () => {
+    service.getScanComparison.mockResolvedValue({ scanId: 'scan-1', previousScanId: null });
+
+    await controller.getScanComparison('org-1', 'scan-1');
+
+    expect(service.getScanComparison).toHaveBeenCalledWith('org-1', 'scan-1');
   });
 
   it('listScans delegates organizationId from the route', async () => {
