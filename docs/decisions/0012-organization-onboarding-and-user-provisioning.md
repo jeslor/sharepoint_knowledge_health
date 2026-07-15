@@ -206,3 +206,46 @@ it('rolls back completely if any step of the bootstrap transaction fails', async
 - A full `Invitation` model (pre-assign email + role before first sign-in) is a reasonable v2 addition once there's evidence customers want to provision access ahead of someone's first login — doesn't conflict with anything decided here, since an invited `User` would still ultimately need a real `(tid, oid)` sign-in to become `Active`, exactly as `PendingApproval` users do today.
 - If a support-assisted "connect the same Azure tenant to a second Organization" path is ever built, it should require explicit internal-team action (not exposed as a self-service option), to avoid accidentally normalizing the edge case this ADR's flow otherwise prevents.
 - The approval-inbox UX (which `Admin` sees pending users, how they're notified) is a product/frontend design question for whoever implements Phase 4 — not decided here.
+
+## Amendment (2026-07-15, Phase 6): "Connect Microsoft 365" frontend flow, and a deferred server-side verification gap
+
+LAT execution (`docs/testing/local-acceptance-testing-report.md`, Finding #1)
+found that `apps/web` had no code path calling `POST /auth/consent-callback`
+at all — the endpoint this ADR specifies has always worked correctly
+(confirmed by `packages/database/src/onboarding.spec.ts` against all 5
+acceptance criteria above), but nothing in the product ever reached it.
+Phase 6 closed that gap with a frontend-only implementation
+(`apps/web/src/app/connect/*`) — no change to this ADR's decisions, no
+backend change, no schema change:
+
+1. A new `/connect` entry page collects the organization name and navigates
+   (a raw, non-MSAL-mediated redirect) to Microsoft's own tenant-wide
+   admin-consent endpoint for this app's `Files.Read.All`/`Sites.Read.All`
+   scopes (ADR-0003).
+2. A new `/connect/admin-consent-callback` page (a second, separately
+   registered redirect URI) receives Microsoft's admin-consent result and,
+   on success, hands off to the existing MSAL `loginRedirect` sign-in flow
+   unchanged.
+3. A new `/connect/finishing` page — reached via a small, additive check in
+   `apps/web/src/app/page.tsx` — calls the existing `/auth/consent-callback`
+   with the resulting ID token, and routes on all four `ConsentResolution`
+   `kind` values from §1/§4 above (`existing`, `bootstrapped`,
+   `provisioned-pending`, `rejected`) exhaustively.
+
+**Deferred, not closed by this amendment**: `resolveOrProvisionFromConsent`
+still has no way to cryptographically verify that Microsoft's real
+tenant-wide admin-consent grant actually happened before setting
+`MicrosoftTenant.status: 'Consented'` — it trusts any successful sign-in
+token from a previously-unseen `tid`. The Phase 6 flow above makes the real
+admin-consent grant a genuine, Microsoft-verified *UI* gating step (a
+substantial practical improvement over the prior state, where nothing
+enforced this at all), but a sufficiently motivated caller could still call
+`/auth/consent-callback` directly with nothing but a valid ID token and
+skip the admin-consent step entirely — exactly as the LAT dev workaround
+already did before this flow existed. Closing this fully would require
+`apps/api` to make an authenticated Microsoft Graph call (e.g.
+`GET /servicePrincipals/{id}/appRoleAssignedTo`, comparing granted app
+roles against ADR-0003's `Files.Read.All`/`Sites.Read.All`) — a genuinely
+new integration surface, since `apps/api` today only ever verifies incoming
+ID tokens and never calls Graph itself (`docs/architecture/deployment.md`).
+Flagged here as named future work, not solved in Phase 6.

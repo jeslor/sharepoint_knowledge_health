@@ -9,3 +9,4 @@ export * from './api/me';
 export * from './api/scan-schedule';
 export * from './api/users';
 export * from './api/sharepoint-sites';
+export * from './api/consent-callback';

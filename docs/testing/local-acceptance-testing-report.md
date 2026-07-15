@@ -6,13 +6,18 @@ tenant, run locally (Postgres + Redis via `docker-compose.yml`, `apps/api`/`apps
 via `pnpm dev`). Every result below is evidence-based: cross-checked directly against the dev
 database and/or live API responses, not inferred from UI appearance alone.
 
-**Overall result: Conditional pass — not yet ready for net-new-customer sign-off.**
+**Overall result: Conditional pass — not yet ready for full production sign-off.**
 The core detection/governance pipeline (scoring, scanning, governance workflow, permissions,
-tenant isolation) is solid and thoroughly verified — 17 of 19 sections passed cleanly. Two things
-block full production sign-off: a critical onboarding gap (no working entry point for a brand-new
-customer) and one acceptance-criteria failure (Redis-unavailable scan trigger doesn't fail
-gracefully). For an already-provisioned, single-tenant deployment, the system held up well under
-rigorous testing with zero data-integrity issues found anywhere.
+tenant isolation) is solid and thoroughly verified — 17 of 19 sections passed cleanly. One
+acceptance-criteria failure (Redis-unavailable scan trigger doesn't fail gracefully, F2) remains
+the sole blocker as of this update — the critical onboarding gap originally found here (F1, no
+working entry point for a brand-new customer) was resolved by the Phase 6 "Connect Microsoft 365"
+implementation; see F1's updated entry in §2 below for the reference. For an already-provisioned,
+single-tenant deployment, the system held up well under rigorous testing with zero data-integrity
+issues found anywhere.
+
+**Update (2026-07-15, Phase 6): F1 resolved.** See F1's entry in §2 and the updated Priority 1
+remediation item.
 
 ---
 
@@ -44,15 +49,37 @@ rigorous testing with zero data-integrity issues found anywhere.
 
 ### Critical
 
-**F1 — No working onboarding entry point for a brand-new organization.**
-`apps/web` never calls `POST /auth/consent-callback` anywhere in its source (confirmed by
+**F1 — No working onboarding entry point for a brand-new organization. — RESOLVED (Phase 6, 2026-07-15)**
+`apps/web` never called `POST /auth/consent-callback` anywhere in its source (confirmed by
 exhaustive grep) — the only endpoint that can create a new `Organization`/`MicrosoftTenant`/Admin
-`User` (ADR-0012 §1/§3). The endpoint itself works correctly; nothing in the product drives a user
-to it. Discovered during this LAT cycle, not previously documented — the LAT plan's own §5.1.1
-incorrectly implies that signing in alone bootstraps the organization, which the actual code does
-not do. **Blocks onboarding any genuinely new customer through the product as it stands.**
-Unblocked for this LAT cycle only via a documented, temporary, non-product dev workaround
-(manually extracting a cached MSAL ID token and POSTing it directly to the existing endpoint).
+`User` (ADR-0012 §1/§3). The endpoint itself always worked correctly; nothing in the product drove
+a user to it. Discovered during this LAT cycle, not previously documented — the LAT plan's own
+§5.1.1 incorrectly implied that signing in alone bootstraps the organization, which the code never
+did. **Blocked onboarding any genuinely new customer through the product as it stood.** Unblocked
+for this LAT cycle only via a documented, temporary, non-product dev workaround (manually
+extracting a cached MSAL ID token and POSTing it directly to the existing endpoint).
+
+**Resolution**: implemented as Priority 1 of the remediation plan below — a frontend-only
+"Connect Microsoft 365" flow, no backend/schema change. Real Microsoft tenant-wide admin consent
+(`Files.Read.All`/`Sites.Read.All`) is now a genuine, Microsoft-verified UI gating step before
+`/auth/consent-callback` is ever called. Implementation reference:
+- `apps/web/src/app/connect/page.tsx` — entry page (organization name input, navigates to
+  Microsoft's admin-consent endpoint).
+- `apps/web/src/app/connect/admin-consent-callback/page.tsx` — receives Microsoft's admin-consent
+  result, hands off to the existing MSAL sign-in flow unchanged.
+- `apps/web/src/app/connect/finishing/page.tsx` — the bootstrap orchestrator; calls the existing
+  `/auth/consent-callback` and routes on all four `ConsentResolution.kind` values exhaustively.
+- `apps/web/src/app/page.tsx` — one additive check (a sessionStorage marker) routing a
+  connect-flow user to `/connect/finishing` instead of `/dashboard`; verified with regression tests
+  proving zero behavior change for every existing/returning user.
+- `docs/decisions/0012-organization-onboarding-and-user-provisioning.md`'s 2026-07-15 amendment —
+  documents this flow and a deliberately **deferred**, non-blocking gap: the backend still cannot
+  cryptographically verify real admin consent happened (vs. someone POSTing a self-obtained ID
+  token directly) — closing that fully needs a server-side Graph app-role-assignment check, named
+  as future work, not part of this resolution.
+- Full verification: `pnpm exec turbo run lint typecheck test build --filter=@sph/web` green
+  throughout implementation (34 test suites / 161 tests at completion, up from 30/127 at the start
+  of this LAT cycle).
 
 ### High
 
@@ -121,7 +148,8 @@ confirmed `status: Removed → Approved` with a fresh `approvedAt` timestamp.
 
 ## 4. Deferred items (explicitly out of scope this cycle)
 
-- Building the real "Connect Microsoft 365" onboarding flow (F1)
+- ~~Building the real "Connect Microsoft 365" onboarding flow (F1)~~ — resolved, see F1's updated
+  entry in §2.
 - Redis command timeout (backend) + fetch timeout/`AbortController` (frontend) (F2)
 - `HealthScore`-on-failed-scan gating fix (F3)
 - Scan-comparison "resolved" labeling fix (F4)
@@ -143,12 +171,12 @@ confirmed `status: Removed → Approved` with a fresh `approvedAt` timestamp.
 
 ## 6. Final recommendation
 
-**Not ready for full production sign-off as-is.** Two items gate that specifically:
+**Not yet ready for full production sign-off.** One item gates that now:
 
-1. **F1 (onboarding)** must be built before any real new customer can be onboarded through the
-   product at all — this is the single highest-priority next-phase item.
+1. ~~F1 (onboarding)~~ — **resolved**, no longer a blocker (see §2).
 2. **F2 (Redis graceful-degradation FAIL)** should be fixed before trusting this system in any
-   environment where a transient Redis blip is a real operational possibility (i.e., production).
+   environment where a transient Redis blip is a real operational possibility (i.e., production) —
+   the sole remaining sign-off blocker.
 
 For an already-provisioned, single-tenant deployment (i.e., using the documented dev workaround to
 provision), the system is in genuinely good shape — scoring, scanning, governance, permissions,
@@ -162,14 +190,11 @@ sections and ~50+ live requests.
 
 ## Priority 1 — Phase 6 blockers (must fix before customer onboarding)
 
-1. **Build the "Connect Microsoft 365" onboarding entry point (F1).** Needs its own planning pass:
-   at minimum, a web UI flow that obtains a valid ID token (the app already does this via MSAL for
-   every other sign-in) and calls the existing, already-correct `POST /auth/consent-callback` with
-   it plus an organization name — no backend change required, this is purely closing the missing
-   frontend/flow gap. The real design question for Phase 6 planning: whether this reuses the
-   existing regular sign-in's ID token directly (simplest, matches how the dev workaround already
-   proved the backend behaves) or requires a separate, more ceremonial "admin consent" entry
-   point distinguishable from a regular sign-in.
+1. ~~**Build the "Connect Microsoft 365" onboarding entry point (F1).**~~ **DONE (2026-07-15).**
+   Implemented as a frontend-only flow — no backend change. See F1's entry in §2 for the full
+   implementation reference and `docs/decisions/0012-organization-onboarding-and-user-provisioning.md`'s
+   2026-07-15 amendment for the design record, including the one deliberately deferred item (a
+   server-side Graph app-role-assignment check, named future work, not a Phase 6 blocker).
 
 ## Priority 2 — Production hardening
 

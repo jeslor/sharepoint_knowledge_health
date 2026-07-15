@@ -1,6 +1,8 @@
 import type {
   AssignableUserResponse,
   AssignDocumentOwnerRequest,
+  ConsentCallbackRequest,
+  ConsentResolution,
   CreateGovernanceIssueRequest,
   CreateScanScheduleRequest,
   DocumentDetailResponse,
@@ -33,6 +35,15 @@ import { apiRequest } from './client';
 
 export function getMe(token: string): Promise<MeResponse> {
   return apiRequest('/auth/me', token);
+}
+
+// POST /auth/consent-callback is not behind TenantContextGuard (no org
+// exists yet to scope it to) — it reads idToken from the body, never the
+// Authorization header, so passing the same idToken as the bearer token
+// here is harmless, just unused server-side.
+export function postConsentCallback(idToken: string, tenantName: string): Promise<ConsentResolution> {
+  const body: ConsentCallbackRequest = { idToken, tenantName };
+  return apiRequest('/auth/consent-callback', idToken, { method: 'POST', body: JSON.stringify(body) });
 }
 
 // Minimal local shape (id + displayName only) — this reuses the existing
