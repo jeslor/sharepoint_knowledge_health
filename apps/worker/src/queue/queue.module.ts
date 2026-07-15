@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { SCAN_QUEUE } from '@sph/types';
 import { DocumentCollectorProcessor } from './document-collector.processor';
+import { StaleScanRecoveryService } from './stale-scan-recovery.service';
 
 @Module({
   imports: [
@@ -24,7 +25,7 @@ import { DocumentCollectorProcessor } from './document-collector.processor';
       },
     }),
   ],
-  providers: [DocumentCollectorProcessor],
+  providers: [DocumentCollectorProcessor, StaleScanRecoveryService],
   exports: [BullModule],
 })
 export class QueueModule {}

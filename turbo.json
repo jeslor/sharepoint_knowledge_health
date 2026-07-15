@@ -18,6 +18,10 @@
       "dependsOn": ["^build", "db:generate"],
       "outputs": []
     },
+    "@sph/web#typecheck": {
+      "dependsOn": ["^build", "build", "db:generate"],
+      "outputs": []
+    },
     "test": {
       "dependsOn": ["^build", "db:generate"],
       "outputs": []

@@ -10,6 +10,7 @@ import { HealthSummaryModule } from './health-summary/health-summary.module';
 import { ScanScheduleModule } from './scan-schedule/scan-schedule.module';
 import { HealthTrendsModule } from './health-trends/health-trends.module';
 import { GovernanceIssuesModule } from './governance/governance-issues.module';
+import { UsersModule } from './users/users.module';
 import { requestLoggerMiddleware } from './common/request-logger.middleware';
 
 @Module({
@@ -35,6 +36,7 @@ import { requestLoggerMiddleware } from './common/request-logger.middleware';
     ScanScheduleModule,
     HealthTrendsModule,
     GovernanceIssuesModule,
+    UsersModule,
   ],
 })
 export class AppModule implements NestModule {
