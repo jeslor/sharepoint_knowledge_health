@@ -20,6 +20,16 @@ export class SharePointSitesController {
     return this.sharePointSitesService.discoverSites(organizationId, tenantId);
   }
 
+  // Phase 9.5: the dashboard Sites page never knows a microsoftTenantId —
+  // same auto-resolve convenience already established by POST
+  // organizations/:id/scans (ScansService.triggerScanForOrganization).
+  @Post('discover-sites')
+  @UseGuards(RolesGuard)
+  @Roles('Admin')
+  async discoverSitesForOrganization(@Param('id') organizationId: string): Promise<SharePointSite[]> {
+    return this.sharePointSitesService.discoverSitesForOrganization(organizationId);
+  }
+
   @Get('sharepoint-sites')
   async listSites(@Param('id') organizationId: string): Promise<SharePointSite[]> {
     return this.sharePointSitesService.listSites(organizationId);

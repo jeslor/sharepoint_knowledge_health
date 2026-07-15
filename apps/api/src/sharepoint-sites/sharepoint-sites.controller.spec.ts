@@ -4,6 +4,7 @@ import type { SharePointSitesService } from './sharepoint-sites.service';
 describe('SharePointSitesController', () => {
   const service = {
     discoverSites: jest.fn(),
+    discoverSitesForOrganization: jest.fn(),
     listSites: jest.fn(),
     approveSite: jest.fn(),
     revokeSite: jest.fn(),
@@ -18,6 +19,15 @@ describe('SharePointSitesController', () => {
     const result = await controller.discoverSites('org-1', 'tenant-1');
 
     expect(service.discoverSites).toHaveBeenCalledWith('org-1', 'tenant-1');
+    expect(result).toEqual([{ id: 'site-1' }]);
+  });
+
+  it('discoverSitesForOrganization delegates organizationId only, never a client-supplied tenantId', async () => {
+    service.discoverSitesForOrganization.mockResolvedValue([{ id: 'site-1' }]);
+
+    const result = await controller.discoverSitesForOrganization('org-1');
+
+    expect(service.discoverSitesForOrganization).toHaveBeenCalledWith('org-1');
     expect(result).toEqual([{ id: 'site-1' }]);
   });
 

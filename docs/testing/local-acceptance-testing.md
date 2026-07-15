@@ -18,43 +18,41 @@ These were found by reviewing the actual implementation, not encountered by chan
 one changes how a later test case must be executed. None of these are being fixed as part
 of this exercise — they are documented here so LAT isn't derailed re-discovering them.
 
-### 1.1 No path exists to approve a second (`PendingApproval`) user
+### 1.1 ~~No path exists to approve a second (`PendingApproval`) user~~ — RESOLVED (Phase 9.5)
 
 When anyone other than an organization's first user signs in, they are auto-provisioned as
 `role: Member, status: PendingApproval` (`packages/database/src/onboarding.ts`) and denied
-all API access (`TenantContextGuard` throws `403 Account pending approval`). **There is no
-API endpoint and no web UI screen anywhere in the codebase that transitions a user from
-`PendingApproval` to `Active`.** ADR-0012 itself flags this as a known, deferred UX gap
-("an approval inbox/screen for Admins... doesn't exist yet").
+all API access (`TenantContextGuard` throws `403 Account pending approval`). Previously
+there was no API endpoint or web UI screen anywhere that transitioned a user from
+`PendingApproval` to `Active` — ADR-0012 itself flagged this as a known, deferred UX gap.
 
-**Workaround for LAT**: to test with a second user, manually promote them via Prisma
-Studio or direct SQL after their first sign-in creates the row:
+**Fixed in Phase 9.5**: an Admin-only `/dashboard/users` page (`apps/api/src/users/` +
+`GET/PATCH /organizations/:id/users`) lists every user and lets an Admin Approve or
+Reject a `PendingApproval` user. "Reject" reuses the existing `UserStatus.Deactivated`
+value — no schema change, no new ADR. To test with a second user: sign the second person
+in once (creates the `PendingApproval` row), then have an Admin approve them from
+`/dashboard/users`. The direct-SQL route below still works as a fallback if you need to
+approve a user without going through the UI for some reason:
 ```sql
 UPDATE "User" SET status = 'Active' WHERE email = 'second-user@yourtenant.onmicrosoft.com';
 ```
-Test multi-user scenarios (role permissions, assignment, audit "actor") with this
-workaround. Track it as a real product gap, not a LAT blocker to route around silently.
 
-### 1.2 No web UI exists for SharePoint site discovery or approval
+### 1.2 ~~No web UI exists for SharePoint site discovery or approval~~ — RESOLVED (Phase 9.5)
 
-`apps/web`'s nav (`apps/web/src/app/dashboard/layout.tsx`) has exactly four links:
-Overview, Documents, Scans, Governance. There is no "Sites" page. The web app only ever
-*reads* `GET /organizations/:id/sharepoint-sites` (to populate a filter dropdown on the
-Documents page) — it never calls `POST .../discover-sites` or `PATCH .../approve`. Since
-**no site can ever be scanned until an Admin explicitly approves it** (ADR-0014, enforced
-in `apps/worker`'s collector), this is not optional groundwork — every downstream test in
-this plan depends on it.
+`apps/web`'s nav previously had exactly four links (Overview, Documents, Scans,
+Governance) with no "Sites" page — the web app only ever *read* site data, never called
+`POST .../discover-sites` or `PATCH .../approve`. Since **no site can ever be scanned
+until an Admin explicitly approves it** (ADR-0014, enforced in `apps/worker`'s collector),
+this blocked the entire golden path through the UI.
 
-**Workaround for LAT**: discovery and approval must be driven directly against the API
-(curl, Postman, or an `.http` file) as an Admin-role user's bearer token:
-```
-POST /organizations/{orgId}/microsoft-tenants/{tenantId}/discover-sites
-GET  /organizations/{orgId}/sharepoint-sites
-PATCH /organizations/{orgId}/sharepoint-sites/{siteId}/approve
-```
-Getting a token: sign into `apps/web` once, open browser devtools → Application →
-Session Storage, and copy the MSAL-cached id token; or acquire one via a small MSAL
-node/curl script against your test app registration.
+**Fixed in Phase 9.5**: an Admin-only `/dashboard/sharepoint` page discovers sites
+(`POST /organizations/:id/discover-sites` — a new, minimal auto-resolve-the-tenant
+convenience endpoint added alongside the existing per-tenant discovery route, matching
+`ScansService.triggerScanForOrganization`'s exact precedent), lists them with an
+approved/pending filter, and approves/revokes with one click. The underlying
+per-tenant API routes (`.../microsoft-tenants/:tenantId/discover-sites`,
+`.../sharepoint-sites/:siteId/approve|revoke`) are unchanged — still usable directly via
+curl/Postman if you want to test the API layer in isolation from the UI.
 
 ### 1.3 `ReviewStatus` always fails, and "Healthy" is currently unreachable
 
@@ -70,33 +68,40 @@ report this as a scoring bug during LAT — verify the *math* is internally cons
 (every non-ReviewStatus criterion scoring correctly, composite correctly weighted) rather
 than expecting to see a `Healthy` document.
 
-### 1.4 A worker crash mid-scan permanently wedges that tenant's scanning
+### 1.4 A worker crash mid-scan permanently wedges that tenant's scanning — MITIGATED (Phase 9.5)
 
 `ScanJob.status` is set to `Running` at the top of `DocumentCollectorProcessor.process()`
 and only ever transitions to `Completed`/`Failed` at the *end* of a successful run.
 BullMQ's own stalled-job detection will eventually mark the underlying job execution as
 failed if the worker process dies mid-job, but `@OnWorkerEvent('failed')` only **logs** —
-nothing updates the `ScanJob` row. Since both the manual-trigger guard
+nothing updated the `ScanJob` row. Since both the manual-trigger guard
 (`ScansService.triggerScan`) and the scheduler's guard check for
-`status: { in: ['Queued', 'Running'] }`, a `ScanJob` stuck at `Running` **permanently
-blocks every future scan** (manual or scheduled) for that Microsoft tenant.
+`status: { in: ['Queued', 'Running'] }`, a `ScanJob` stuck at `Running` used to
+**permanently block every future scan** (manual or scheduled) for that Microsoft tenant.
 
-**Workaround if hit during LAT** (this is exactly Test Case 6.4 below — deliberately
-trigger it):
-```sql
-UPDATE "ScanJob" SET status = 'Failed', "completedAt" = now(), "errorSummary" = 'Manually recovered after worker crash (LAT)' WHERE id = '...';
-```
+**Mitigated in Phase 9.5**: `StaleScanRecoveryService` (`apps/worker/src/queue/`) runs
+once at every worker boot and marks any `ScanJob` still `status: 'Running'` with a
+`startedAt` more than **2 hours** in the past as `Failed`
+(`recoverStaleScanJobs`, `packages/database/src/scan-recovery.ts`). This is
+startup-triggered reconciliation, not a live watchdog — see
+`docs/architecture/operations.md`'s "Stale scan recovery" section for the full reasoning
+(why startup, why 2 hours, why not a periodic sweep). Practically: **restarting
+`apps/worker` recovers a wedged tenant immediately** (Azure Container Apps does this
+automatically after a crash in production); leaving the same worker process running
+without a restart still means waiting up to 2 hours.
 
-### 1.5 The web UI does no client-side role gating
+### 1.5 The web UI does no client-side role gating — PARTIALLY RESOLVED (Phase 9.5)
 
-No component checks `user.role` before rendering a mutation control (trigger-scan button,
-scan-schedule settings, track-in-governance button — confirmed by source inspection: zero
-references to `role`/`Admin`/`GovernanceManager` in any of these components). Every button
-is visible to every authenticated user regardless of role; enforcement is 100%
-server-side (`RolesGuard` → `403`). Expect a `Member` or `GovernanceManager` user to be
-able to *click* an Admin-only action and get a raw API error — Section 5.15 (Permissions)
-tests specifically that this fails safely (no crash, a legible error), not that the
-button is hidden.
+Governance's mutation controls (`GovernanceIssueControls`, `DocumentOwnership`) were
+already correctly gated by `user.role` at the page level before this phase — that part of
+this finding was inaccurate. What was genuinely ungated: the Scans page rendered
+`TriggerScanButton` and the full `ScanScheduleSettings` edit form unconditionally,
+regardless of role. **Fixed in Phase 9.5**: both are now hidden for non-Admins (the
+schedule's read-only "Next scan" summary still shows for everyone, since `GET` was never
+role-restricted). The two new Phase 9.5 pages (`/dashboard/sharepoint`,
+`/dashboard/users`) are gated the same way from the start. Server-side `RolesGuard`
+remains the actual authorization boundary in every case — this is a UX improvement, not a
+new security boundary.
 
 ---
 
@@ -115,8 +120,11 @@ button is hidden.
   `Sites.Read.All` (application, admin-consented).
 - **`.env`**: `DATABASE_URL`, `REDIS_URL`, `ENTRA_CLIENT_ID`, `ENTRA_CLIENT_SECRET`, plus
   `apps/web`'s `NEXT_PUBLIC_*` build-time vars pointed at the same app registration.
-- **A way to issue direct API calls** for §1.2's workaround: curl, Postman, or an `.http`
-  file with a captured bearer token.
+- **A way to issue direct API calls** (curl, Postman, or an `.http` file with a captured
+  bearer token) — no longer required for the golden path (site discovery/approval and
+  user approval both have web UI as of Phase 9.5), but still useful for testing the API
+  layer in isolation, per-tenant discovery (5.4), and any of the DB-level test scenarios
+  below.
 - **A way to backdate document timestamps for realistic aging scenarios.** SharePoint's
   own web UI always sets `createdDateTime`/`lastModifiedDateTime` to "now" on
   upload/edit — there is no browser-UI way to make a freshly-uploaded test file look
@@ -195,11 +203,15 @@ test coverage overlap:
    *near*-duplicates (same content, different name/size after a re-save) that will
    **not** be flagged (by design, ADR-0005), which testers unfamiliar with the exact-match
    rule may initially read as a bug.
-3. **Scan concurrency guard interacting with a real worker crash** — §1.4 above. This is
-   the single highest-value scenario to deliberately reproduce during LAT precisely
-   because it's easy to trigger by accident (killing `apps/worker` with Ctrl+C mid-scan)
-   and easy to mistake for "the scan just takes a long time" if you don't check
-   `ScanJob.status` directly.
+3. **Scan concurrency guard interacting with a real worker crash** — §1.4 above. Still
+   the single highest-value scenario to deliberately reproduce during LAT: easy to
+   trigger by accident (killing `apps/worker` with Ctrl+C mid-scan), and now that
+   automatic recovery exists, the thing most worth verifying isn't just "did it get
+   stuck" but "did the *next worker boot* actually clear it, and only jobs old enough to
+   be safely presumed dead" — a recovery threshold that's too short would risk marking a
+   different replica's genuinely-in-progress scan as failed in a multi-replica
+   deployment (not reproducible locally with a single worker, but worth understanding
+   before trusting this in production — see `docs/architecture/operations.md`).
 4. **The scheduler's tenant-resolution ambiguity check** — an organization that connects
    a *second* `MicrosoftTenant` (however that's arranged) will cause every scheduled tick
    for that org to silently skip with a `WARN` log (`expected exactly 1 connected
@@ -257,9 +269,9 @@ cited are exact (`apps/api/src/**/*.controller.ts`).
 - *Expected*: a new `User` row, `role: Member, status: PendingApproval`. `GET /auth/me`
   succeeds (identity resolved) but every other protected route returns `403 Account
   pending approval`.
-- *Failure scenario*: **this is where §1.1 applies** — there is no way to unblock this
-  user through the product. Use the SQL workaround, then re-verify they now have normal
-  `Member` access.
+- *Recovery*: sign in as the org's Admin, open `/dashboard/users`, click Approve on the
+  pending user (§1.1) — re-verify they now have normal `Member` access. The SQL
+  workaround in §1.1 remains available as a fallback.
 
 ### 5.2 Organization onboarding
 
@@ -285,36 +297,43 @@ cited are exact (`apps/api/src/**/*.controller.ts`).
 
 ### 5.4 SharePoint discovery
 
-*(Requires the §1.2 direct-API workaround.)*
-
 **5.4.1 — Initial discovery lists real sites**
-- *Steps*: `POST /organizations/:id/microsoft-tenants/:tenantId/discover-sites` as Admin.
+- *Steps*: as Admin, click "Discover sites" on `/dashboard/sharepoint` (or, to test the
+  API layer directly: `POST /organizations/:id/discover-sites`, which auto-resolves the
+  org's one Consented tenant, or the original `POST .../microsoft-tenants/:tenantId/
+  discover-sites` if you want to pass a tenant explicitly).
 - *Expected*: every SharePoint site your Graph app-only permissions can see comes back,
-  each as `status: 'Discovered'`. Verify against the actual SharePoint admin center site
-  list — counts should match (barring OneDrive-only or restricted sites, which
-  `Sites.Read.All` may not surface — a real thing to verify, not assume).
+  each as `status: 'Discovered'`, shown in the "Pending" filter on the page. Verify
+  against the actual SharePoint admin center site list — counts should match (barring
+  OneDrive-only or restricted sites, which `Sites.Read.All` may not surface — a real
+  thing to verify, not assume).
 
-**5.4.2 — Re-running discovery never resets an already-Approved site**
-- *Steps*: approve a site (5.5.1), then call `discover-sites` again.
-- *Expected*: the previously-Approved site comes back in the response still `Approved`
-  (`existingByGraphSiteId` short-circuits — it's never re-created or reset to
-  `Discovered`).
+**5.4.2 — Re-running discovery (Refresh) never resets an already-Approved site**
+- *Steps*: approve a site (5.5.1), then click "Refresh discovery" again.
+- *Expected*: the previously-Approved site still shows `Approved` in the "Approved"
+  filter (`existingByGraphSiteId` short-circuits server-side — it's never re-created or
+  reset to `Discovered`).
 - *Failure scenario*: a site removed upstream in SharePoint entirely should simply stop
-  appearing in the discovery response — it is **not** auto-marked `Removed`; verify this
-  matches actual behavior (`discoverSites` only ever adds, never prunes) — a genuine gap
-  to note if it surprises you, not a bug to "fix" during LAT.
+  appearing after a refresh — it is **not** auto-marked `Removed`; verify this matches
+  actual behavior (`discoverSites` only ever adds, never prunes) — a genuine gap to note
+  if it surprises you, not a bug to "fix" during LAT.
 
 ### 5.5 Site approval
 
 **5.5.1 — Approve a Discovered site**
-- *Steps*: `PATCH /organizations/:id/sharepoint-sites/:siteId/approve` as Admin.
-- *Expected*: `status: 'Approved'`, `approvedAt`/`approvedByUserId` set. Trigger a scan
-  next (5.6) — only this site's documents are collected.
-- *Failure scenarios*: attempt as a `Member` or `GovernanceManager` → `403` (Admin-only,
-  §1.5 applies — the web UI has no button for this anyway per §1.2).
+- *Steps*: as Admin, click "Approve" on a Pending site on `/dashboard/sharepoint` (or
+  `PATCH /organizations/:id/sharepoint-sites/:siteId/approve` directly).
+- *Expected*: `status: 'Approved'`, `approvedAt`/`approvedByUserId` set, the site now
+  shows under the "Approved" filter. Trigger a scan next (5.6) — only this site's
+  documents are collected.
+- *Failure scenarios*: attempt as a `Member` or `GovernanceManager` → the Approve control
+  doesn't render at all (§1.5) — confirm by also calling the API directly as that role
+  and confirming `403`, since the missing button alone doesn't prove the server-side
+  guard is what's actually stopping them.
 
 **5.5.2 — Revoke an Approved site**
-- *Steps*: `PATCH .../sharepoint-sites/:siteId/revoke`.
+- *Steps*: as Admin, click "Revoke" on an Approved site on `/dashboard/sharepoint` (or
+  `PATCH .../sharepoint-sites/:siteId/revoke` directly).
 - *Expected*: `status: 'Removed'`. Trigger a new scan — this site is no longer
   enumerated. Its previously-collected `Document` rows are **not** deleted or marked
   `Removed` themselves (only the *site* status changes) — verify this distinction:
@@ -332,10 +351,12 @@ cited are exact (`apps/api/src/**/*.controller.ts`).
   org with more than one → `409` (must pass `microsoftTenantId` explicitly).
 
 **5.6.2 — Non-Admin cannot trigger a scan**
-- *Steps*: as `Member`/`GovernanceManager`, `POST .../scans`.
-- *Expected*: `403`. Per §1.5, the web UI's "Trigger Scan" button is visible regardless —
-  confirm clicking it as a non-Admin produces a legible in-app error, not a silent no-op
-  or an unhandled exception in the browser console.
+- *Steps*: as `Member`/`GovernanceManager`, visit `/dashboard/scans`, then separately call
+  `POST .../scans` directly.
+- *Expected*: the "Start scan" button and the schedule's edit form are both **hidden**
+  for these roles (Phase 9.5, §1.5) — only the read-only "Next scan" line shows. The
+  direct API call still returns `403`, confirming the server-side guard is the real
+  boundary and the UI hiding is just the improved presentation of it.
 
 ### 5.7 Scheduled scans
 
@@ -538,10 +559,14 @@ Verify each cell (✅ = allowed, ❌ = `403`):
 | Trigger/schedule scans | ✅ | ❌ | ❌ |
 | Create/update governance issue, assign/remove owner | ✅ | ✅ | ❌ |
 | View documents/scans/health/trends/governance/analytics (all `GET`s) | ✅ | ✅ | ✅ |
+| Manage users (approve/reject) | ✅ | ❌ | ❌ |
 
-- *Failure scenarios*: per §1.5, every ❌ cell must be tested by actually clicking the
-  relevant `apps/web` control as that role (not just calling the API directly) to confirm
-  the resulting error is legible in-browser.
+- *Failure scenarios*: as of Phase 9.5 (§1.5), every ❌ cell's control is hidden entirely
+  in `apps/web` for that role, rather than visible-but-403-on-click — verify both halves
+  independently: (a) visit each page as that role and confirm the control genuinely isn't
+  rendered, not just visually disabled, and (b) call the underlying API route directly as
+  that role and confirm a real `403`, since a hidden button alone doesn't prove the
+  server-side guard is what's actually enforcing the boundary.
 
 ### 5.17 Multi-tenant isolation
 
@@ -587,11 +612,21 @@ Verify each cell (✅ = allowed, ❌ = `403`):
 - *Steps*: trigger a scan against the Medium tenant profile (long enough to have time to
   act). Mid-flight (`ScanJob.status: 'Running'`, some `sitesCompleted` > 0), kill
   `apps/worker` (`Ctrl+C` or `kill -9`).
-- *Expected*: `ScanJob` remains `status: 'Running'` forever. A new manual trigger for the
-  same tenant → `409 A scan is already in progress` — **permanently**, until manually
-  fixed. Restarting `apps/worker` does **not** self-heal this specific `ScanJob` row (it
-  isn't re-picked-up automatically once BullMQ has given up on the underlying job).
-- *Recovery*: apply the SQL from §1.4, confirm a new scan can then be triggered normally.
+- *Expected immediately after the crash*: `ScanJob` stays `status: 'Running'`. A new
+  manual trigger for the same tenant → `409 A scan is already in progress`.
+- *Expected once `apps/worker` is restarted*: `StaleScanRecoveryService` runs at boot and
+  logs either `No stale ScanJobs found at startup` (if the crashed job is younger than
+  the 2-hour threshold — expected for a LAT-scale scan) or `Recovered N stale ScanJob(s)`
+  (if it's older). **This test case as written won't observe automatic recovery within a
+  normal LAT session** unless you also manually age the row — to actually see the
+  recovery fire without waiting 2 hours, backdate the stuck job first:
+  ```sql
+  UPDATE "ScanJob" SET "startedAt" = now() - interval '3 hours' WHERE id = '...';
+  ```
+  then restart `apps/worker` and confirm it logs the recovery and flips that row to
+  `status: 'Failed'` with an `errorSummary` mentioning "Recovered automatically."
+- *Recovery*: after either path, confirm a new scan can be triggered normally for that
+  tenant.
 
 **5.19.2 — Redis unavailable**
 - *Steps*: stop the local Redis container while `apps/api` is running. Hit
@@ -626,13 +661,14 @@ Copy this into an issue tracker or check off directly in this file as you go.
 - [ ] Local Postgres + Redis running and healthy
 - [ ] `apps/api`, `apps/worker`, `apps/web` all boot cleanly, no env validation failures
 - [ ] Real M365 tenant connected, admin consent granted
-- [ ] Bearer-token workaround ready for §1.2's direct API calls
+- [ ] Bearer-token/curl setup ready for API-layer spot-checks (optional — no longer
+      required for the golden path as of Phase 9.5)
 - [ ] Empty / Small / Medium / Large tenant content profiles prepared (§3)
 
 ### Authentication (5.1)
 - [ ] 5.1.1 First sign-in bootstraps a new org, is idempotent on re-sign-in
 - [ ] 5.1.2 Invalid/expired/personal-account tokens rejected
-- [ ] 5.1.3 Second user → PendingApproval, blocked until manual DB promotion
+- [ ] 5.1.3 Second user → PendingApproval, unblocked via /dashboard/users approval
 
 ### Organization onboarding (5.2)
 - [ ] 5.2.1 Only the consent-callback route can bootstrap a new org
@@ -693,7 +729,8 @@ Copy this into an issue tracker or check off directly in this file as you go.
 - [ ] 5.15.2 Large-tenant latency measured and recorded
 
 ### Permissions (5.16)
-- [ ] 5.16.1 Full role × endpoint matrix verified, including via the actual web UI
+- [ ] 5.16.1 Full role × endpoint matrix verified, including that gated controls are
+      hidden (not just disabled) in the actual web UI for each role
 
 ### Multi-tenant isolation (5.17)
 - [ ] 5.17.1 Cross-org `:id` access rejected on every controller spot-checked
@@ -705,7 +742,7 @@ Copy this into an issue tracker or check off directly in this file as you go.
 - [ ] 5.18.3 No secret ever leaks in a response or log, even on a Graph auth failure
 
 ### Recovery scenarios (5.19)
-- [ ] 5.19.1 Worker-crash-mid-scan reproduced; confirmed permanently wedged until manual fix
+- [ ] 5.19.1 Worker-crash-mid-scan reproduced; confirmed wedged until threshold/restart, then automatic recovery verified with a backdated `startedAt`
 - [ ] 5.19.2 Redis down → degraded readiness, reads still work, mutations fail cleanly
 - [ ] 5.19.3 Postgres down → degraded readiness, clean 5xx everywhere, no leaked stack traces
 - [ ] 5.19.4 One bad site's failure doesn't abort the rest of a scan
@@ -731,15 +768,14 @@ recommendation, not an implementation task:
   scale (§5.15.2) — recommend flagging it internally as "validate response time before
   enabling for any customer with a large governance backlog," rather than gating it in
   code.
-- **Site discovery/approval and second-user approval workflows**: not really
-  "features to hide" so much as **features with no operable UI at all** (§1.1, §1.2).
-  They are already effectively hidden from any real end user by omission. The
-  recommendation is the inverse of "disable": these need a UI built (out of scope for
-  this hardening/testing phase) before any customer beyond a single-admin,
-  API-comfortable pilot could use the product end-to-end without direct database or
-  API access.
-- **Scan retry on worker crash**: given §1.4/§5.19.1, if this product goes to production
-  before that gap is addressed, whoever operates it needs a runbook entry (already
-  partially covered in `docs/architecture/operations.md`) for manually recovering a
-  wedged `ScanJob` — this isn't something to hide, but it should not be presented to a
-  customer as "self-healing" until it actually is.
+- **Site discovery/approval and second-user approval workflows**: resolved in Phase 9.5
+  (`/dashboard/sharepoint`, `/dashboard/users`) — no longer a rollout blocker. Still worth
+  a full pass through Section 5.4/5.5/5.16 before trusting these with a real customer,
+  since this is genuinely new, previously-untested-through-the-UI surface area.
+- **Scan retry on worker crash**: mitigated, not eliminated, in Phase 9.5 (§1.4/§5.19.1).
+  `StaleScanRecoveryService` only runs at worker boot and only after a 2-hour threshold —
+  it is not a live watchdog. Do not present this to a customer as "self-healing" without
+  qualification: a wedged tenant is invisible to an operator for up to 2 hours (or
+  indefinitely, if nothing ever restarts the worker), with no alert of any kind. A
+  runbook entry (`docs/architecture/operations.md`) and, longer-term, actual alerting on
+  a recovered/stuck job would close this the rest of the way.

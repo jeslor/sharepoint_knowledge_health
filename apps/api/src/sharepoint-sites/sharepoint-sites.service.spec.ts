@@ -1,4 +1,4 @@
-import { NotFoundException } from '@nestjs/common';
+import { ConflictException, NotFoundException } from '@nestjs/common';
 import { createTenantContext } from '@sph/database';
 import { listSites } from '@sph/graph-client';
 import { SharePointSitesService } from './sharepoint-sites.service';
@@ -16,7 +16,7 @@ async function* graphSites(sites: Array<{ id: string; webUrl: string; displayNam
 describe('SharePointSitesService', () => {
   const service = new SharePointSitesService();
 
-  const microsoftTenants = { findFirstById: jest.fn() };
+  const microsoftTenants = { findFirstById: jest.fn(), findMany: jest.fn() };
   const sharePointSites = {
     findMany: jest.fn(),
     create: jest.fn(),
@@ -64,6 +64,30 @@ describe('SharePointSitesService', () => {
       expect(sharePointSites.create).not.toHaveBeenCalled();
       expect(sharePointSites.updateById).not.toHaveBeenCalled();
       expect(result).toEqual([existingApproved]);
+    });
+  });
+
+  describe('discoverSitesForOrganization', () => {
+    it('resolves the org\'s single Consented tenant and delegates to discoverSites', async () => {
+      microsoftTenants.findMany.mockResolvedValue([{ id: 'tenant-1', status: 'Consented' }]);
+      const discoverSitesSpy = jest.spyOn(service, 'discoverSites').mockResolvedValue([{ id: 'site-1' } as never]);
+
+      const result = await service.discoverSitesForOrganization('org-1');
+
+      expect(discoverSitesSpy).toHaveBeenCalledWith('org-1', 'tenant-1');
+      expect(result).toEqual([{ id: 'site-1' }]);
+    });
+
+    it('throws NotFoundException when no Microsoft tenant is connected', async () => {
+      microsoftTenants.findMany.mockResolvedValue([]);
+
+      await expect(service.discoverSitesForOrganization('org-1')).rejects.toThrow(NotFoundException);
+    });
+
+    it('throws ConflictException when more than one Microsoft tenant is connected', async () => {
+      microsoftTenants.findMany.mockResolvedValue([{ id: 'tenant-1' }, { id: 'tenant-2' }]);
+
+      await expect(service.discoverSitesForOrganization('org-1')).rejects.toThrow(ConflictException);
     });
   });
 

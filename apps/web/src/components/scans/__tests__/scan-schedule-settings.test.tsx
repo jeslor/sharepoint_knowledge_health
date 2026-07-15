@@ -26,14 +26,14 @@ describe('ScanScheduleSettings', () => {
 
   it('renders a loading state while the schedule is being fetched', () => {
     mockLoading = true;
-    render(<ScanScheduleSettings />);
+    render(<ScanScheduleSettings canManage />);
 
     expect(screen.getByText('Loading schedule…')).toBeInTheDocument();
   });
 
   it('shows "Not scheduled" and an "Enable scheduling" call to action when no schedule exists yet', () => {
     mockSchedule = null;
-    render(<ScanScheduleSettings />);
+    render(<ScanScheduleSettings canManage />);
 
     expect(screen.getByText('Not scheduled')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /enable scheduling/i })).toBeInTheDocument();
@@ -49,7 +49,7 @@ describe('ScanScheduleSettings', () => {
       createdAt: '2026-07-01T00:00:00.000Z',
       updatedAt: '2026-07-01T00:00:00.000Z',
     };
-    render(<ScanScheduleSettings />);
+    render(<ScanScheduleSettings canManage />);
 
     expect(screen.getByRole('button', { name: /update schedule/i })).toBeInTheDocument();
     expect(screen.queryByText('Not scheduled')).not.toBeInTheDocument();
@@ -65,7 +65,7 @@ describe('ScanScheduleSettings', () => {
       createdAt: '2026-07-01T00:00:00.000Z',
       updatedAt: '2026-07-01T00:00:00.000Z',
     };
-    render(<ScanScheduleSettings />);
+    render(<ScanScheduleSettings canManage />);
 
     fireEvent.change(screen.getByLabelText(/frequency/i), { target: { value: 'Daily' } });
     fireEvent.click(screen.getByRole('button', { name: /update schedule/i }));
@@ -83,11 +83,28 @@ describe('ScanScheduleSettings', () => {
       createdAt: '2026-07-01T00:00:00.000Z',
       updatedAt: '2026-07-01T00:00:00.000Z',
     };
-    render(<ScanScheduleSettings />);
+    render(<ScanScheduleSettings canManage />);
 
     fireEvent.change(screen.getByLabelText(/automatic scans/i), { target: { value: 'disabled' } });
     fireEvent.click(screen.getByRole('button', { name: /update schedule/i }));
 
     expect(mockSave).toHaveBeenCalledWith({ frequency: 'Daily', enabled: false });
+  });
+
+  it('hides the edit form and shows a read-only summary when canManage is false', () => {
+    mockSchedule = {
+      id: 'schedule-1',
+      frequency: 'Weekly',
+      enabled: true,
+      nextRunAt: '2026-07-20T02:00:00.000Z',
+      lastRunAt: null,
+      createdAt: '2026-07-01T00:00:00.000Z',
+      updatedAt: '2026-07-01T00:00:00.000Z',
+    };
+    render(<ScanScheduleSettings canManage={false} />);
+
+    expect(screen.queryByRole('button', { name: /update schedule/i })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/frequency/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/enabled/i)).toBeInTheDocument();
   });
 });

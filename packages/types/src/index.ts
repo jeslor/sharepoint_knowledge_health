@@ -7,3 +7,5 @@ export * from './api/health-trends';
 export * from './api/governance';
 export * from './api/me';
 export * from './api/scan-schedule';
+export * from './api/users';
+export * from './api/sharepoint-sites';

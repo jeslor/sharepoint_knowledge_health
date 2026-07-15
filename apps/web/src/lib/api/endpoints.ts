@@ -19,10 +19,12 @@ import type {
   HealthSummaryResponse,
   HealthTrendResponse,
   MeResponse,
+  OrganizationUserResponse,
   PaginatedResponse,
   ScanComparisonResponse,
   ScanResponse,
   ScanScheduleResponse,
+  SharePointSiteResponse,
   TriggerScanRequest,
   UpdateGovernanceIssueRequest,
   UpdateScanScheduleRequest,
@@ -44,6 +46,25 @@ export interface SharePointSiteOption {
 
 export function getSharePointSites(organizationId: string, token: string): Promise<SharePointSiteOption[]> {
   return apiRequest(`/organizations/${organizationId}/sharepoint-sites`, token);
+}
+
+// Phase 9.5: the full site-management view (status/approval/timestamps) —
+// same GET as getSharePointSites above, just the complete response shape
+// instead of the narrow filter-option projection.
+export function listSharePointSites(organizationId: string, token: string): Promise<SharePointSiteResponse[]> {
+  return apiRequest(`/organizations/${organizationId}/sharepoint-sites`, token);
+}
+
+export function discoverSharePointSites(organizationId: string, token: string): Promise<SharePointSiteResponse[]> {
+  return apiRequest(`/organizations/${organizationId}/discover-sites`, token, { method: 'POST' });
+}
+
+export function approveSharePointSite(organizationId: string, siteId: string, token: string): Promise<SharePointSiteResponse> {
+  return apiRequest(`/organizations/${organizationId}/sharepoint-sites/${siteId}/approve`, token, { method: 'PATCH' });
+}
+
+export function revokeSharePointSite(organizationId: string, siteId: string, token: string): Promise<SharePointSiteResponse> {
+  return apiRequest(`/organizations/${organizationId}/sharepoint-sites/${siteId}/revoke`, token, { method: 'PATCH' });
 }
 
 function buildQueryString(query: object): string {
@@ -221,6 +242,18 @@ export function getOrganizationActivity(
 ): Promise<PaginatedResponse<GovernanceActivityResponse>> {
   const queryString = buildQueryString(query);
   return apiRequest(`/organizations/${organizationId}/governance/activity${queryString}`, token);
+}
+
+export function listOrganizationUsers(organizationId: string, token: string): Promise<OrganizationUserResponse[]> {
+  return apiRequest(`/organizations/${organizationId}/users`, token);
+}
+
+export function approveOrganizationUser(organizationId: string, userId: string, token: string): Promise<OrganizationUserResponse> {
+  return apiRequest(`/organizations/${organizationId}/users/${userId}/approve`, token, { method: 'PATCH' });
+}
+
+export function rejectOrganizationUser(organizationId: string, userId: string, token: string): Promise<OrganizationUserResponse> {
+  return apiRequest(`/organizations/${organizationId}/users/${userId}/reject`, token, { method: 'PATCH' });
 }
 
 export function getGovernanceAnalytics(

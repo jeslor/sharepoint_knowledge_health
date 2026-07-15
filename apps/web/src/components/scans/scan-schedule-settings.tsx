@@ -13,7 +13,14 @@ function formatNextRun(iso: string): string {
   });
 }
 
-export function ScanScheduleSettings(): JSX.Element {
+interface ScanScheduleSettingsProps {
+  // Scheduling mutations are Admin-only server-side (ScanScheduleController)
+  // — Phase 9.5 hides the edit form for anyone else, but the read-only
+  // "Next scan" line stays visible since GET is not role-restricted.
+  canManage: boolean;
+}
+
+export function ScanScheduleSettings({ canManage }: ScanScheduleSettingsProps): JSX.Element {
   const { schedule, loading, error, save, saving, saveError } = useScanSchedule();
   const [enabled, setEnabled] = useState(true);
   const [frequency, setFrequency] = useState<ScanScheduleFrequencyValue>('Weekly');
@@ -35,40 +42,47 @@ export function ScanScheduleSettings(): JSX.Element {
 
       {error && <p className="text-sm text-red-700">{error.message}</p>}
 
-      <div className="flex flex-wrap items-end gap-6">
-        <label className="flex flex-col text-sm text-slate-600">
-          Automatic scans
-          <select
-            className="mt-1 rounded-md border border-slate-300 px-2 py-1"
-            value={enabled ? 'enabled' : 'disabled'}
-            onChange={(event) => setEnabled(event.target.value === 'enabled')}
-          >
-            <option value="enabled">Enabled</option>
-            <option value="disabled">Disabled</option>
-          </select>
-        </label>
+      {canManage ? (
+        <div className="flex flex-wrap items-end gap-6">
+          <label className="flex flex-col text-sm text-slate-600">
+            Automatic scans
+            <select
+              className="mt-1 rounded-md border border-slate-300 px-2 py-1"
+              value={enabled ? 'enabled' : 'disabled'}
+              onChange={(event) => setEnabled(event.target.value === 'enabled')}
+            >
+              <option value="enabled">Enabled</option>
+              <option value="disabled">Disabled</option>
+            </select>
+          </label>
 
-        <label className="flex flex-col text-sm text-slate-600">
-          Frequency
-          <select
-            className="mt-1 rounded-md border border-slate-300 px-2 py-1"
-            value={frequency}
-            onChange={(event) => setFrequency(event.target.value as ScanScheduleFrequencyValue)}
-          >
-            <option value="Daily">Daily</option>
-            <option value="Weekly">Weekly</option>
-          </select>
-        </label>
+          <label className="flex flex-col text-sm text-slate-600">
+            Frequency
+            <select
+              className="mt-1 rounded-md border border-slate-300 px-2 py-1"
+              value={frequency}
+              onChange={(event) => setFrequency(event.target.value as ScanScheduleFrequencyValue)}
+            >
+              <option value="Daily">Daily</option>
+              <option value="Weekly">Weekly</option>
+            </select>
+          </label>
 
-        <button
-          type="button"
-          disabled={saving}
-          onClick={() => void save({ frequency, enabled })}
-          className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {saving ? 'Saving…' : schedule ? 'Update schedule' : 'Enable scheduling'}
-        </button>
-      </div>
+          <button
+            type="button"
+            disabled={saving}
+            onClick={() => void save({ frequency, enabled })}
+            className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {saving ? 'Saving…' : schedule ? 'Update schedule' : 'Enable scheduling'}
+          </button>
+        </div>
+      ) : (
+        <p className="text-sm text-slate-600">
+          Automatic scans: <span className="font-medium text-slate-900">{schedule?.enabled ? 'Enabled' : 'Disabled'}</span>
+          {schedule && <> ({schedule.frequency})</>}
+        </p>
+      )}
 
       {saveError && <p className="text-sm text-red-700">{saveError.message}</p>}
 

@@ -97,6 +97,48 @@ All three queue registrations (`SCAN_QUEUE` in both `apps/api` and
   (skip if a `Queued`/`Running` `ScanJob` already exists for that tenant)
   is what prevents the heartbeat itself from ever double-triggering a scan.
 
+## Stale scan recovery (Phase 9.5)
+
+Before Phase 9.5, a worker crash mid-scan left the corresponding `ScanJob` row stuck at
+`status: 'Running'` forever — `DocumentCollectorProcessor` only ever transitions a job to
+`Completed`/`Failed` at the end of its own execution, so a process that died mid-run left
+no code path to ever mark it terminal. Since both the manual-trigger guard
+(`ScansService.triggerScan`) and the scheduler's in-flight guard check for
+`status: { in: ['Queued', 'Running'] }`, this **permanently blocked every future scan**
+(manual or scheduled) for that Microsoft tenant — found during Local Acceptance Testing
+(`docs/testing/local-acceptance-testing.md` §1.4/§5.19.1).
+
+**Fix**: `StaleScanRecoveryService` (`apps/worker/src/queue/stale-scan-recovery.service.ts`,
+an `OnModuleInit` provider, same shape as `SchedulerBootstrapService`) runs once per
+worker boot and calls `recoverStaleScanJobs` (`packages/database/src/scan-recovery.ts`,
+the package's third sanctioned unscoped query, alongside `findUserByEntraIdentity` and
+`findDueScanSchedules`) to mark any `ScanJob` still `Running` with a `startedAt` more than
+**2 hours** in the past as `Failed`.
+
+**Why startup reconciliation, not a periodic sweep or a shorter timeout, and why 2 hours:**
+- Azure Container Apps (ADR-0006) automatically restarts a crashed container — a boot is
+  exactly the moment recovery is most needed, so triggering off `OnModuleInit` requires no
+  new infrastructure (no new queue, no new repeatable job) and is the simplest solution
+  that's still production-correct.
+- The threshold exists specifically to protect a **different** worker replica's
+  genuinely-in-progress scan from being marked stale by *this* replica's own restart —
+  multiple replicas share one Postgres, not one process's lifetime, so "any Running job
+  found at boot" (no threshold at all) would be unsafe under horizontal scaling. 2 hours
+  is generous enough that even a large-tenant scan (thousands of documents across many
+  sites) should comfortably finish well inside it under normal conditions.
+- The tradeoff this accepts: a wedged tenant is invisible to an operator for up to 2
+  hours (or indefinitely, if nothing ever restarts the worker) — there is no alert of any
+  kind when this fires, only a `WARN`-level log line
+  (`Recovered N stale ScanJob(s) stuck Running past 120 minutes`). Do not describe this to
+  a customer as "self-healing" without that qualification.
+
+**Runbook**: if you need to unblock a tenant faster than either an automatic worker
+restart or the 2-hour threshold allows, the same manual fix from before this phase still
+works:
+```sql
+UPDATE "ScanJob" SET status = 'Failed', "completedAt" = now(), "errorSummary" = 'Manually recovered' WHERE id = '...';
+```
+
 ## Common operational questions
 
 - **"Is a scan actually running for tenant X?"** — query `ScanJob` by
