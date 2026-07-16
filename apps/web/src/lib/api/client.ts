@@ -16,15 +16,47 @@ function apiBaseUrl(): string {
   return base;
 }
 
-export async function apiRequest<T>(path: string, token: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${apiBaseUrl()}${path}`, {
-    ...init,
-    headers: {
-      ...init?.headers,
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-  });
+// Phase 7 (LAT F2): a default request timeout so the UI never waits
+// indefinitely for a hung backend call (e.g. a Redis outage) — a default
+// parameter, not a required one, so every existing call site is unaffected
+// and inherits this without change. 20s is generous enough not to
+// false-positive against docs/architecture/operations.md's already-
+// documented large-tenant analytics latency risk, while still bounded.
+const DEFAULT_TIMEOUT_MS = 20_000;
+
+export async function apiRequest<T>(
+  path: string,
+  token: string,
+  init?: RequestInit,
+  timeoutMs: number = DEFAULT_TIMEOUT_MS,
+): Promise<T> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  let response: Response;
+  try {
+    response = await fetch(`${apiBaseUrl()}${path}`, {
+      ...init,
+      signal: controller.signal,
+      headers: {
+        ...init?.headers,
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+    });
+  } catch (error) {
+    // Translated into the same ApiError type every caller already knows
+    // how to handle (e.g. connect/finishing/page.tsx's `instanceof
+    // ApiError` check) — not a new error class, so no downstream call site
+    // needs new handling logic. status: 0 follows the common convention of
+    // "no real HTTP response was ever received."
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new ApiError(0, 'Request timed out — please check your connection and try again.');
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 
   if (!response.ok) {
     throw new ApiError(response.status, await safeErrorMessage(response));

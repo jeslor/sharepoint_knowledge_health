@@ -56,5 +56,26 @@ describe('HealthService', () => {
       expect(result.status).toBe('degraded');
       expect(result.checks).toEqual({ database: 'error', redis: 'error' });
     });
+
+    // Phase 7 (LAT F2) correction: `queue.client` resolves via BullMQ's
+    // waitUntilReady(), which is NOT bounded by the connection's
+    // maxRetriesPerRequest (confirmed by reading BullMQ's source directly —
+    // it waits for a 'ready'/'end' event, no command is sent). Manual
+    // verification against a real stopped Redis showed this hang for 21s.
+    // This test reproduces that exact shape (a queue.client that never
+    // settles) and asserts the service's own explicit timeout bounds it.
+    it('reports degraded within a bounded time when queue.client never settles (reproduces the real 21s hang)', async () => {
+      jest.useFakeTimers();
+      const neverSettlingQueue = { client: new Promise(() => {}) };
+      const timeoutBoundService = new HealthService(neverSettlingQueue as unknown as Queue);
+
+      const resultPromise = timeoutBoundService.getReadiness();
+      jest.advanceTimersByTime(3000);
+      const result = await resultPromise;
+
+      expect(result.status).toBe('degraded');
+      expect(result.checks).toEqual({ database: 'ok', redis: 'error' });
+      jest.useRealTimers();
+    });
   });
 });

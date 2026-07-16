@@ -9,7 +9,7 @@ const mockedCreateContext = createTenantContext as jest.MockedFunction<typeof cr
 
 describe('ScansService', () => {
   const microsoftTenants = { findFirstById: jest.fn(), findMany: jest.fn() };
-  const scanJobs = { create: jest.fn(), findFirstById: jest.fn(), findMany: jest.fn() };
+  const scanJobs = { create: jest.fn(), findFirstById: jest.fn(), findMany: jest.fn(), updateById: jest.fn() };
   const healthSnapshots = { findMany: jest.fn() };
   const healthScores = { findMany: jest.fn() };
   const healthIssues = { findMany: jest.fn() };
@@ -29,6 +29,7 @@ describe('ScansService', () => {
       documents,
     } as never);
     scanJobs.findMany.mockResolvedValue([]); // no scan already in flight, by default
+    queue.add.mockResolvedValue(undefined); // enqueue succeeds by default
     healthSnapshots.findMany.mockResolvedValue([]);
     healthScores.findMany.mockResolvedValue([]);
     healthIssues.findMany.mockResolvedValue([]);
@@ -66,6 +67,89 @@ describe('ScansService', () => {
       await expect(service.triggerScan('org-1', 'tenant-1', 'user-1')).rejects.toThrow(ConflictException);
       expect(scanJobs.create).not.toHaveBeenCalled();
       expect(queue.add).not.toHaveBeenCalled();
+    });
+
+    // LAT F9: a queue.add() failure (e.g. Redis unavailable) must not leave
+    // the just-created ScanJob permanently stuck at 'Queued'.
+    describe('when queue.add() fails (LAT F9)', () => {
+      it('marks the ScanJob Failed with the underlying error message, then re-throws the original error', async () => {
+        microsoftTenants.findFirstById.mockResolvedValue({ id: 'tenant-1' });
+        const scanJob = { id: 'scan-1', status: 'Queued' };
+        scanJobs.create.mockResolvedValue(scanJob);
+        const enqueueError = new Error('connect ECONNREFUSED 127.0.0.1:6379');
+        queue.add.mockRejectedValue(enqueueError);
+        scanJobs.updateById.mockResolvedValue({ ...scanJob, status: 'Failed' });
+
+        await expect(service.triggerScan('org-1', 'tenant-1', 'user-1')).rejects.toBe(enqueueError);
+
+        expect(scanJobs.updateById).toHaveBeenCalledWith('scan-1', {
+          status: 'Failed',
+          completedAt: expect.any(Date),
+          errorSummary: 'Failed to enqueue scan job: connect ECONNREFUSED 127.0.0.1:6379',
+        });
+      });
+
+      it('does not leave the ScanJob orphaned at Queued — a subsequent trigger is not blocked by it', async () => {
+        microsoftTenants.findFirstById.mockResolvedValue({ id: 'tenant-1' });
+        const scanJob = { id: 'scan-1', status: 'Queued' };
+        scanJobs.create.mockResolvedValue(scanJob);
+        queue.add.mockRejectedValue(new Error('connect ECONNREFUSED 127.0.0.1:6379'));
+        scanJobs.updateById.mockResolvedValue({ ...scanJob, status: 'Failed' });
+
+        await expect(service.triggerScan('org-1', 'tenant-1', 'user-1')).rejects.toThrow();
+
+        // The concurrency guard only blocks on Queued/Running — simulating
+        // that the compensating write already took effect (findMany no
+        // longer returns this job, matching status: 'Failed' in the DB).
+        scanJobs.findMany.mockResolvedValue([]);
+        queue.add.mockResolvedValue(undefined);
+        const secondScanJob = { id: 'scan-2', status: 'Queued' };
+        scanJobs.create.mockResolvedValue(secondScanJob);
+
+        const result = await service.triggerScan('org-1', 'tenant-1', 'user-1');
+        expect(result).toBe(secondScanJob);
+      });
+
+      it('re-throws the original enqueue error, not the compensating write error, if the compensating write also fails', async () => {
+        microsoftTenants.findFirstById.mockResolvedValue({ id: 'tenant-1' });
+        scanJobs.create.mockResolvedValue({ id: 'scan-1', status: 'Queued' });
+        const enqueueError = new Error('connect ECONNREFUSED 127.0.0.1:6379');
+        queue.add.mockRejectedValue(enqueueError);
+        scanJobs.updateById.mockRejectedValue(new Error('Postgres also unavailable'));
+
+        await expect(service.triggerScan('org-1', 'tenant-1', 'user-1')).rejects.toBe(enqueueError);
+      });
+
+      // F2 correction: ioredis's maxRetriesPerRequest turned out to be a
+      // periodic, connection-wide flush (confirmed via source), not a
+      // per-command bound — real outages measured 15-38s. queue.add() is
+      // now wrapped in an explicit deterministic timeout. This proves F9's
+      // exact behavior still holds when the failure is a timeout rather
+      // than a raw ioredis rejection — the catch block doesn't know or care
+      // which one it is.
+      it('marks the ScanJob Failed and re-throws a timeout error when queue.add() never settles within the timeout window', async () => {
+        jest.useFakeTimers();
+        microsoftTenants.findFirstById.mockResolvedValue({ id: 'tenant-1' });
+        scanJobs.create.mockResolvedValue({ id: 'scan-1', status: 'Queued' });
+        queue.add.mockReturnValue(new Promise(() => {})); // never settles
+        scanJobs.updateById.mockResolvedValue({ id: 'scan-1', status: 'Failed' });
+
+        const resultPromise = service.triggerScan('org-1', 'tenant-1', 'user-1');
+        const assertion = expect(resultPromise).rejects.toThrow('Redis enqueue timed out');
+
+        // Sync advanceTimersByTime doesn't fully flush the microtask queue
+        // between triggerScan's several awaits before reaching queue.add() —
+        // the async variant does, which is what actually settles this.
+        await jest.advanceTimersByTimeAsync(10_000);
+        await assertion;
+
+        expect(scanJobs.updateById).toHaveBeenCalledWith('scan-1', {
+          status: 'Failed',
+          completedAt: expect.any(Date),
+          errorSummary: 'Failed to enqueue scan job: Redis enqueue timed out',
+        });
+        jest.useRealTimers();
+      });
     });
   });
 

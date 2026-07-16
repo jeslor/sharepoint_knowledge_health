@@ -4,6 +4,9 @@ import type { Queue } from 'bullmq';
 import { checkDatabaseConnection } from '@sph/database';
 import { SCAN_QUEUE, type ScanJobPayload } from '@sph/types';
 import type { HealthStatus, ReadinessStatus } from '@sph/types';
+import { withTimeout } from '../common/with-timeout';
+
+const REDIS_READINESS_TIMEOUT_MS = 3000;
 
 @Injectable()
 export class HealthService {
@@ -38,7 +41,19 @@ export class HealthService {
       // doesn't declare `ping()` — `info()` is an equally real round-trip
       // command that's part of the declared interface, so this works
       // regardless of which underlying Redis client backend is configured.
-      const redis = await this.scanQueue.client;
+      //
+      // Phase 7 (LAT F2) correction: `this.scanQueue.client` resolves via
+      // BullMQ's waitUntilReady(), which waits for ioredis's 'ready'/'end'
+      // event — it never sends a command, so it is NOT bounded by the
+      // connection's maxRetriesPerRequest (confirmed by reading BullMQ's
+      // redis-connection.js directly). An earlier fix attempted to bound
+      // this by making retryStrategy give up permanently, but that broke
+      // reconnection once Redis came back (confirmed live: /health/ready
+      // kept reporting 'error' with Redis genuinely healthy again, only
+      // fixed by restarting apps/api). This explicit timeout bounds just
+      // this readiness check instead, leaving the connection's own
+      // retryStrategy at ioredis's default so it keeps self-healing.
+      const redis = await withTimeout(this.scanQueue.client, REDIS_READINESS_TIMEOUT_MS, 'Redis readiness check timed out');
       await redis.info();
       return true;
     } catch {

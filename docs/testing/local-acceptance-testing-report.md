@@ -6,18 +6,20 @@ tenant, run locally (Postgres + Redis via `docker-compose.yml`, `apps/api`/`apps
 via `pnpm dev`). Every result below is evidence-based: cross-checked directly against the dev
 database and/or live API responses, not inferred from UI appearance alone.
 
-**Overall result: Conditional pass — not yet ready for full production sign-off.**
+**Overall result: Pass, no remaining sign-off blockers.**
 The core detection/governance pipeline (scoring, scanning, governance workflow, permissions,
-tenant isolation) is solid and thoroughly verified — 17 of 19 sections passed cleanly. One
-acceptance-criteria failure (Redis-unavailable scan trigger doesn't fail gracefully, F2) remains
-the sole blocker as of this update — the critical onboarding gap originally found here (F1, no
-working entry point for a brand-new customer) was resolved by the Phase 6 "Connect Microsoft 365"
-implementation; see F1's updated entry in §2 below for the reference. For an already-provisioned,
-single-tenant deployment, the system held up well under rigorous testing with zero data-integrity
-issues found anywhere.
+tenant isolation) is solid and thoroughly verified — 17 of 19 sections passed cleanly, and both
+items that originally blocked sign-off (F1, F2) are now resolved. Two new, lower-severity findings
+(F9, F10) surfaced during F2's fix verification and are tracked below, neither blocking. For an
+already-provisioned, single-tenant deployment, the system held up well under rigorous testing with
+zero data-integrity issues found anywhere.
 
 **Update (2026-07-15, Phase 6): F1 resolved.** See F1's entry in §2 and the updated Priority 1
 remediation item.
+
+**Update (2026-07-15/16, Phase 7): F2 resolved**, after two correction rounds during manual
+verification — see F2's entry in §2 for the full story, and F9/F10 for two new findings the
+verification process itself surfaced.
 
 ---
 
@@ -83,15 +85,80 @@ extracting a cached MSAL ID token and POSTing it directly to the existing endpoi
 
 ### High
 
-**F2 — Redis-unavailable scan trigger hangs instead of failing gracefully (§5.19.2 FAIL).**
-Violates a named LAT acceptance criterion ("attempting to trigger a scan should fail gracefully,
-not hang indefinitely"). Root cause confirmed in code: `apps/api/src/app.module.ts:23-29`
-registers BullMQ with no `maxRetriesPerRequest`/`connectTimeout` override, so it runs on
-ioredis's default retry ceiling (bounded, but slow enough to feel indefinite). Compounding cause
-confirmed on the frontend: `apps/web/src/lib/api/client.ts` has no request timeout or
-`AbortController` anywhere, so the UI waits for however long the backend takes with no fallback
-to a degraded/error state — this produced the paired dashboard "stuck loading" symptom observed
-live during testing.
+**F2 — Redis-unavailable scan trigger hangs instead of failing gracefully (§5.19.2 FAIL). — RESOLVED (Phase 7 + corrective round, 2026-07-16)**
+Violated a named LAT acceptance criterion ("attempting to trigger a scan should fail gracefully,
+not hang indefinitely"). Root cause: `apps/api/src/app.module.ts`'s BullMQ registration had no
+`maxRetriesPerRequest`/`connectTimeout` override, so it ran on ioredis's default retry ceiling
+(bounded, but slow enough to feel indefinite — the frontend compounded this further, since
+`apps/web/src/lib/api/client.ts` had no request timeout at all).
+
+**Resolution, in two rounds** (both confirmed against a real stopped/restarted Redis container, not
+assumed):
+- **Round 1**: added explicit `maxRetriesPerRequest: 1`/`connectTimeout: 5000` to the BullMQ
+  connection (`apps/api/src/app.module.ts`'s `bullConnectionOptions()`), plus a default 20s request
+  timeout via `AbortController` on `apps/web/src/lib/api/client.ts`'s `apiRequest`. This correctly
+  bounded `queue.add()` (confirmed live: `500` in 45ms during an outage, down from an indefinite
+  hang) — but manual verification found `GET /health/ready` still took **21.1 seconds**. Root
+  cause: `health.service.ts`'s `checkRedisConnection()` calls `this.scanQueue.client`, which
+  resolves via BullMQ's `waitUntilReady()` — that function waits for ioredis's `'ready'`/`'end'`
+  event and never sends a command, so it isn't bounded by `maxRetriesPerRequest` at all (confirmed
+  by reading BullMQ's `redis-connection.js` source directly).
+- **Round 1 correction attempt**: added an explicit `retryStrategy` that gave up (`return null`)
+  after 2 retries, so the client would actually reach `'end'` and unblock `waitUntilReady()`. This
+  fixed the 21s hang — but manual verification of Redis *recovery* found a real regression: once
+  `retryStrategy` returns `null`, ioredis stops attempting automatic reconnection **permanently**,
+  not just for the current failed attempt. Confirmed live: after restarting Redis, `/health/ready`
+  kept reporting `redis: 'error'` and scan triggers kept failing with orphaned jobs (see F9) —
+  the connection never self-healed without restarting `apps/api`.
+- **Round 2 (final)**: reverted `retryStrategy` to ioredis's own default (infinite retry, capped
+  backoff), preserving automatic self-healing. Fixed the `/health/ready` hang at its actual source
+  instead — an explicit `Promise.race`-based timeout (`withTimeout`, 3000ms) wrapping just the
+  `this.scanQueue.client` await in `health.service.ts`, leaving the connection's own reconnection
+  behavior untouched. Confirmed live: Redis down → `/health/ready` in ~7.3s (down from 21.1s — see
+  F10 on why this is higher than the 3000ms target, not yet fully explained) and scan trigger in
+  45ms; Redis restored → scan trigger succeeded **without restarting `apps/api`**, confirming
+  self-healing works.
+
+- **Round 3 (F2 corrective fix, 2026-07-16 — closes this out)**: Round 2's `45ms` scan-trigger
+  measurement turned out not to be representative. Re-testing found genuine variance of **15s and
+  38s** on two consecutive real attempts against a stopped Redis. Root cause, confirmed by reading
+  `ioredis@5.10.1`'s actual source (`event_handler.js:170-208`): `maxRetriesPerRequest` is **not** a
+  per-command retry bound — it's a periodic, connection-wide queue flush tied to a single shared
+  `retryAttempts` counter (reset only on a successful `'ready'` event), which fires only when that
+  counter crosses a multiple of `(maxRetriesPerRequest + 1)`. A command's actual wait time depends
+  entirely on when it happens to be issued relative to the connection's own ongoing, independent
+  background retry cycle — anywhere from near-instant to several full reconnect cycles away. Also
+  confirmed separately: BullMQ's `JobsOptions` has no job-level timeout field at all — an
+  application-level timeout was the only available lever. Fix: extracted `health.service.ts`'s
+  `withTimeout` into a shared `apps/api/src/common/with-timeout.ts`, and wrapped
+  `scans.service.ts`'s `queue.add()` call with a dedicated `10_000ms` timeout (kept distinct from
+  `health.service.ts`'s `3000ms`, since the two operations have different acceptable budgets) —
+  entirely inside F9's existing try/catch, which was left completely unmodified (F9 doesn't
+  distinguish *why* enqueue failed, so a timeout is handled identically to a raw ioredis error).
+  ioredis's connection config (`maxRetriesPerRequest`/`connectTimeout`/`retryStrategy`) was
+  deliberately left unchanged from Round 2 — self-healing no longer depends on it being tuned
+  correctly, since the application-level timeout now provides the real guarantee.
+
+  **Confirmed live, 5 consecutive attempts against a real stopped Redis**: every single one landed
+  at **10.00-10.03s** (down from the prior 45ms-38s range — now genuinely deterministic, not just
+  bounded), each correctly producing `ScanJob.status: 'Failed'` with
+  `errorSummary: "Failed to enqueue scan job: Redis enqueue timed out"`, zero orphaned `Queued`/
+  `Running` rows. Redis restored → scan succeeded in `67ms` **without restarting `apps/api`**,
+  reconfirming self-healing is fully intact. One accepted, documented, narrow risk: `Promise.race`
+  doesn't cancel the losing `queue.add()` promise — confirmed via `document-collector.processor.ts`
+  that the worker has no status guard before transitioning a job to `Running`, so a very-late
+  successful enqueue could theoretically still run a scan the API already reported as failed.
+  Flagged as a candidate for future hardening, not fixed (would require a worker-side change, out
+  of this fix's scope).
+
+Implementation reference: `apps/api/src/app.module.ts` (`bullConnectionOptions`),
+`apps/api/src/common/with-timeout.ts` (shared `withTimeout` utility), `apps/api/src/health/health.service.ts`,
+`apps/api/src/scans/scans.service.ts` (`SCAN_ENQUEUE_TIMEOUT_MS`), `apps/web/src/lib/api/client.ts`
+(`apiRequest`'s `timeoutMs`). Tests: `apps/api/src/app.module.spec.ts`,
+`apps/api/src/common/with-timeout.spec.ts`, `apps/api/src/health/health.service.spec.ts`,
+`apps/api/src/scans/scans.service.spec.ts`, `apps/web/src/lib/api/__tests__/client.test.ts`.
+`apps/worker` deliberately untouched throughout (its `Worker`-hosting connection has a different,
+stricter BullMQ constraint — see the code comment in `app.module.ts`).
 
 ### Medium
 
@@ -135,6 +202,42 @@ configuration issue, not a code defect.
 single, first-time assignment was tested, never a *re*-assignment). Test-coverage gap, not a
 product issue.
 
+**F9 — A `queue.add()` failure leaves a permanently orphaned `Queued` `ScanJob` row. — RESOLVED (2026-07-16)**
+Discovered while verifying F2's fix: `ScansService.triggerScanForOrganization` creates the
+`ScanJob` row in Postgres *before* calling `queue.add()`. If `queue.add()` then fails (e.g. a Redis
+outage — now correctly fast-failing instead of hanging, thanks to F2's fix, which makes this far
+easier to trigger in practice), the request returns `500`, but the `ScanJob` row is already
+committed as `Queued` and nothing ever transitions it out of that state — no worker will ever pick
+it up, since it was never actually enqueued. Every subsequent scan-trigger attempt for that
+Microsoft tenant then hits the `409` concurrency guard indefinitely. `StaleScanRecoveryService`
+does not help — it only recovers jobs stuck at `Running` (via a 2-hour threshold), never `Queued`.
+Reproduced **four times** during F2's manual verification (both via direct API calls and via the
+dashboard UI), each requiring a manual DB update to clear before testing could continue. Distinct
+from the already-known worker-crash-mid-scan gap (`docs/architecture/operations.md`) — this one
+requires no worker crash at all, just a producer-side enqueue failure.
+
+**Resolution**: `ScansService.triggerScan` (`apps/api/src/scans/scans.service.ts`) wraps
+`queue.add()` in a try/catch. On any failure, a compensating write (not a cross-system transaction —
+Postgres and Redis are separate systems) marks the same `ScanJob` row `Failed` with
+`completedAt`/`errorSummary` set, reusing the exact shape `recoverStaleScanJobs`
+(`packages/database/src/scan-recovery.ts`) already established for the same class of problem, then
+re-throws the original error so the caller-visible `500` behavior is unchanged. No schema change, no
+new status value (`Failed` already existed). Confirmed live, repeatedly, during F2's corrective round
+(5 consecutive Redis-down attempts): every failed enqueue correctly produced `status: 'Failed'`,
+a legible `errorSummary`, and zero orphaned `Queued`/`Running` rows — a subsequent scan trigger was
+never blocked. Tests: `apps/api/src/scans/scans.service.spec.ts`.
+
+**F10 — `/health/ready`'s Redis check takes ~7.3s during an outage, not the ~3s its own explicit
+timeout should bound it to.** `health.service.ts`'s new `withTimeout(this.scanQueue.client, 3000)`
+(added as part of F2's fix) should reject at ~3000ms regardless of the underlying connection
+state, but manual verification against a real stopped Redis measured 7.263s. Not yet root-caused —
+possibly the underlying TCP connection attempt itself takes longer than expected to fail in this
+environment (Docker Desktop's handling of a stopped container's port mapping may not produce an
+instant `ECONNREFUSED`, similar to what originally produced the 21.1s figure this fix improved on).
+Not blocking — still a ~3x improvement over the original 21.1s, and well within "fails fast, not
+indefinite" — but the exact number doesn't yet match the intended design and is worth a follow-up
+look.
+
 ## 3. Items fixed during this QA cycle
 
 **Missing "Re-approve" action for `Removed` SharePoint sites.** The backend (`approveSite` in
@@ -150,11 +253,14 @@ confirmed `status: Removed → Approved` with a fresh `approvedAt` timestamp.
 
 - ~~Building the real "Connect Microsoft 365" onboarding flow (F1)~~ — resolved, see F1's updated
   entry in §2.
-- Redis command timeout (backend) + fetch timeout/`AbortController` (frontend) (F2)
+- ~~Redis command timeout (backend) + fetch timeout/`AbortController` (frontend) (F2)~~ — resolved,
+  see F2's updated entry in §2.
 - `HealthScore`-on-failed-scan gating fix (F3)
 - Scan-comparison "resolved" labeling fix (F4)
 - User-approval audit trail (F5)
 - Worker error-logging stack-trace capture (F6)
+- Orphaned `Queued` `ScanJob` recovery when `queue.add()` fails (F9, newly discovered)
+- Root-causing the `/health/ready` ~7.3s-vs-3s timing gap (F10, newly discovered)
 - Live worker-crash-mid-scan reproduction (accepted as code-audited only, by explicit scoping
   choice partway through this LAT cycle)
 
@@ -171,18 +277,22 @@ confirmed `status: Removed → Approved` with a fresh `approvedAt` timestamp.
 
 ## 6. Final recommendation
 
-**Not yet ready for full production sign-off.** One item gates that now:
+**Ready for production sign-off — no remaining blockers from F1 or F2.**
 
-1. ~~F1 (onboarding)~~ — **resolved**, no longer a blocker (see §2).
-2. **F2 (Redis graceful-degradation FAIL)** should be fixed before trusting this system in any
-   environment where a transient Redis blip is a real operational possibility (i.e., production) —
-   the sole remaining sign-off blocker.
+1. ~~F1 (onboarding)~~ — **resolved** (see §2).
+2. ~~F2 (Redis graceful-degradation FAIL)~~ — **resolved** (see §2), confirmed live: fails fast
+   during an outage and self-heals automatically once Redis returns, without an `apps/api` restart.
 
-For an already-provisioned, single-tenant deployment (i.e., using the documented dev workaround to
-provision), the system is in genuinely good shape — scoring, scanning, governance, permissions,
-and tenant isolation all held up under rigorous, evidence-based testing (direct DB verification,
-not just API-response trust) with zero data-integrity issues found anywhere across 19 test
-sections and ~50+ live requests.
+Before considering this fully closed operationally, recommend addressing **F9** (orphaned `Queued`
+jobs) with reasonable urgency — F2's fix makes Redis outages fail fast, which paradoxically makes
+F9 easier to trigger in practice (a fast failure during any real Redis blip now reliably leaves a
+stuck job blocking that tenant's scans, whereas before the outage itself was rare enough this
+never surfaced). F10 (the timing gap) and F3–F8 remain lower-priority, non-blocking follow-ups.
+
+For an already-provisioned, single-tenant deployment, the system is in genuinely good shape —
+scoring, scanning, governance, permissions, and tenant isolation all held up under rigorous,
+evidence-based testing (direct DB verification, not just API-response trust) with zero
+data-integrity issues found anywhere across 19 test sections and 60+ live requests.
 
 ---
 
@@ -198,15 +308,29 @@ sections and ~50+ live requests.
 
 ## Priority 2 — Production hardening
 
-2. **Redis graceful-degradation fix (F2).** Two independent, complementary changes:
-   - Backend: set an explicit `maxRetriesPerRequest`/`connectTimeout` on the BullMQ Redis
-     connection (`apps/api/src/app.module.ts`) so a scan-trigger request fails fast with a clear
-     `5xx` instead of waiting out ioredis's default retry ceiling.
-   - Frontend: add a request timeout/`AbortController` to `apps/web/src/lib/api/client.ts` so the
-     UI falls back to a visible error/degraded state rather than indefinite loading, independent of
-     whatever the backend's own timeout ends up being.
+2. ~~**Redis graceful-degradation fix (F2).**~~ **DONE (2026-07-16, closed via a corrective round).**
+   See F2's entry in §2 for the full three-round story. The initial Phase 7 fix
+   (`maxRetriesPerRequest`/`connectTimeout` + frontend `AbortController` timeout) reduced the
+   original indefinite hang but did not provide a deterministic enqueue bound — investigation
+   found `maxRetriesPerRequest` is a periodic, connection-wide retry-cycle mechanism, not a
+   per-request timeout, so real latency still varied from `45ms` to `38s` depending on timing. The
+   corrective round added an explicit request-level timeout directly around `queue.add()`
+   (`apps/api/src/common/with-timeout.ts`, reused from the health-check fix), confirmed live across
+   5 consecutive Redis-down attempts to land consistently at `10.00-10.03s`. Self-healing (no
+   `apps/api` restart needed on Redis recovery) reconfirmed intact throughout.
+
+3. ~~**F9 — Recover orphaned `Queued` `ScanJob` rows when `queue.add()` fails.**~~ **DONE
+   (2026-07-16).** See F9's entry in §2 — a compensating write (not a cross-system transaction)
+   marks the row `Failed` on any enqueue failure, reusing `recoverStaleScanJobs`'s existing shape.
+   Confirmed live: zero orphaned rows across 5 consecutive outage attempts during F2's corrective
+   verification, no manual DB intervention needed at any point.
 
 ## Priority 3 — Future improvements (not blocking, lower urgency)
+
+10. **F10 — Root-cause why `/health/ready`'s Redis check takes ~7.3s against a real stopped Redis**
+    instead of the ~3s its explicit `withTimeout` should bound it to. Likely an environment-specific
+    TCP-connection-attempt latency (Docker Desktop's stopped-container port behavior), not yet
+    confirmed.
 
 3. **F3 — Gate `HealthScore` promotion on the scan's own success**, not just run scoring
    unconditionally regardless of collection outcome — likely needs the same `status`-determination
