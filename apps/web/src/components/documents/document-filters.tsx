@@ -1,4 +1,8 @@
 import type { SharePointSiteOption } from '@/lib/api/endpoints';
+import { CommandBar } from '@/components/ui/command-bar';
+import { Field } from '@/components/ui/field';
+import { Input } from '@/components/ui/input';
+import { Select } from '@/components/ui/select';
 
 export interface DocumentFilterValues {
   severity?: string;
@@ -15,59 +19,48 @@ interface DocumentFiltersProps {
 
 export function DocumentFilters({ values, sites, onChange }: DocumentFiltersProps): JSX.Element {
   return (
-    <div className="flex flex-wrap items-end gap-4">
-      <label className="flex flex-col text-sm text-slate-600">
-        Severity
-        <select
-          className="mt-1 rounded-md border border-slate-300 px-2 py-1"
+    <CommandBar>
+      <Field label="Severity">
+        <Select
           value={values.severity ?? ''}
-          onChange={(event) => onChange({ ...values, severity: event.target.value || undefined })}
-        >
-          <option value="">All</option>
-          <option value="RequiresReview">Critical</option>
-          <option value="NeedsAttention">Warning</option>
-        </select>
-      </label>
+          onChange={(newValue) => onChange({ ...values, severity: newValue || undefined })}
+          options={[
+            { value: '', label: 'All' },
+            { value: 'RequiresReview', label: 'Critical' },
+            { value: 'NeedsAttention', label: 'Warning' },
+          ]}
+        />
+      </Field>
 
-      <label className="flex flex-col text-sm text-slate-600">
-        Site
-        <select
-          className="mt-1 rounded-md border border-slate-300 px-2 py-1"
+      <Field label="Site">
+        <Select
           value={values.siteId ?? ''}
-          onChange={(event) => onChange({ ...values, siteId: event.target.value || undefined })}
-        >
-          <option value="">All sites</option>
-          {sites.map((site) => (
-            <option key={site.id} value={site.id}>
-              {site.displayName}
-            </option>
-          ))}
-        </select>
-      </label>
+          onChange={(newValue) => onChange({ ...values, siteId: newValue || undefined })}
+          options={[{ value: '', label: 'All sites' }, ...sites.map((site) => ({ value: site.id, label: site.displayName }))]}
+        />
+      </Field>
 
-      <label className="flex flex-col text-sm text-slate-600">
-        Min score
-        <input
+      <Field label="Min score">
+        <Input
           type="number"
           min={0}
           max={100}
-          className="mt-1 w-24 rounded-md border border-slate-300 px-2 py-1"
+          className="w-24"
           value={values.minScore ?? ''}
           onChange={(event) => onChange({ ...values, minScore: event.target.value ? Number(event.target.value) : undefined })}
         />
-      </label>
+      </Field>
 
-      <label className="flex flex-col text-sm text-slate-600">
-        Max score
-        <input
+      <Field label="Max score">
+        <Input
           type="number"
           min={0}
           max={100}
-          className="mt-1 w-24 rounded-md border border-slate-300 px-2 py-1"
+          className="w-24"
           value={values.maxScore ?? ''}
           onChange={(event) => onChange({ ...values, maxScore: event.target.value ? Number(event.target.value) : undefined })}
         />
-      </label>
-    </div>
+      </Field>
+    </CommandBar>
   );
 }

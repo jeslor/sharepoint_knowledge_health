@@ -21,10 +21,12 @@ describe('AnalyticsFilters', () => {
       />,
     );
 
-    fireEvent.change(screen.getByLabelText(/status/i), { target: { value: 'Open' } });
+    fireEvent.click(screen.getByRole('combobox', { name: /status/i }));
+    fireEvent.click(screen.getByRole('option', { name: 'Open' }));
     expect(onChange).toHaveBeenCalledWith({ status: 'Open' });
 
-    fireEvent.change(screen.getByLabelText(/assigned to/i), { target: { value: 'user-1' } });
+    fireEvent.click(screen.getByRole('combobox', { name: /assigned to/i }));
+    fireEvent.click(screen.getByRole('option', { name: 'Sarah' }));
     expect(onChange).toHaveBeenCalledWith({ assignedUserId: 'user-1' });
   });
 
@@ -35,5 +37,15 @@ describe('AnalyticsFilters', () => {
     fireEvent.change(screen.getByLabelText(/^to$/i), { target: { value: '' } });
 
     expect(onChange).toHaveBeenCalledWith({ until: undefined });
+  });
+
+  it('clears the status filter back to undefined when reset to the "All" option', () => {
+    const onChange = jest.fn();
+    render(<AnalyticsFilters values={{ status: 'Open' }} assignableUsers={[]} onChange={onChange} />);
+
+    fireEvent.click(screen.getByRole('combobox', { name: /status/i }));
+    fireEvent.click(screen.getByRole('option', { name: 'All' }));
+
+    expect(onChange).toHaveBeenCalledWith({ status: undefined });
   });
 });

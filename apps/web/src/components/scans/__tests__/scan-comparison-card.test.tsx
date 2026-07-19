@@ -33,13 +33,13 @@ describe('ScanComparisonCard', () => {
     render(<ScanComparisonCard comparison={comparison} />);
 
     const scoreChange = screen.getByText('▲ +12');
-    expect(scoreChange).toHaveClass('text-emerald-600');
+    expect(scoreChange).toHaveClass('text-green-600');
 
     const criticalChange = screen.getByText('▲ +3');
     expect(criticalChange).toHaveClass('text-red-600');
 
     const warningChange = screen.getByText('▼ -2');
-    expect(warningChange).toHaveClass('text-emerald-600');
+    expect(warningChange).toHaveClass('text-green-600');
   });
 
   it('renders newly introduced and resolved issues with document names and severities', () => {

@@ -2,6 +2,10 @@
 
 import { useState } from 'react';
 import type { GovernanceIssueResponse, GovernanceIssueStatusValue, UpdateGovernanceIssueRequest } from '@sph/types';
+import { Button } from '@/components/ui/button';
+import { Card } from '@/components/ui/card';
+import { Field } from '@/components/ui/field';
+import { Select } from '@/components/ui/select';
 
 // ADR-0016 §4.5, confirmed on Phase 8B review: the same strict 3-edge
 // cycle the API enforces — one legal "next" status per current status.
@@ -23,63 +27,50 @@ export function GovernanceIssueControls({ issue, assignableUsers, canManage, onU
   const [notes, setNotes] = useState(issue.resolutionNotes ?? '');
 
   if (!canManage) {
-    return (
-      <div className="rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-600">
-        Only an Admin or Governance Manager can update this issue.
-      </div>
-    );
+    return <Card className="text-sm text-slate-600">Only an Admin or Governance Manager can update this issue.</Card>;
   }
 
   const next = NEXT_STATUS[issue.status];
 
   return (
-    <div className="space-y-4 rounded-lg border border-slate-200 bg-white p-4">
+    <Card className="space-y-4">
       <div className="flex flex-wrap items-end gap-4">
         {next && (
-          <button
-            type="button"
-            disabled={saving}
-            onClick={() => void onUpdate({ status: next.status })}
-            className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
-          >
+          <Button disabled={saving} onClick={() => void onUpdate({ status: next.status })}>
             {saving ? 'Saving…' : next.label}
-          </button>
+          </Button>
         )}
 
-        <label className="flex flex-col text-sm text-slate-600">
-          Assigned to
-          <select
-            className="mt-1 rounded-md border border-slate-300 px-2 py-1"
+        <Field label="Assigned to">
+          <Select
             value={issue.assignedUserId ?? ''}
             disabled={saving}
-            onChange={(event) => void onUpdate({ assignedUserId: event.target.value || null })}
-          >
-            <option value="">Unassigned</option>
-            {assignableUsers.map((user) => (
-              <option key={user.id} value={user.id}>
-                {user.displayName}
-              </option>
-            ))}
-          </select>
-        </label>
+            onChange={(newValue) => void onUpdate({ assignedUserId: newValue || null })}
+            options={[
+              { value: '', label: 'Unassigned' },
+              ...assignableUsers.map((user) => ({ value: user.id, label: user.displayName })),
+            ]}
+          />
+        </Field>
       </div>
 
       <label className="flex flex-col text-sm text-slate-600">
         Resolution notes
         <textarea
-          className="mt-1 min-h-24 rounded-md border border-slate-300 px-2 py-1"
+          className="mt-1 min-h-24 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 transition-colors duration-150 ease-premium hover:border-slate-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-600 focus-visible:ring-offset-1"
           value={notes}
           onChange={(event) => setNotes(event.target.value)}
         />
-        <button
-          type="button"
+        <Button
+          variant="secondary"
+          size="sm"
+          className="mt-2 self-start"
           disabled={saving}
           onClick={() => void onUpdate({ resolutionNotes: notes || null })}
-          className="mt-2 self-start rounded-md border border-slate-300 px-3 py-1 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
         >
           Save notes
-        </button>
+        </Button>
       </label>
-    </div>
+    </Card>
   );
 }

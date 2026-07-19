@@ -1,3 +1,5 @@
+import { Badge } from '@/components/ui/badge';
+
 // Maps the real ScanJobStatus enum (Queued | Running | Completed | Failed |
 // Cancelled — ADR-0004) to a display style. No invented status values.
 const STATUS_STYLES: Record<string, string> = {
@@ -12,5 +14,5 @@ export const ACTIVE_SCAN_STATUSES = new Set(['Queued', 'Running']);
 
 export function ScanStatusBadge({ status }: { status: string }): JSX.Element {
   const style = STATUS_STYLES[status] ?? 'bg-slate-100 text-slate-700';
-  return <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${style}`}>{status}</span>;
+  return <Badge className={style}>{status}</Badge>;
 }

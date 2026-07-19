@@ -3,6 +3,9 @@
 import { useState } from 'react';
 import type { AssignDocumentOwnerRequest, DocumentOwnerResponse } from '@sph/types';
 import { EmptyState } from '@/components/ui/query-state';
+import { Button } from '@/components/ui/button';
+import { Field } from '@/components/ui/field';
+import { Input } from '@/components/ui/input';
 
 interface DocumentOwnershipProps {
   owners: DocumentOwnerResponse[];
@@ -39,14 +42,15 @@ export function DocumentOwnership({ owners, canManage, onAssign, onRemove, savin
                 </span>
               </div>
               {canManage && owner.source === 'ManualAssignment' && (
-                <button
-                  type="button"
+                <Button
+                  variant="ghost"
+                  size="sm"
                   disabled={saving}
                   onClick={() => void onRemove(owner.id)}
-                  className="text-xs font-medium text-red-700 hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+                  className="text-red-700 hover:bg-red-50 hover:underline"
                 >
                   Remove
-                </button>
+                </Button>
               )}
             </li>
           ))}
@@ -55,32 +59,15 @@ export function DocumentOwnership({ owners, canManage, onAssign, onRemove, savin
 
       {canManage && (
         <div className="flex flex-wrap items-end gap-3 rounded-lg border border-slate-200 bg-white p-3">
-          <label className="flex flex-col text-sm text-slate-600">
-            Name
-            <input
-              type="text"
-              className="mt-1 rounded-md border border-slate-300 px-2 py-1"
-              value={displayName}
-              onChange={(event) => setDisplayName(event.target.value)}
-            />
-          </label>
-          <label className="flex flex-col text-sm text-slate-600">
-            Email
-            <input
-              type="email"
-              className="mt-1 rounded-md border border-slate-300 px-2 py-1"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-            />
-          </label>
-          <button
-            type="button"
-            disabled={saving || (!displayName && !email)}
-            onClick={handleAssign}
-            className="rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
-          >
+          <Field label="Name">
+            <Input type="text" value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
+          </Field>
+          <Field label="Email">
+            <Input type="email" value={email} onChange={(event) => setEmail(event.target.value)} />
+          </Field>
+          <Button size="sm" disabled={saving || (!displayName && !email)} onClick={handleAssign}>
             {saving ? 'Saving…' : 'Assign owner'}
-          </button>
+          </Button>
         </div>
       )}
     </div>

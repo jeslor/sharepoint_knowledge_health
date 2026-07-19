@@ -8,7 +8,7 @@ function formatChange(value: number | null, higherIsBetter: boolean): { text: st
   const isImprovement = higherIsBetter ? value > 0 : value < 0;
   const arrow = value > 0 ? '▲' : '▼';
   const signed = value > 0 ? `+${value}` : String(value);
-  return { text: `${arrow} ${signed}`, className: isImprovement ? 'text-emerald-600' : 'text-red-600' };
+  return { text: `${arrow} ${signed}`, className: isImprovement ? 'text-green-600' : 'text-red-600' };
 }
 
 function ChangeStat({ label, value, higherIsBetter }: { label: string; value: number | null; higherIsBetter: boolean }): JSX.Element {

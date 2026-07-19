@@ -3,6 +3,7 @@
 import { useCurrentUser } from '@/lib/auth/current-user-context';
 import { useOrganizationUsers } from '@/lib/api/hooks/use-organization-users';
 import { UserList } from '@/components/users/user-list';
+import { PageHeader } from '@/components/ui/page-header';
 import { ErrorState, LoadingState } from '@/components/ui/query-state';
 
 export default function UsersPage(): JSX.Element {
@@ -19,7 +20,7 @@ export default function UsersPage(): JSX.Element {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-semibold text-slate-900">Users</h1>
+      <PageHeader title="Users" />
 
       {mutateError && <p className="text-sm text-red-700">{mutateError.message}</p>}
 

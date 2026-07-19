@@ -7,6 +7,7 @@ import { AnalyticsBarChart } from '@/components/governance/analytics-bar-chart';
 import { AnalyticsFilters, type AnalyticsFilterValues } from '@/components/governance/analytics-filters';
 import { ExecutiveSummaryCards } from '@/components/governance/executive-summary-cards';
 import { TrendChart } from '@/components/dashboard/trend-chart';
+import { PageHeader } from '@/components/ui/page-header';
 import { LoadingState, ErrorState } from '@/components/ui/query-state';
 import { useAssignableUsers } from '@/lib/api/hooks/use-assignable-users';
 import { useGovernanceAnalytics } from '@/lib/api/hooks/use-governance-analytics';
@@ -45,7 +46,7 @@ function GovernanceAnalyticsContent(): JSX.Element {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-semibold text-slate-900">Governance analytics</h1>
+      <PageHeader title="Governance analytics" />
 
       {summaryLoading && <LoadingState label="Loading summary…" />}
       {summaryError && <ErrorState error={summaryError} />}

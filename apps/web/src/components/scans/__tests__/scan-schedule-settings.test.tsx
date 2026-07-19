@@ -67,7 +67,8 @@ describe('ScanScheduleSettings', () => {
     };
     render(<ScanScheduleSettings canManage />);
 
-    fireEvent.change(screen.getByLabelText(/frequency/i), { target: { value: 'Daily' } });
+    fireEvent.click(screen.getByRole('combobox', { name: /frequency/i }));
+    fireEvent.click(screen.getByRole('option', { name: 'Daily' }));
     fireEvent.click(screen.getByRole('button', { name: /update schedule/i }));
 
     expect(mockSave).toHaveBeenCalledWith({ frequency: 'Daily', enabled: true });
@@ -85,7 +86,8 @@ describe('ScanScheduleSettings', () => {
     };
     render(<ScanScheduleSettings canManage />);
 
-    fireEvent.change(screen.getByLabelText(/automatic scans/i), { target: { value: 'disabled' } });
+    fireEvent.click(screen.getByRole('combobox', { name: /automatic scans/i }));
+    fireEvent.click(screen.getByRole('option', { name: 'Disabled' }));
     fireEvent.click(screen.getByRole('button', { name: /update schedule/i }));
 
     expect(mockSave).toHaveBeenCalledWith({ frequency: 'Daily', enabled: false });

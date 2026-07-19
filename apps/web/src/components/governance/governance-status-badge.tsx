@@ -1,3 +1,5 @@
+import { Badge } from '@/components/ui/badge';
+
 // Maps the real GovernanceIssueStatus enum (Open | InProgress | Resolved —
 // ADR-0016 §4.5, confirmed as a strict 3-state workflow) to a display style.
 const STATUS_STYLES: Record<string, string> = {
@@ -15,5 +17,5 @@ const STATUS_LABELS: Record<string, string> = {
 export function GovernanceStatusBadge({ status }: { status: string }): JSX.Element {
   const style = STATUS_STYLES[status] ?? 'bg-slate-100 text-slate-700';
   const label = STATUS_LABELS[status] ?? status;
-  return <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${style}`}>{label}</span>;
+  return <Badge className={style}>{label}</Badge>;
 }

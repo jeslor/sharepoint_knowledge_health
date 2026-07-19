@@ -43,7 +43,7 @@ export default function GovernanceIssueDetailPage({ params }: GovernanceIssueDet
     <div className="max-w-2xl space-y-6">
       <div>
         <div className="flex items-center gap-3">
-          <h1 className="text-xl font-semibold text-slate-900">{issue.documentName}</h1>
+          <h1 className="text-page-title text-slate-900">{issue.documentName}</h1>
           <GovernanceStatusBadge status={issue.status} />
         </div>
       </div>

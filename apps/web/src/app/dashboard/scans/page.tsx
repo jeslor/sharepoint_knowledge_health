@@ -6,6 +6,7 @@ import { ScanList } from '@/components/scans/scan-list';
 import { ScanScheduleSettings } from '@/components/scans/scan-schedule-settings';
 import { ACTIVE_SCAN_STATUSES } from '@/components/scans/scan-status-badge';
 import { TriggerScanButton } from '@/components/scans/trigger-scan-button';
+import { PageHeader } from '@/components/ui/page-header';
 import { ErrorState, LoadingState } from '@/components/ui/query-state';
 import { useScans } from '@/lib/api/hooks/use-scans';
 
@@ -32,10 +33,10 @@ export default function ScansPage(): JSX.Element {
     <div className="space-y-6">
       <ScanScheduleSettings canManage={isAdmin} />
 
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold text-slate-900">Scans</h1>
-        {isAdmin && <TriggerScanButton disabled={hasActiveScan} onTriggered={refetch} />}
-      </div>
+      <PageHeader
+        title="Scans"
+        action={isAdmin && <TriggerScanButton disabled={hasActiveScan} onTriggered={refetch} />}
+      />
       {loading && <LoadingState label="Loading scans…" />}
       {error && <ErrorState error={error} />}
       {scans && <ScanList scans={scans} />}

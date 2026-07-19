@@ -32,7 +32,7 @@ export default function DocumentDetailPage({ params }: DocumentDetailPageProps):
   return (
     <div className="max-w-2xl space-y-6">
       <div>
-        <h1 className="text-xl font-semibold text-slate-900">{document.documentName}</h1>
+        <h1 className="text-page-title text-slate-900">{document.documentName}</h1>
         <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm text-slate-600">
           <dt className="font-medium text-slate-500">Location</dt>
           <dd>

@@ -9,6 +9,7 @@ import { GovernanceIssueList } from '@/components/governance/governance-issue-li
 import { GovernanceIssueFilters, type GovernanceIssueFilterValues } from '@/components/governance/governance-issue-filters';
 import { GovernanceSummaryCards } from '@/components/governance/governance-summary-cards';
 import { IssuesByType } from '@/components/governance/issues-by-type';
+import { PageHeader } from '@/components/ui/page-header';
 import { Pagination } from '@/components/ui/pagination';
 import { LoadingState, ErrorState } from '@/components/ui/query-state';
 import { useAssignableUsers } from '@/lib/api/hooks/use-assignable-users';
@@ -57,12 +58,14 @@ function GovernanceDashboardContent(): JSX.Element {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold text-slate-900">Governance</h1>
-        <Link href="/dashboard/governance/analytics" className="text-sm font-medium text-slate-900 underline">
-          View executive analytics
-        </Link>
-      </div>
+      <PageHeader
+        title="Governance"
+        action={
+          <Link href="/dashboard/governance/analytics" className="text-sm font-medium text-brand-700 hover:text-brand-800">
+            View executive analytics
+          </Link>
+        }
+      />
 
       {summaryLoading && <LoadingState label="Loading summary…" />}
       {summaryError && <ErrorState error={summaryError} />}
