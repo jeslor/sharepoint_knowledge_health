@@ -4,17 +4,31 @@ import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useIsAuthenticated, useMsal } from '@azure/msal-react';
 import { InteractionStatus } from '@azure/msal-browser';
-import type { ConsentResolution } from '@sph/types';
+import type { ConsentResolution, DiscoveryStatusValue } from '@sph/types';
 import { useAccessToken } from '@/lib/auth/use-access-token';
-import { discoverSharePointSites, postConsentCallback } from '@/lib/api/endpoints';
+import { getOnboardingStatus, postConsentCallback } from '@/lib/api/endpoints';
 import { ApiError } from '@/lib/api/client';
 import { clearConnectFlow, readConnectFlowTenantName } from '@/lib/auth/connect-flow';
 
 type FinishingState =
   | { status: 'working' }
+  | { status: 'discovering'; discoveryStatus: DiscoveryStatusValue | null }
   | { status: 'provisioned-pending' }
   | { status: 'rejected' }
   | { status: 'error'; message: string };
+
+// A bounded wait for the common case (small-to-medium tenants finish well
+// inside this), never indefinite — this page's job is to show the "we're
+// seeing your data" moment when it's fast, not to block onboarding on a
+// large tenant's discovery run. Whatever discoveryStatus is when polling
+// gives up, the dashboard/Sites page remain the durable source of truth,
+// and the existing manual "Discover sites" button is still a fallback.
+const DISCOVERY_POLL_INTERVAL_MS = 2000;
+const DISCOVERY_POLL_MAX_ATTEMPTS = 10;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /**
  * The bootstrap orchestrator (LAT report F1 / Phase 6 P1) — reached only
@@ -22,6 +36,14 @@ type FinishingState =
  * Microsoft 365" flow's second step) completes. Calls the existing,
  * unchanged POST /auth/consent-callback exactly once, then routes on the
  * response's `kind` (exhaustively — all 4 ConsentResolution values).
+ *
+ * ADR-0014 amendment / ADR-0017: discovery itself is no longer triggered
+ * from this page — the consent-callback bootstrap enqueues it server-side
+ * the moment a MicrosoftTenant transitions to Consented (a frontend-
+ * orchestrated call lived here in an earlier session; removed). This page's
+ * only remaining discovery-related job is purely reactive: poll
+ * GET .../onboarding-status and render exactly what it reports — no
+ * separate client-side progress model of its own.
  */
 export default function ConnectFinishingPage(): JSX.Element {
   const router = useRouter();
@@ -46,6 +68,24 @@ export default function ConnectFinishingPage(): JSX.Element {
       // fall back to the normal authenticated destination.
       router.replace('/dashboard');
       return;
+    }
+
+    async function pollUntilDiscoveryComplete(organizationId: string, idToken: string): Promise<void> {
+      for (let attempt = 0; attempt < DISCOVERY_POLL_MAX_ATTEMPTS; attempt += 1) {
+        let discoveryStatus: DiscoveryStatusValue | null;
+        try {
+          discoveryStatus = (await getOnboardingStatus(organizationId, idToken)).discoveryStatus;
+        } catch {
+          // A transient status-read failure doesn't block onboarding — stop
+          // polling and proceed; the dashboard/Sites page remain the
+          // durable source of truth regardless.
+          return;
+        }
+
+        if (discoveryStatus === 'Completed' || discoveryStatus === 'Failed') return;
+        setState({ status: 'discovering', discoveryStatus });
+        await sleep(DISCOVERY_POLL_INTERVAL_MS);
+      }
     }
 
     function routeOnResolution(resolution: ConsentResolution): void {
@@ -75,20 +115,12 @@ export default function ConnectFinishingPage(): JSX.Element {
         const idToken = await getAccessToken();
         const resolution = await postConsentCallback(idToken, tenantName);
 
-        // ADR-0014 §1: discovery is meant to fire automatically the moment a
-        // MicrosoftTenant transitions to Consented — 'bootstrapped' is the
-        // one resolution kind where that transition just happened (a brand
-        // new organization's first Admin, who by construction already has
-        // the Admin role the discover-sites endpoint requires). Best-effort:
-        // a transient Graph hiccup here must not turn a successful bootstrap
-        // into an error page — the Sites page's manual "Discover sites"
-        // button remains as a fallback either way.
+        // 'bootstrapped' is the one resolution kind where a MicrosoftTenant
+        // just transitioned to Consented — the moment discovery was
+        // enqueued server-side (ADR-0014 §1 / amendment).
         if (resolution.kind === 'bootstrapped') {
-          try {
-            await discoverSharePointSites(resolution.organizationId, idToken);
-          } catch {
-            // Swallowed deliberately — see comment above.
-          }
+          setState({ status: 'discovering', discoveryStatus: null });
+          await pollUntilDiscoveryComplete(resolution.organizationId, idToken);
         }
 
         routeOnResolution(resolution);
@@ -102,6 +134,16 @@ export default function ConnectFinishingPage(): JSX.Element {
       }
     })();
   }, [isAuthenticated, inProgress, router, getAccessToken]);
+
+  if (state.status === 'discovering') {
+    return (
+      <main className="flex min-h-screen flex-col items-center justify-center gap-4 bg-slate-50 p-8">
+        <p className="text-slate-600">
+          {state.discoveryStatus === 'Running' ? 'Discovering your SharePoint sites…' : 'Finishing setup…'}
+        </p>
+      </main>
+    );
+  }
 
   if (state.status === 'provisioned-pending') {
     return (
@@ -148,4 +190,3 @@ export default function ConnectFinishingPage(): JSX.Element {
     </main>
   );
 }
-

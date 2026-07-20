@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { DISCOVERY_QUEUE } from '@sph/types';
 import { SiteDiscoveryProcessor } from './site-discovery.processor';
+import { StaleDiscoveryRecoveryService } from './stale-discovery-recovery.service';
 
 @Module({
   imports: [
@@ -20,6 +21,6 @@ import { SiteDiscoveryProcessor } from './site-discovery.processor';
       },
     }),
   ],
-  providers: [SiteDiscoveryProcessor],
+  providers: [SiteDiscoveryProcessor, StaleDiscoveryRecoveryService],
 })
 export class DiscoveryModule {}

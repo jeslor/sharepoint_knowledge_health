@@ -1,6 +1,14 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { createTenantContext } from '@sph/database';
 import type { OnboardingStatusResponse } from '@sph/types';
+
+const EMPTY_STATUS: OnboardingStatusResponse = {
+  microsoftTenantStatus: null,
+  discoveryStatus: null,
+  discoveryStartedAt: null,
+  discoveryCompletedAt: null,
+  discoveryError: null,
+};
 
 /**
  * ADR-0017 (partial implementation — Phase 1b only): purely a derived read
@@ -21,9 +29,21 @@ export class OnboardingStatusService {
     // first-connected one — the same simplification already accepted
     // elsewhere for "the common case is one connected tenant per org"
     // (ScansService.triggerScanForOrganization, SharePointSitesService).
-    const [tenant] = await context.microsoftTenants.findMany({ orderBy: { createdAt: 'asc' }, take: 1 });
+    // Ordered by (createdAt, id) — id as an explicit tie-breaker, since
+    // createdAt alone is not guaranteed unique (millisecond precision) and
+    // an unordered tie would make "first" non-deterministic across calls.
+    const [tenant] = await context.microsoftTenants.findMany({
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      take: 1,
+    });
+
+    // Not a 404: an Organization with zero MicrosoftTenant rows is a real,
+    // reportable state (practically unreachable per ADR-0012's atomic
+    // bootstrap, but not an error if it somehow occurs) — Phase 1c's
+    // frontend must render purely from this response, never an HTTP status
+    // code, so "no tenant yet" is data, not an exception.
     if (!tenant) {
-      throw new NotFoundException('No Microsoft tenant found for this organization');
+      return EMPTY_STATUS;
     }
 
     return {

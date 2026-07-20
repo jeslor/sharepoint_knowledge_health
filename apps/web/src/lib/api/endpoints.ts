@@ -21,6 +21,8 @@ import type {
   HealthSummaryResponse,
   HealthTrendResponse,
   MeResponse,
+  MicrosoftTenantResponse,
+  OnboardingStatusResponse,
   OrganizationUserResponse,
   PaginatedResponse,
   ScanComparisonResponse,
@@ -66,8 +68,21 @@ export function listSharePointSites(organizationId: string, token: string): Prom
   return apiRequest(`/organizations/${organizationId}/sharepoint-sites`, token);
 }
 
-export function discoverSharePointSites(organizationId: string, token: string): Promise<SharePointSiteResponse[]> {
+// ADR-0014 amendment: enqueues onto DISCOVERY_QUEUE — apps/worker executes
+// discovery asynchronously. Returns the MicrosoftTenant reflecting the new
+// discoveryStatus (Queued, or unchanged if a discovery was already
+// in flight), never sites, which do not exist synchronously at request
+// time. Callers must read GET /organizations/:id/onboarding-status (or
+// re-list sites later) to observe the result — this call does not.
+export function discoverSharePointSites(organizationId: string, token: string): Promise<MicrosoftTenantResponse> {
   return apiRequest(`/organizations/${organizationId}/discover-sites`, token, { method: 'POST' });
+}
+
+// ADR-0017: purely derived — see OnboardingStatusResponse's own doc
+// comment. Safe to poll; every field is a cheap read, never a stored
+// progress flag on either side of the wire.
+export function getOnboardingStatus(organizationId: string, token: string): Promise<OnboardingStatusResponse> {
+  return apiRequest(`/organizations/${organizationId}/onboarding-status`, token);
 }
 
 export function approveSharePointSite(organizationId: string, siteId: string, token: string): Promise<SharePointSiteResponse> {

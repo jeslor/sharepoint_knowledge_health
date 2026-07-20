@@ -1,4 +1,3 @@
-import { NotFoundException } from '@nestjs/common';
 import { createTenantContext } from '@sph/database';
 import { OnboardingStatusService } from './onboarding-status.service';
 
@@ -27,10 +26,18 @@ describe('OnboardingStatusService (ADR-0017, Phase 1b — discovery slice only)'
     mockedCreateContext.mockReturnValue({ microsoftTenants } as never);
   });
 
-  it('throws NotFoundException when the organization has no Microsoft tenant', async () => {
+  it('returns an all-null status (not an error) when the organization has no Microsoft tenant', async () => {
     microsoftTenants.findMany.mockResolvedValue([]);
 
-    await expect(service.getStatus('org-1')).rejects.toThrow(NotFoundException);
+    const result = await service.getStatus('org-1');
+
+    expect(result).toEqual({
+      microsoftTenantStatus: null,
+      discoveryStatus: null,
+      discoveryStartedAt: null,
+      discoveryCompletedAt: null,
+      discoveryError: null,
+    });
   });
 
   it.each(['PendingConsent', 'Consented', 'Revoked'] as const)(
@@ -77,13 +84,13 @@ describe('OnboardingStatusService (ADR-0017, Phase 1b — discovery slice only)'
     expect(result.discoveryError).toBe('Graph unavailable');
   });
 
-  it('reports on the first-connected Microsoft tenant when more than one exists', async () => {
+  it('reports on the first-connected Microsoft tenant when more than one exists, with a deterministic (createdAt, id) tie-breaker', async () => {
     microsoftTenants.findMany.mockResolvedValue([tenant({ id: 'tenant-1', discoveryStatus: 'Completed' })]);
 
     await service.getStatus('org-1');
 
     expect(microsoftTenants.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ orderBy: { createdAt: 'asc' }, take: 1 }),
+      expect.objectContaining({ orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], take: 1 }),
     );
   });
 });
