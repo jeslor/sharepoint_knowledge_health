@@ -7,6 +7,7 @@ import { ActivityList } from '@/components/governance/activity-list';
 import { GovernanceIssueControls } from '@/components/governance/governance-issue-controls';
 import { GovernanceStatusBadge } from '@/components/governance/governance-status-badge';
 import { ErrorState, LoadingState } from '@/components/ui/query-state';
+import { Tabs } from '@/components/ui/tabs';
 import { useAssignableUsers } from '@/lib/api/hooks/use-assignable-users';
 import { useGovernanceIssue } from '@/lib/api/hooks/use-governance-issue';
 import { useIssueActivity } from '@/lib/api/hooks/use-issue-activity';
@@ -48,22 +49,14 @@ export default function GovernanceIssueDetailPage({ params }: GovernanceIssueDet
         </div>
       </div>
 
-      <div className="flex gap-4 border-b border-slate-200 text-sm font-medium">
-        <button
-          type="button"
-          onClick={() => setTab('details')}
-          className={`-mb-px border-b-2 px-1 pb-2 ${tab === 'details' ? 'border-slate-900 text-slate-900' : 'border-transparent text-slate-500'}`}
-        >
-          Details
-        </button>
-        <button
-          type="button"
-          onClick={() => setTab('activity')}
-          className={`-mb-px border-b-2 px-1 pb-2 ${tab === 'activity' ? 'border-slate-900 text-slate-900' : 'border-transparent text-slate-500'}`}
-        >
-          Activity
-        </button>
-      </div>
+      <Tabs
+        tabs={[
+          { id: 'details', label: 'Details' },
+          { id: 'activity', label: 'Activity' },
+        ]}
+        activeId={tab}
+        onChange={(id) => setTab(id as Tab)}
+      />
 
       {tab === 'details' ? (
         <>
@@ -90,7 +83,7 @@ export default function GovernanceIssueDetailPage({ params }: GovernanceIssueDet
             )}
           </dl>
           {issue.resolutionNotes && (
-            <p className="mt-2 rounded-md bg-slate-50 p-3 text-sm text-slate-700">{issue.resolutionNotes}</p>
+            <p className="mt-2 rounded-lg bg-slate-50 p-3 text-sm text-slate-700">{issue.resolutionNotes}</p>
           )}
 
           <div className="mt-6">
@@ -104,7 +97,10 @@ export default function GovernanceIssueDetailPage({ params }: GovernanceIssueDet
             {updateError && <ErrorState error={updateError} />}
           </div>
 
-          <Link href={`/dashboard/documents/${issue.documentId}`} className="mt-4 block text-sm font-medium text-slate-900 underline">
+          <Link
+            href={`/dashboard/documents/${issue.documentId}`}
+            className="mt-4 block text-body-strong text-brand-600 transition-colors duration-150 ease-premium hover:text-brand-700 hover:underline"
+          >
             View document details and historical scans
           </Link>
         </>

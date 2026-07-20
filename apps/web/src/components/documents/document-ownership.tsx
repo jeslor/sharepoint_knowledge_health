@@ -4,6 +4,7 @@ import { useState } from 'react';
 import type { AssignDocumentOwnerRequest, DocumentOwnerResponse } from '@sph/types';
 import { EmptyState } from '@/components/ui/query-state';
 import { Button } from '@/components/ui/button';
+import { CommandBar } from '@/components/ui/command-bar';
 import { Field } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 
@@ -34,7 +35,7 @@ export function DocumentOwnership({ owners, canManage, onAssign, onRemove, savin
       ) : (
         <ul className="space-y-2">
           {owners.map((owner) => (
-            <li key={owner.id} className="flex items-center justify-between rounded-md border border-slate-200 p-3 text-sm">
+            <li key={owner.id} className="flex items-center justify-between rounded-lg border border-slate-200/60 p-3 text-sm">
               <div>
                 <span className="font-medium text-slate-900">{owner.displayName ?? owner.email ?? 'Unknown'}</span>{' '}
                 <span className="text-xs text-slate-500">
@@ -58,7 +59,7 @@ export function DocumentOwnership({ owners, canManage, onAssign, onRemove, savin
       )}
 
       {canManage && (
-        <div className="flex flex-wrap items-end gap-3 rounded-lg border border-slate-200 bg-white p-3">
+        <CommandBar>
           <Field label="Name">
             <Input type="text" value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
           </Field>
@@ -68,7 +69,7 @@ export function DocumentOwnership({ owners, canManage, onAssign, onRemove, savin
           <Button size="sm" disabled={saving || (!displayName && !email)} onClick={handleAssign}>
             {saving ? 'Saving…' : 'Assign owner'}
           </Button>
-        </div>
+        </CommandBar>
       )}
     </div>
   );

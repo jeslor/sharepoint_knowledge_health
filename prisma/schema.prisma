@@ -52,6 +52,17 @@ enum MicrosoftTenantStatus {
   Revoked
 }
 
+// ADR-0014 amendment (2026-07-20): the current discovery job's state only —
+// not history, not an audit trail (see ADR-0019 for that). Overwritten by
+// each new discovery run.
+enum DiscoveryStatus {
+  NotStarted
+  Queued
+  Running
+  Completed
+  Failed
+}
+
 enum DocumentStatus {
   Active
   Removed
@@ -216,6 +227,12 @@ model MicrosoftTenant {
   status                 MicrosoftTenantStatus @default(PendingConsent)
   consentGrantedAt       DateTime?
   consentGrantedByUserId String?
+  // ADR-0014 amendment (2026-07-20): current discovery job state only — see
+  // the enum's own doc comment. Not history; ADR-0019's AuditLog owns that.
+  discoveryStatus        DiscoveryStatus       @default(NotStarted)
+  discoveryStartedAt     DateTime?
+  discoveryCompletedAt   DateTime?
+  discoveryError         String?
   createdAt              DateTime              @default(now())
 
   organization         Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)

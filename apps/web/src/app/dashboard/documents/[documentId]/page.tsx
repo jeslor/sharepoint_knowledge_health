@@ -2,6 +2,7 @@
 
 import { use } from 'react';
 import type { GovernanceIssueTypeValue } from '@sph/types';
+import { Card } from '@/components/ui/card';
 import { EmptyState, ErrorState, LoadingState } from '@/components/ui/query-state';
 import { DocumentOwnership } from '@/components/documents/document-ownership';
 import { DocumentScoreHistory } from '@/components/documents/document-score-history';
@@ -47,19 +48,19 @@ export default function DocumentDetailPage({ params }: DocumentDetailPageProps):
         </dl>
       </div>
 
-      <div className="rounded-lg border border-slate-200 bg-white p-4">
-        <p className="text-sm text-slate-500">Health score</p>
-        <p className="text-3xl font-semibold text-slate-900">{document.score === null ? 'Not yet scored' : `${document.score}/100`}</p>
-      </div>
+      <Card>
+        <p className="text-caption text-slate-500">Health score</p>
+        <p className="text-metric text-slate-900">{document.score === null ? 'Not yet scored' : `${document.score}/100`}</p>
+      </Card>
 
       <div>
-        <h2 className="text-sm font-medium text-slate-500">Issues</h2>
+        <h2 className="text-body-strong text-slate-700">Issues</h2>
         {document.issues.length === 0 ? (
           <EmptyState label={document.score === null ? 'No scan has run yet.' : 'No issues — fully healthy.'} />
         ) : (
           <ul className="mt-2 space-y-2">
             {document.issues.map((issue, index) => (
-              <li key={`${issue.type}-${index}`} className="rounded-md border border-slate-200 p-3">
+              <li key={`${issue.type}-${index}`} className="rounded-lg border border-slate-200/60 p-3">
                 <div className="flex items-center justify-between">
                   <SeverityBadge severity={issue.severity} />
                   {canManageGovernance && (
@@ -74,7 +75,7 @@ export default function DocumentDetailPage({ params }: DocumentDetailPageProps):
       </div>
 
       <div>
-        <h2 className="text-sm font-medium text-slate-500">Ownership</h2>
+        <h2 className="text-body-strong text-slate-700">Ownership</h2>
         <div className="mt-2">
           {ownersLoading && <LoadingState label="Loading ownership…" />}
           {ownersError && <ErrorState error={ownersError} />}
@@ -85,7 +86,7 @@ export default function DocumentDetailPage({ params }: DocumentDetailPageProps):
       </div>
 
       <div>
-        <h2 className="text-sm font-medium text-slate-500">Score history</h2>
+        <h2 className="text-body-strong text-slate-700">Score history</h2>
         <div className="mt-2">
           {historyLoading && <LoadingState label="Loading history…" />}
           {historyError && <ErrorState error={historyError} />}

@@ -1,5 +1,5 @@
 import { Controller, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
-import type { SharePointSite, User } from '@sph/database';
+import type { MicrosoftTenant, SharePointSite, User } from '@sph/database';
 import { EntraJwtGuard } from '../auth/entra-jwt.guard';
 import { TenantContextGuard } from '../auth/tenant-context.guard';
 import { RolesGuard } from '../auth/roles.guard';
@@ -13,11 +13,16 @@ import { SharePointSitesService } from './sharepoint-sites.service';
 export class SharePointSitesController {
   constructor(private readonly sharePointSitesService: SharePointSitesService) {}
 
+  // ADR-0014 amendment: enqueues onto DISCOVERY_QUEUE — apps/worker's
+  // SiteDiscoveryProcessor owns execution. Returns the MicrosoftTenant row
+  // reflecting the new discoveryStatus (Queued, or unchanged if a
+  // discovery operation was already Queued/Running — a safe no-op, not an
+  // error), not the resulting sites, which don't exist yet at request time.
   @Post('microsoft-tenants/:tenantId/discover-sites')
   @UseGuards(RolesGuard)
   @Roles('Admin')
-  async discoverSites(@Param('id') organizationId: string, @Param('tenantId') tenantId: string): Promise<SharePointSite[]> {
-    return this.sharePointSitesService.discoverSites(organizationId, tenantId);
+  async discoverSites(@Param('id') organizationId: string, @Param('tenantId') tenantId: string): Promise<MicrosoftTenant> {
+    return this.sharePointSitesService.enqueueDiscovery(organizationId, tenantId);
   }
 
   // Phase 9.5: the dashboard Sites page never knows a microsoftTenantId —
@@ -26,8 +31,8 @@ export class SharePointSitesController {
   @Post('discover-sites')
   @UseGuards(RolesGuard)
   @Roles('Admin')
-  async discoverSitesForOrganization(@Param('id') organizationId: string): Promise<SharePointSite[]> {
-    return this.sharePointSitesService.discoverSitesForOrganization(organizationId);
+  async discoverSitesForOrganization(@Param('id') organizationId: string): Promise<MicrosoftTenant> {
+    return this.sharePointSitesService.enqueueDiscoveryForOrganization(organizationId);
   }
 
   @Get('sharepoint-sites')

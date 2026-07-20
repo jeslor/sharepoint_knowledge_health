@@ -26,7 +26,7 @@ export function Tabs({ tabs, activeId, onChange }: TabsProps): JSX.Element {
   };
 
   return (
-    <div role="tablist" className="flex gap-4 border-b border-slate-200">
+    <div role="tablist" className="flex gap-4 border-b border-slate-200/60">
       {tabs.map((tab, index) => {
         const active = tab.id === activeId;
         return (
@@ -38,7 +38,7 @@ export function Tabs({ tabs, activeId, onChange }: TabsProps): JSX.Element {
             tabIndex={active ? 0 : -1}
             onClick={() => onChange(tab.id)}
             onKeyDown={(event) => handleKeyDown(event, index)}
-            className={`-mb-px border-b-2 px-1 pb-2 text-body-strong transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-600 ${
+            className={`-mb-px border-b-2 px-1 pb-2 text-body-strong transition-colors duration-150 ease-premium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-600 ${
               active ? 'border-brand-600 text-brand-700' : 'border-transparent text-slate-500 hover:text-slate-700'
             }`}
           >

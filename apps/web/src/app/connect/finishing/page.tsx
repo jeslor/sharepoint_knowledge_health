@@ -6,7 +6,7 @@ import { useIsAuthenticated, useMsal } from '@azure/msal-react';
 import { InteractionStatus } from '@azure/msal-browser';
 import type { ConsentResolution } from '@sph/types';
 import { useAccessToken } from '@/lib/auth/use-access-token';
-import { postConsentCallback } from '@/lib/api/endpoints';
+import { discoverSharePointSites, postConsentCallback } from '@/lib/api/endpoints';
 import { ApiError } from '@/lib/api/client';
 import { clearConnectFlow, readConnectFlowTenantName } from '@/lib/auth/connect-flow';
 
@@ -74,6 +74,23 @@ export default function ConnectFinishingPage(): JSX.Element {
       try {
         const idToken = await getAccessToken();
         const resolution = await postConsentCallback(idToken, tenantName);
+
+        // ADR-0014 §1: discovery is meant to fire automatically the moment a
+        // MicrosoftTenant transitions to Consented — 'bootstrapped' is the
+        // one resolution kind where that transition just happened (a brand
+        // new organization's first Admin, who by construction already has
+        // the Admin role the discover-sites endpoint requires). Best-effort:
+        // a transient Graph hiccup here must not turn a successful bootstrap
+        // into an error page — the Sites page's manual "Discover sites"
+        // button remains as a fallback either way.
+        if (resolution.kind === 'bootstrapped') {
+          try {
+            await discoverSharePointSites(resolution.organizationId, idToken);
+          } catch {
+            // Swallowed deliberately — see comment above.
+          }
+        }
+
         routeOnResolution(resolution);
       } catch (caught) {
         clearConnectFlow();

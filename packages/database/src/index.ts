@@ -14,6 +14,7 @@ export {
 } from './onboarding';
 export type { EntraProfile, BootstrapResult, ConsentResolution } from './onboarding';
 export { findDueScanSchedules } from './scheduler';
+export { shouldEnqueueDiscovery, discoveryJobId } from './discovery';
 export { recoverStaleScanJobs } from './scan-recovery';
 export { checkDatabaseConnection } from './health-check';
 
@@ -50,4 +51,5 @@ export {
   GovernanceIssueStatus,
   DocumentReviewDateSource,
   GovernanceActivityType,
+  DiscoveryStatus,
 } from '@prisma/client';

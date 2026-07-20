@@ -9,6 +9,7 @@ const mockUseIsAuthenticated = jest.fn();
 let mockInProgress = 'none';
 const mockGetAccessToken = jest.fn();
 const mockPostConsentCallback = jest.fn();
+const mockDiscoverSharePointSites = jest.fn();
 
 jest.mock('next/navigation', () => ({
   useRouter: () => ({ replace: mockReplace }),
@@ -25,6 +26,7 @@ jest.mock('@/lib/auth/use-access-token', () => ({
 
 jest.mock('@/lib/api/endpoints', () => ({
   postConsentCallback: (idToken: string, tenantName: string) => mockPostConsentCallback(idToken, tenantName),
+  discoverSharePointSites: (organizationId: string, idToken: string) => mockDiscoverSharePointSites(organizationId, idToken),
 }));
 
 function resolution(kind: ConsentResolution['kind']): ConsentResolution {
@@ -38,6 +40,7 @@ describe('ConnectFinishingPage', () => {
     mockInProgress = 'none';
     mockUseIsAuthenticated.mockReturnValue(true);
     mockGetAccessToken.mockResolvedValue('id-token-123');
+    mockDiscoverSharePointSites.mockResolvedValue([]);
     sessionStorage.clear();
   });
 
@@ -77,6 +80,36 @@ describe('ConnectFinishingPage', () => {
       expect(isConnectFlowInProgress()).toBe(false);
     },
   );
+
+  it('auto-triggers site discovery on kind: bootstrapped (ADR-0014 §1 — the MicrosoftTenant just transitioned to Consented)', async () => {
+    startConnectFlow('Acme Corporation');
+    mockPostConsentCallback.mockResolvedValue(resolution('bootstrapped'));
+
+    render(<ConnectFinishingPage />);
+
+    await waitFor(() => expect(mockDiscoverSharePointSites).toHaveBeenCalledWith('org-1', 'id-token-123'));
+    await waitFor(() => expect(mockReplace).toHaveBeenCalledWith('/dashboard'));
+  });
+
+  it('does not trigger site discovery on kind: existing (a returning user, not a fresh consent transition)', async () => {
+    startConnectFlow('Acme Corporation');
+    mockPostConsentCallback.mockResolvedValue(resolution('existing'));
+
+    render(<ConnectFinishingPage />);
+
+    await waitFor(() => expect(mockReplace).toHaveBeenCalledWith('/dashboard'));
+    expect(mockDiscoverSharePointSites).not.toHaveBeenCalled();
+  });
+
+  it('still routes to /dashboard on kind: bootstrapped even when site discovery fails (best-effort, manual "Discover sites" remains as a fallback)', async () => {
+    startConnectFlow('Acme Corporation');
+    mockPostConsentCallback.mockResolvedValue(resolution('bootstrapped'));
+    mockDiscoverSharePointSites.mockRejectedValue(new Error('Graph temporarily unavailable'));
+
+    render(<ConnectFinishingPage />);
+
+    await waitFor(() => expect(mockReplace).toHaveBeenCalledWith('/dashboard'));
+  });
 
   it('renders a pending-approval message and clears the marker on kind: provisioned-pending', async () => {
     startConnectFlow('Acme Corporation');

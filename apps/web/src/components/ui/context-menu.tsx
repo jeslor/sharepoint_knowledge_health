@@ -29,7 +29,9 @@ export function ContextMenu({ trigger, items }: ContextMenuProps): JSX.Element {
     <FluentProvider theme={brandTheme}>
       <FluentMenu openOnContext>
         <MenuTrigger disableButtonEnhancement>{trigger}</MenuTrigger>
-        <MenuPopover>
+        {/* Phase 10B.4: matches Select/Menu's popup radius/border — see
+            ui/menu.tsx for the same treatment and rationale. */}
+        <MenuPopover className="rounded-xl border border-slate-200/60">
           <MenuList>
             {items.map((item) => {
               const Icon: FluentIcon | undefined = item.icon;

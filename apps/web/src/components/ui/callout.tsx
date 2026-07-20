@@ -16,7 +16,9 @@ export function Callout({ trigger, children }: CalloutProps): JSX.Element {
     <FluentProvider theme={brandTheme}>
       <Popover>
         <PopoverTrigger disableButtonEnhancement>{trigger}</PopoverTrigger>
-        <PopoverSurface>{children}</PopoverSurface>
+        {/* Phase 10B.4: matches Select/Menu's popup radius/border — see
+            ui/menu.tsx for the same treatment and rationale. */}
+        <PopoverSurface className="rounded-xl border border-slate-200/60">{children}</PopoverSurface>
       </Popover>
     </FluentProvider>
   );

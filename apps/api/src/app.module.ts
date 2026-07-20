@@ -11,6 +11,7 @@ import { ScanScheduleModule } from './scan-schedule/scan-schedule.module';
 import { HealthTrendsModule } from './health-trends/health-trends.module';
 import { GovernanceIssuesModule } from './governance/governance-issues.module';
 import { UsersModule } from './users/users.module';
+import { OnboardingStatusModule } from './onboarding-status/onboarding-status.module';
 import { requestLoggerMiddleware } from './common/request-logger.middleware';
 
 /**
@@ -73,6 +74,7 @@ export function bullConnectionOptions(): {
     HealthTrendsModule,
     GovernanceIssuesModule,
     UsersModule,
+    OnboardingStatusModule,
   ],
 })
 export class AppModule implements NestModule {

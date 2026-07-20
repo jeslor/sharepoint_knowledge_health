@@ -16,7 +16,7 @@ export function BulkActionToolbar({ selectedCount, onClearSelection, children }:
   if (selectedCount === 0) return null;
 
   return (
-    <div className="flex animate-fade-in items-center justify-between gap-4 rounded-md border border-brand-200 bg-brand-50 px-4 py-2 text-body-strong text-brand-700">
+    <div className="flex animate-fade-in items-center justify-between gap-4 rounded-xl border border-brand-200 bg-brand-50 px-4 py-2.5 text-body-strong text-brand-700">
       <span>
         {selectedCount} selected
         <button

@@ -1,4 +1,5 @@
 import type { AnalyticsBucket } from '@sph/types';
+import { Card } from '@/components/ui/card';
 
 interface AnalyticsBarChartProps {
   title: string;
@@ -13,25 +14,25 @@ export function AnalyticsBarChart({ title, buckets }: AnalyticsBarChartProps): J
 
   if (total === 0) {
     return (
-      <div className="rounded-lg border border-slate-200 bg-white p-4">
-        <p className="text-sm font-medium text-slate-700">{title}</p>
-        <p className="mt-2 text-sm text-slate-500">No data yet.</p>
-      </div>
+      <Card>
+        <p className="text-body-strong text-slate-700">{title}</p>
+        <p className="mt-2 text-body text-slate-500">No data yet.</p>
+      </Card>
     );
   }
 
   const max = Math.max(...buckets.map((bucket) => bucket.count), 1);
 
   return (
-    <div className="rounded-lg border border-slate-200 bg-white p-4">
-      <p className="text-sm font-medium text-slate-700">{title}</p>
+    <Card>
+      <p className="text-body-strong text-slate-700">{title}</p>
       <ul className="mt-3 space-y-2">
         {buckets.map((bucket) => (
           <li key={bucket.label} className="flex items-center gap-2 text-sm">
             <span className="w-28 shrink-0 truncate text-slate-600">{bucket.label}</span>
-            <div className="h-4 flex-1 rounded bg-slate-100">
+            <div className="h-4 flex-1 rounded-full bg-slate-100">
               <div
-                className="h-4 rounded bg-slate-900"
+                className="h-4 rounded-full bg-brand-600 transition-[width] duration-300 ease-premium"
                 style={{ width: `${Math.max((bucket.count / max) * 100, bucket.count > 0 ? 4 : 0)}%` }}
               />
             </div>
@@ -39,6 +40,6 @@ export function AnalyticsBarChart({ title, buckets }: AnalyticsBarChartProps): J
           </li>
         ))}
       </ul>
-    </div>
+    </Card>
   );
 }

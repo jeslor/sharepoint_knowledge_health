@@ -3,6 +3,7 @@
 import { useCurrentUser } from '@/lib/auth/current-user-context';
 import { useOrganizationUsers } from '@/lib/api/hooks/use-organization-users';
 import { UserList } from '@/components/users/user-list';
+import { Card } from '@/components/ui/card';
 import { PageHeader } from '@/components/ui/page-header';
 import { ErrorState, LoadingState } from '@/components/ui/query-state';
 
@@ -11,11 +12,7 @@ export default function UsersPage(): JSX.Element {
   const { users, loading, error, approve, reject, mutatingUserId, mutateError } = useOrganizationUsers();
 
   if (user && user.role !== 'Admin') {
-    return (
-      <div className="rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-600">
-        Only an Admin can manage users.
-      </div>
-    );
+    return <Card className="text-sm text-slate-600">Only an Admin can manage users.</Card>;
   }
 
   return (

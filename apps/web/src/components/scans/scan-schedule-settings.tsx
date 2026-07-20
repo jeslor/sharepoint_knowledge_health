@@ -42,7 +42,7 @@ export function ScanScheduleSettings({ canManage }: ScanScheduleSettingsProps): 
 
   return (
     <Card className="space-y-4">
-      <h2 className="text-lg font-semibold text-slate-900">Knowledge Health Monitoring</h2>
+      <h2 className="text-section-title text-slate-900">Knowledge Health Monitoring</h2>
 
       {error && <p className="text-sm text-red-700">{error.message}</p>}
 

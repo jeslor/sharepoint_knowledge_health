@@ -1,5 +1,6 @@
 import type { ScanComparisonIssue, ScanComparisonResponse } from '@sph/types';
 import { SeverityBadge } from '@/components/documents/severity-badge';
+import { Card } from '@/components/ui/card';
 import { EmptyState } from '@/components/ui/query-state';
 
 function formatChange(value: number | null, higherIsBetter: boolean): { text: string; className: string } {
@@ -14,23 +15,23 @@ function formatChange(value: number | null, higherIsBetter: boolean): { text: st
 function ChangeStat({ label, value, higherIsBetter }: { label: string; value: number | null; higherIsBetter: boolean }): JSX.Element {
   const { text, className } = formatChange(value, higherIsBetter);
   return (
-    <div className="rounded-lg border border-slate-200 bg-white p-4">
-      <p className="text-sm text-slate-500">{label}</p>
-      <p className={`mt-1 text-lg font-semibold ${className}`}>{text}</p>
-    </div>
+    <Card>
+      <p className="text-caption text-slate-500">{label}</p>
+      <p className={`mt-1 text-section-title ${className}`}>{text}</p>
+    </Card>
   );
 }
 
 function IssueList({ title, issues, emptyLabel }: { title: string; issues: ScanComparisonIssue[]; emptyLabel: string }): JSX.Element {
   return (
     <div>
-      <h3 className="text-sm font-medium text-slate-500">{title}</h3>
+      <h3 className="text-body-strong text-slate-700">{title}</h3>
       {issues.length === 0 ? (
         <EmptyState label={emptyLabel} />
       ) : (
         <ul className="mt-2 space-y-2">
           {issues.map((issue, index) => (
-            <li key={`${issue.documentId}-${issue.criterion}-${index}`} className="rounded-md border border-slate-200 p-3">
+            <li key={`${issue.documentId}-${issue.criterion}-${index}`} className="rounded-lg border border-slate-200/60 p-3">
               <div className="flex items-center justify-between">
                 <span className="font-medium text-slate-900">{issue.documentName}</span>
                 <SeverityBadge severity={issue.severity} />

@@ -32,7 +32,11 @@ export function Menu({ trigger, items }: MenuProps): JSX.Element {
     <FluentProvider theme={brandTheme}>
       <FluentMenu>
         <MenuTrigger disableButtonEnhancement>{trigger}</MenuTrigger>
-        <MenuPopover>
+        {/* Phase 10B.4: matches Select's popup radius/border so every
+            floating surface in the app (Menu/ContextMenu/Callout/Select)
+            reads as the same design system, not Fluent's own default
+            (noticeably squarer) corner radius. */}
+        <MenuPopover className="rounded-xl border border-slate-200/60">
           <MenuList>
             {items.map((item) => {
               const Icon = item.icon;

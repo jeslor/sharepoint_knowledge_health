@@ -1,47 +1,21 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
-import { createTenantContext, type SharePointSite } from '@sph/database';
-import { listSites } from '@sph/graph-client';
-import { randomUUID } from 'node:crypto';
+import { createTenantContext, type MicrosoftTenant, type SharePointSite } from '@sph/database';
+import { DiscoveryProducerService } from '../discovery/discovery-producer.service';
 
 /**
- * ADR-0014: this is the one place site discovery/approval decisions are
- * made. Discovery never touches status/approval on an already-known site
- * (re-running discovery must not reset an Approved site back to
- * Discovered), and a newly discovered site always starts Discovered —
- * never auto-approved, under any circumstance.
+ * ADR-0014 (amended 2026-07-20): approval decisions are made here, but
+ * discovery *execution* is not — it moved to apps/worker's
+ * SiteDiscoveryProcessor, reached only by enqueueing through
+ * DiscoveryProducerService (the single sanctioned producer, also used by
+ * the consent-callback bootstrap). This service never calls
+ * @sph/graph-client directly for discovery anymore.
  */
 @Injectable()
 export class SharePointSitesService {
-  async discoverSites(organizationId: string, microsoftTenantId: string): Promise<SharePointSite[]> {
-    const context = createTenantContext(organizationId);
-    const correlationId = randomUUID();
+  constructor(private readonly discoveryProducer: DiscoveryProducerService) {}
 
-    const microsoftTenant = await context.microsoftTenants.findFirstById(microsoftTenantId);
-    if (!microsoftTenant) {
-      throw new NotFoundException('Microsoft tenant not found');
-    }
-
-    const existingSites = await context.sharePointSites.findMany({ where: { microsoftTenantId } });
-    const existingByGraphSiteId = new Map(existingSites.map((site) => [site.graphSiteId, site]));
-
-    const results: SharePointSite[] = [];
-    for await (const graphSite of listSites(microsoftTenant.entraTenantId, { correlationId })) {
-      const existing = existingByGraphSiteId.get(graphSite.id);
-      if (existing) {
-        results.push(existing);
-        continue;
-      }
-
-      const created = await context.sharePointSites.create({
-        microsoftTenantId,
-        graphSiteId: graphSite.id,
-        siteUrl: graphSite.webUrl,
-        displayName: graphSite.displayName,
-      });
-      results.push(created);
-    }
-
-    return results;
+  async enqueueDiscovery(organizationId: string, microsoftTenantId: string): Promise<MicrosoftTenant> {
+    return this.discoveryProducer.enqueueDiscovery(organizationId, microsoftTenantId);
   }
 
   /**
@@ -49,11 +23,11 @@ export class SharePointSitesService {
    * mirrors ScansService.triggerScanForOrganization's exact auto-resolve
    * shape (the common case is one connected Microsoft tenant per
    * organization, ADR-0012's self-service onboarding flow) so the web UI
-   * never needs to know a microsoftTenantId just to discover sites.
-   * Delegates entirely to discoverSites once the tenant is resolved — no
+   * never needs to know a microsoftTenantId just to trigger discovery.
+   * Delegates entirely to enqueueDiscovery once the tenant is resolved — no
    * new discovery logic here.
    */
-  async discoverSitesForOrganization(organizationId: string): Promise<SharePointSite[]> {
+  async enqueueDiscoveryForOrganization(organizationId: string): Promise<MicrosoftTenant> {
     const context = createTenantContext(organizationId);
     const consentedTenants = await context.microsoftTenants.findMany({ where: { status: 'Consented' } });
 
@@ -70,7 +44,7 @@ export class SharePointSitesService {
     if (!onlyTenant) {
       throw new NotFoundException('No connected Microsoft tenant for this organization');
     }
-    return this.discoverSites(organizationId, onlyTenant.id);
+    return this.enqueueDiscovery(organizationId, onlyTenant.id);
   }
 
   async listSites(organizationId: string): Promise<SharePointSite[]> {

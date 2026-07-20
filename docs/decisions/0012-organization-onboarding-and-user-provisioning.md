@@ -1,7 +1,7 @@
 # ADR-0012: Organization Onboarding and User Provisioning
 
 Date: 2026-07-11
-Status: Accepted
+Status: Accepted (amended 2026-07-15 — Phase 6 frontend flow; amended 2026-07-20 — tenant connection lifecycle/revocation/reconnect)
 
 ---
 
@@ -249,3 +249,27 @@ roles against ADR-0003's `Files.Read.All`/`Sites.Read.All`) — a genuinely
 new integration surface, since `apps/api` today only ever verifies incoming
 ID tokens and never calls Graph itself (`docs/architecture/deployment.md`).
 Flagged here as named future work, not solved in Phase 6.
+
+## Amendment (2026-07-20): Tenant Connection Lifecycle, Revocation, and Reconnect
+
+A product/UX design review this session identified that `MicrosoftTenantStatus` has carried a `Revoked` value (`PendingConsent | Consented | Revoked`) since Phase 4's schema, but a repo-wide search confirmed nothing anywhere ever sets it or reacts to it — if a customer's Global Admin revokes this app's consent in Azure AD, every subsequent scan attempt just fails with no self-service recovery path and no visibility into why. This amendment closes that gap without changing the enum or any of this ADR's original bootstrap/provisioning decisions.
+
+### The full lifecycle
+
+```
+PendingConsent → Consented → Revoked → (Admin reconnects) → Consented
+```
+
+- **`PendingConsent → Consented`**: unchanged, this ADR's §3 bootstrap (or §2's "additional connection" path).
+- **`Consented → Revoked`**: set **only** from the new lightweight periodic health check — a cheap, tenant-wide `GET /organization` app-only Graph call riding the existing 15-minute scheduler tick (ADR-0015 §1) — receiving a `403` (`GraphPermissionError`, ADR-0013 §5's typed error hierarchy). **A scan-time `GraphPermissionError` on one specific site does *not* set `Revoked`.** This distinction matters: `Files.Read.All`/`Sites.Read.All` (ADR-0003) is broad, tenant-wide consent, but a single site can still 403 for reasons that have nothing to do with that consent being revoked — a sensitivity-label or DLP-driven restriction on one unusual site, for instance — and treating any one site's failure as "the whole tenant connection is broken" would be a false positive that locks an otherwise-healthy organization out of scanning everything else. `GET /organization` is not scoped to any site: it succeeds or fails based on the tenant-wide grant alone, so a `403` there is an unambiguous signal about the *connection itself*, not about one resource. A scan-time site-level `403` is instead recorded the same way any other per-site scan failure already is (`ScanJob.errorSummary`, unchanged) — visible, but not tenant-connection-altering. This is a deliberate, narrow trust boundary: **no API endpoint may set `Revoked` directly, and no scan-time error alone may set it either** — only the dedicated tenant-wide health check's own real Graph rejection, never inferred, never client-settable, the same "only cryptographically observed facts drive state" discipline ADR-0011 already established for identity.
+- **`Revoked → Consented`** (reconnect): an Admin-only action, `POST /organizations/:id/microsoft-tenant/reconnect`, that mirrors `/connect`'s existing admin-consent redirect construction but scoped to the organization's already-known `entraTenantId` rather than starting a fresh bootstrap — this is §2's existing "additional connection for an existing Organization" pattern, applied to *reconnecting the same tenant* rather than adding a new one. No new `Organization`, `MicrosoftTenant`, or `User` row is created; the existing `MicrosoftTenant` row transitions back to `Consented` once Microsoft's redirect confirms consent again.
+
+`MicrosoftTenant` gains `revokedAt DateTime?` (nullable, additive) — set alongside the `Revoked` transition, cleared on successful reconnect, purely for display ("connection lost since March 3").
+
+### A state this lifecycle does not yet need, but should be ready for: `NeedsReconsent`
+
+ADR-0003 itself already names a future scenario this lifecycle isn't built for yet: "if a future feature needs to write back to SharePoint... request the additional write scope as a separate, explicitly-justified consent step." That scenario is not `Revoked` (nothing was rejected; the existing grant is still fully valid) and not plain `Consented` (the app now needs a scope it doesn't have yet) — it is a distinct third state, `NeedsReconsent`, that this amendment names explicitly so a future implementer doesn't have to choose between awkwardly overloading `Revoked` or silently expanding this enum without an ADR. **Not built now** — no code path produces or consumes it today — named here only so the two-state (`Consented`/`Revoked`) model isn't mistaken for a permanent ceiling.
+
+### Security boundary, restated
+
+Reconnection is Admin-only (`RolesGuard`/`@Roles('Admin')`), identical to every other tenant-connection-management action this ADR already restricts to Admins (§2). Detection stays strictly reactive to the periodic health check's own tenant-wide Graph call — never a guess, never inferred from a site-level scan failure, never settable through any generic "update tenant" surface.

@@ -1,7 +1,7 @@
 # ADR-0014: SharePoint Site Discovery and Customer Scan Scope
 
 Date: 2026-07-12
-Status: Accepted
+Status: Accepted (amended 2026-07-20 — discovery ownership moves to `apps/worker`)
 
 ---
 
@@ -40,7 +40,7 @@ Only approved sites are scanned   — ScanJob (ADR-0004) filters to status: Appr
 
 ### 1. Site discovery
 
-Triggered automatically as the immediate next step after a `MicrosoftTenant` transitions to `Consented` (ADR-0012), within the same onboarding flow — no separate manual "start discovery" action needed, since discovery itself never exposes data, only *lists* what's visible. Implemented as a synchronous `apps/api` call to `packages/graph-client`'s `listSites(entraTenantId)` (ADR-0013), fully consumed (the async generator exhausted into a complete list) before responding — reasonable because site *counts* (hundreds to low thousands even for large enterprises) are far smaller than document counts, unlike scanning, which genuinely needs the async queue (ADR-0004). Flagged as an assumption to revisit if real-world site counts prove otherwise (see Future Considerations), not preemptively engineered around.
+Triggered automatically as the immediate next step after a `MicrosoftTenant` transitions to `Consented` (ADR-0012), within the same onboarding flow — no separate manual "start discovery" action needed, since discovery itself never exposes data, only *lists* what's visible. Originally implemented as a synchronous `apps/api` call to `packages/graph-client`'s `listSites(entraTenantId)` (ADR-0013); **execution ownership moved to `apps/worker` in the 2026-07-20 amendment** (see below) — the trigger point and everything else in this section is unchanged.
 
 Every discovered site is persisted immediately as a `SharePointSite` row with `status: Discovered` — not held in some separate, unpersisted "candidate" structure. Considered and rejected keeping discovered-but-unapproved sites out of the database entirely (e.g., a lighter cache/candidate table): it would mean re-querying Graph live every time an admin opens the site-selection screen (slower, and inconsistent if Graph's live listing shifts between page loads), for no real benefit — the existing `SharePointSite` table, tenant-scoped and repository-backed since Phase 3, already does everything a separate structure would, plus it naturally supports the "diff against what's already known" need for future rescans (§4).
 
@@ -107,6 +107,82 @@ Least privilege (ADR-0003: request only the Graph scopes actually needed) and le
 
 ## Future Considerations
 
+*(As originally written 2026-07-12 — see the 2026-07-20 amendment below for what was actually built and why.)*
+
 - If real-world tenants routinely have large enough site counts that synchronous discovery via `apps/api` becomes slow or risks timeout, move discovery through the async queue (ADR-0004's existing infrastructure) rather than inventing new plumbing — flagged as a revisit trigger, not solved preemptively.
 - Scheduled/automatic discovery-refresh is a natural v2 pairing with ADR-0004's already-deferred scheduled scans — should be designed together when that work starts, not separately.
 - A future "bulk approve by pattern" admin convenience feature (e.g., approve all sites under a given path) is explicitly not decided here and would need its own ADR, per §6.
+
+---
+
+## Amendment (2026-07-20): Discovery Ownership Moves to `apps/worker`
+
+### Why
+
+A product/UX design review this session identified a real reliability gap in triggering discovery from the frontend (the implementation that shipped earlier in this same session): if an admin completes Microsoft admin consent, the server-side bootstrap succeeds, and the *browser* is the thing that calls the discover-sites endpoint next — closing the tab before that call completes leaves the tenant `Consented` with discovery never run and no automatic path to retry. This is exactly the class of problem `apps/worker`'s existing queue-based architecture (ADR-0004, ADR-0015 §1) already solves for scanning: decouple the operation from any single HTTP request's lifecycle, and the original ADR's own Future Considerations named this exact escape hatch (async queue for discovery) — just anticipating a different trigger (site-count scale) than the one that actually motivated it (onboarding reliability). Moving discovery into `apps/worker` also sidesteps a real NestJS module-graph problem discovered while implementing the frontend-triggered version: `SharePointSitesModule` already imports `AuthModule` (for its guards), so having `AuthModule`'s consent-callback controller import `SharePointSitesModule` back would create a circular module dependency. Living in a different app entirely (`apps/worker` already imports `packages/graph-client`, per ADR-0013) avoids that problem by construction, not by working around it.
+
+One clarification on scope, since it's a natural question this amendment raises: **the "bulk approve" feature planned for a later implementation phase is not the "bulk approve by pattern" convenience this ADR's Future Considerations explicitly deferred.** That deferred feature meant auto-matching sites by a rule (e.g., "approve everything under `/sites/finance-*`") with no per-site admin decision. The planned bulk-approval work is explicit multi-select of already-discovered, already-visible sites batched into one request — every site still requires a specific admin's specific inclusion in that selection, satisfying §6's "never auto-approved" principle exactly as a series of individual clicks would; it is not a new decision this ADR needed to make room for.
+
+### Mechanism
+
+A new `DISCOVERY_QUEUE` (`packages/types`, same pattern as `SCAN_QUEUE`/`SCHEDULER_QUEUE`), one new `apps/worker` processor (`SiteDiscoveryProcessor`, mirroring `SchedulerProcessor`'s shape) consuming it. `POST /auth/consent-callback`'s bootstrap path (and the existing manual `POST /organizations/:id/discover-sites` endpoint, and the future reconnect path) all become **producers** onto this queue rather than executing discovery inline — discovery has exactly one execution path regardless of what triggered it, the same "scheduling is a producer, never a second execution path" discipline ADR-0015 §1 already established for scans.
+
+`MicrosoftTenant` gains four fields to track the current discovery job's state (read by ADR-0017's `onboarding-status` endpoint as `discovery.status`):
+
+```prisma
+enum DiscoveryStatus {
+  NotStarted
+  Queued
+  Running
+  Completed
+  Failed
+}
+
+model MicrosoftTenant {
+  // ...existing fields...
+  discoveryStatus      DiscoveryStatus @default(NotStarted)
+  discoveryStartedAt   DateTime?
+  discoveryCompletedAt DateTime?
+  discoveryError       String?
+}
+```
+
+One current-job's-worth of state per tenant, not a history table — matching how the manual on-demand rescan (§4, unchanged) only ever cares about the *latest* run's outcome, and keeping this an additive, minimal schema change rather than a new relation.
+
+**These four fields represent the current discovery operation's state only. They are not discovery history and must not be read or written as an audit trail.** Each field is overwritten by the next discovery run — there is no record of *previous* runs once a new one starts, and nothing about "who triggered this" lives here at all (`discoveryStatus`/`discoveryError` describe *what the job did*, not *who asked for it*). Anything answering "when did discovery run and who triggered it, historically" is an `AuditLog` (ADR-0019) concern, not this one — `AuditLog` and these four fields serve genuinely different purposes and neither substitutes for the other: this is live operational state for one in-flight-or-most-recent job, `AuditLog` is the durable historical record.
+
+### State transitions
+
+```
+NotStarted → Queued              (a discovery job is enqueued)
+Queued     → Running              (the worker picks up the job)
+Running    → Completed             (listSites succeeds, sites persisted)
+Running    → Failed                (BullMQ's retries exhausted — see Failure handling)
+Failed     → Queued               (manual re-trigger — see Recovery)
+Completed  → Queued               (manual rediscovery — see Recovery)
+```
+
+`Queued → Queued` and `Running → Running` are not real transitions — they never happen, because the concurrency guard (below) prevents a second job from being enqueued whenever the stored `discoveryStatus` is already `Queued` or `Running`. The producer's enqueue attempt is a no-op in that case, not a state write, so these two cells are intentionally absent from the table rather than self-loops.
+
+### Idempotency
+
+`SharePointSitesService.discoverSites`'s existing logic is preserved unchanged in its core shape when it moves into the worker processor: it already builds a map of existing `SharePointSite` rows by `graphSiteId` and skips creating a duplicate for any site already known, which is the correct idempotent behavior for **new** sites regardless of how many times discovery re-runs. One refinement this amendment adds: when an already-known site's `siteUrl` or `displayName` differs from what Graph currently reports (a site renamed or moved upstream since the last run), those two fields are updated in place — **`status`, `approvedAt`, and `approvedByUserId` are never touched on an already-known row**, which is what makes approval preservation (below) hold. This is a small, additive change to the existing method, not a rewrite.
+
+### Concurrency protection
+
+**`MicrosoftTenant.discoveryStatus` in Postgres is the single source of truth for "is a discovery operation currently in flight for this tenant" — BullMQ's queue state is never consulted for this decision.** Two layers, deliberately not equal partners:
+
+1. **Application-level guard (authoritative)**: before enqueueing, the producer checks `MicrosoftTenant.discoveryStatus` — if it's already `Queued` or `Running`, the enqueue is skipped (a no-op, not an error) rather than adding a second job. This is the exact same shape as `ScansService.triggerScan`'s existing "block a new scan while one is Queued/Running for this tenant" guard and `SchedulerProcessor`'s own "skip this tick if a scan is already in flight" check — both already-proven patterns in this codebase, just applied to discovery instead of scanning. This is the real guard; the decision is made from database state, full stop.
+2. **Queue-level dedup (defense in depth, not a replacement)**: the job is additionally enqueued with a deterministic `jobId` derived from the tenant (e.g. `discovery-${microsoftTenantId}`), the same technique `SchedulerProcessor`'s own heartbeat registration already uses (`jobId: 'scheduler-heartbeat'`) for singleton-job guarantees. This catches a narrow race the database check alone can't (two nearly-simultaneous producer calls reading `discoveryStatus` before either has written `Queued`) — but it is a backstop against duplicate *queue entries*, not a substitute for the database guard: BullMQ's own job state is never read to decide whether to enqueue, only used as a second independent line of defense against the specific race condition above.
+
+### Failure handling
+
+Transient Microsoft Graph failures (429/503/504) are already retried automatically by the Graph SDK's built-in `RetryHandler` inside `packages/graph-client` (ADR-0013 §3) — no new retry logic needed at that layer. Above that, the `DISCOVERY_QUEUE` job itself is registered with `defaultJobOptions: { attempts: 3, backoff: exponential }`, the exact same producer-side options already established for `SCAN_QUEUE` in Phase 5 — a small number of whole-job retries in case of a failure the Graph-client layer's own retry didn't absorb (e.g., a worker crash mid-run, not just an HTTP-level throttle). Only once BullMQ's own retries are exhausted does the processor set `discoveryStatus: Failed`, `discoveryCompletedAt: now`, and `discoveryError` to the failure's message (not a full stack trace — matching `ScanJob.errorSummary`'s existing convention and `security.md`'s "never log sensitive data," since Graph error messages can occasionally echo request details).
+
+### Recovery
+
+The existing manual `POST /organizations/:id/discover-sites` endpoint (§4, Admin-only, unchanged) is the recovery path — it always enqueues a fresh discovery job regardless of the tenant's current `discoveryStatus`, **except** when that status is already `Queued`/`Running` (the concurrency guard above, which correctly blocks a second concurrent attempt but must never block retrying after `Failed` or re-running after `Completed`). A successful retry's processor run ends in `discoveryStatus: Completed`, exactly as a first-time success would — there is no separate "recovered" state, `Failed → Completed` is not a distinguished transition from `NotStarted → Completed`.
+
+### Approval preservation
+
+Already correctly satisfied by the existing `discoverSites` logic (see Idempotency above) and unchanged by this amendment: an already-`Approved` `SharePointSite` row is never reset to `Discovered` by a later discovery run, because the existing/rediscovered-row branch never writes to `status` at all, only (per the new idempotency refinement) to `siteUrl`/`displayName`. This holds for every trigger — first-time onboarding discovery, a manual admin-triggered rescan, and a failure-recovery retry all share the exact same code path, so there is only one place this guarantee needs to be true, not three.

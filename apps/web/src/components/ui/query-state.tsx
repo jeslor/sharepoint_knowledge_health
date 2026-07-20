@@ -57,7 +57,7 @@ export function LoadingState({ label = 'Loading…', variant = 'block', rows = 3
 
 export function ErrorState({ error }: { error: Error }): JSX.Element {
   return (
-    <p role="alert" className="flex items-center gap-2 rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+    <p role="alert" className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
       <ErrorCircleFilled fontSize={20} className="shrink-0 text-red-600" />
       {error.message || 'Something went wrong.'}
     </p>

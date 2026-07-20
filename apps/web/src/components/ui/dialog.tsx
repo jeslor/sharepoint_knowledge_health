@@ -28,7 +28,9 @@ export function Dialog({ open, onOpenChange, title, children, actions }: DialogP
   return (
     <FluentProvider theme={brandTheme}>
       <FluentDialog open={open} onOpenChange={(_event, data) => onOpenChange(data.open)}>
-        <DialogSurface>
+        {/* Phase 10B.4: matches Select/Menu/Callout's popup radius/border —
+            see ui/menu.tsx for the same treatment and rationale. */}
+        <DialogSurface className="rounded-xl">
           <DialogBody>
             <DialogTitle>{title}</DialogTitle>
             <DialogContent>{children}</DialogContent>
