@@ -11,3 +11,4 @@ export * from './api/users';
 export * from './api/sharepoint-sites';
 export * from './api/consent-callback';
 export * from './api/onboarding-status';
+export * from './api/microsoft-tenant';

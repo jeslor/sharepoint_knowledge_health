@@ -16,6 +16,7 @@ export type { EntraProfile, BootstrapResult, ConsentResolution } from './onboard
 export { findDueScanSchedules } from './scheduler';
 export { shouldEnqueueDiscovery, discoveryJobId } from './discovery';
 export { recoverStaleScanJobs } from './scan-recovery';
+export { recoverStaleDiscoveries } from './discovery-recovery';
 export { checkDatabaseConnection } from './health-check';
 
 export type {
