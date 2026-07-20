@@ -3,8 +3,8 @@ import type { SharePointSitesService } from './sharepoint-sites.service';
 
 describe('SharePointSitesController', () => {
   const service = {
-    discoverSites: jest.fn(),
-    discoverSitesForOrganization: jest.fn(),
+    enqueueDiscovery: jest.fn(),
+    enqueueDiscoveryForOrganization: jest.fn(),
     listSites: jest.fn(),
     approveSite: jest.fn(),
     revokeSite: jest.fn(),
@@ -13,22 +13,22 @@ describe('SharePointSitesController', () => {
 
   beforeEach(() => jest.clearAllMocks());
 
-  it('discoverSites delegates organizationId and tenantId from the route', async () => {
-    service.discoverSites.mockResolvedValue([{ id: 'site-1' }]);
+  it('discoverSites delegates organizationId and tenantId from the route, and returns the MicrosoftTenant (not sites, which do not exist yet)', async () => {
+    service.enqueueDiscovery.mockResolvedValue({ id: 'tenant-1', discoveryStatus: 'Queued' });
 
     const result = await controller.discoverSites('org-1', 'tenant-1');
 
-    expect(service.discoverSites).toHaveBeenCalledWith('org-1', 'tenant-1');
-    expect(result).toEqual([{ id: 'site-1' }]);
+    expect(service.enqueueDiscovery).toHaveBeenCalledWith('org-1', 'tenant-1');
+    expect(result).toEqual({ id: 'tenant-1', discoveryStatus: 'Queued' });
   });
 
   it('discoverSitesForOrganization delegates organizationId only, never a client-supplied tenantId', async () => {
-    service.discoverSitesForOrganization.mockResolvedValue([{ id: 'site-1' }]);
+    service.enqueueDiscoveryForOrganization.mockResolvedValue({ id: 'tenant-1', discoveryStatus: 'Queued' });
 
     const result = await controller.discoverSitesForOrganization('org-1');
 
-    expect(service.discoverSitesForOrganization).toHaveBeenCalledWith('org-1');
-    expect(result).toEqual([{ id: 'site-1' }]);
+    expect(service.enqueueDiscoveryForOrganization).toHaveBeenCalledWith('org-1');
+    expect(result).toEqual({ id: 'tenant-1', discoveryStatus: 'Queued' });
   });
 
   it('listSites delegates organizationId from the route', async () => {

@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import type { DocumentHealthQuery, IssueSeverityFilter, SortDirection } from '@sph/types';
 import { DocumentHealthTable } from '@/components/documents/document-health-table';
 import { DocumentFilters, type DocumentFilterValues } from '@/components/documents/document-filters';
+import { PageHeader } from '@/components/ui/page-header';
 import { Pagination } from '@/components/ui/pagination';
 import { LoadingState, ErrorState } from '@/components/ui/query-state';
 import { useDocumentHealth } from '@/lib/api/hooks/use-document-health';
@@ -55,7 +56,7 @@ function DocumentsPageContent(): JSX.Element {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-semibold text-slate-900">Document health</h1>
+      <PageHeader title="Document health" />
       <DocumentFilters
         values={{ severity: query.severity, siteId: query.siteId, minScore: query.minScore, maxScore: query.maxScore }}
         sites={sites ?? []}

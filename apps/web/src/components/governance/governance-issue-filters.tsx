@@ -1,4 +1,7 @@
 import type { GovernanceIssueStatusValue, GovernanceIssueTypeValue, IssueSeverityFilter } from '@sph/types';
+import { CommandBar } from '@/components/ui/command-bar';
+import { Field } from '@/components/ui/field';
+import { Select } from '@/components/ui/select';
 
 export interface GovernanceIssueFilterValues {
   status?: GovernanceIssueStatusValue;
@@ -17,65 +20,50 @@ interface GovernanceIssueFiltersProps {
 
 export function GovernanceIssueFilters({ values, assignableUsers, onChange }: GovernanceIssueFiltersProps): JSX.Element {
   return (
-    <div className="flex flex-wrap items-end gap-4">
-      <label className="flex flex-col text-sm text-slate-600">
-        Status
-        <select
-          className="mt-1 rounded-md border border-slate-300 px-2 py-1"
+    <CommandBar>
+      <Field label="Status">
+        <Select
           value={values.status ?? ''}
-          onChange={(event) => onChange({ ...values, status: (event.target.value || undefined) as GovernanceIssueStatusValue | undefined })}
-        >
-          <option value="">All</option>
-          <option value="Open">Open</option>
-          <option value="InProgress">In progress</option>
-          <option value="Resolved">Resolved</option>
-        </select>
-      </label>
+          onChange={(newValue) => onChange({ ...values, status: (newValue || undefined) as GovernanceIssueStatusValue | undefined })}
+          options={[
+            { value: '', label: 'All' },
+            { value: 'Open', label: 'Open' },
+            { value: 'InProgress', label: 'In progress' },
+            { value: 'Resolved', label: 'Resolved' },
+          ]}
+        />
+      </Field>
 
-      <label className="flex flex-col text-sm text-slate-600">
-        Severity
-        <select
-          className="mt-1 rounded-md border border-slate-300 px-2 py-1"
+      <Field label="Severity">
+        <Select
           value={values.severity ?? ''}
-          onChange={(event) => onChange({ ...values, severity: (event.target.value || undefined) as IssueSeverityFilter | undefined })}
-        >
-          <option value="">All</option>
-          <option value="RequiresReview">Critical</option>
-          <option value="NeedsAttention">Warning</option>
-        </select>
-      </label>
+          onChange={(newValue) => onChange({ ...values, severity: (newValue || undefined) as IssueSeverityFilter | undefined })}
+          options={[
+            { value: '', label: 'All' },
+            { value: 'RequiresReview', label: 'Critical' },
+            { value: 'NeedsAttention', label: 'Warning' },
+          ]}
+        />
+      </Field>
 
-      <label className="flex flex-col text-sm text-slate-600">
-        Issue type
-        <select
-          className="mt-1 rounded-md border border-slate-300 px-2 py-1"
+      <Field label="Issue type">
+        <Select
           value={values.issueType ?? ''}
-          onChange={(event) => onChange({ ...values, issueType: (event.target.value || undefined) as GovernanceIssueTypeValue | undefined })}
-        >
-          <option value="">All</option>
-          {ISSUE_TYPES.map((type) => (
-            <option key={type} value={type}>
-              {type}
-            </option>
-          ))}
-        </select>
-      </label>
+          onChange={(newValue) => onChange({ ...values, issueType: (newValue || undefined) as GovernanceIssueTypeValue | undefined })}
+          options={[{ value: '', label: 'All' }, ...ISSUE_TYPES.map((type) => ({ value: type, label: type }))]}
+        />
+      </Field>
 
-      <label className="flex flex-col text-sm text-slate-600">
-        Assigned to
-        <select
-          className="mt-1 rounded-md border border-slate-300 px-2 py-1"
+      <Field label="Assigned to">
+        <Select
           value={values.assignedUserId ?? ''}
-          onChange={(event) => onChange({ ...values, assignedUserId: event.target.value || undefined })}
-        >
-          <option value="">Anyone</option>
-          {assignableUsers.map((user) => (
-            <option key={user.id} value={user.id}>
-              {user.displayName}
-            </option>
-          ))}
-        </select>
-      </label>
-    </div>
+          onChange={(newValue) => onChange({ ...values, assignedUserId: newValue || undefined })}
+          options={[
+            { value: '', label: 'Anyone' },
+            ...assignableUsers.map((user) => ({ value: user.id, label: user.displayName })),
+          ]}
+        />
+      </Field>
+    </CommandBar>
   );
 }

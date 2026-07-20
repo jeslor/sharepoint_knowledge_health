@@ -3,8 +3,18 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { createTenantContext, type HealthIssue, type HealthScore, type ScanJob, type TenantContext } from '@sph/database';
 import { SCAN_QUEUE, type ScanComparisonIssue, type ScanComparisonResponse, type ScanJobPayload, type ScanResponse } from '@sph/types';
+import { withTimeout } from '../common/with-timeout';
 
 const MOST_RECENT_SCANS_LIMIT = 50;
+
+// F2 correction: ioredis's maxRetriesPerRequest is a periodic, connection-
+// wide queue flush tied to a shared retry counter, not a per-command bound
+// (confirmed by reading ioredis's source) — a real outage measured 15-38s
+// depending on timing, not a small predictable number. This explicit
+// timeout is what actually bounds queue.add() deterministically. Kept
+// distinct from health.service.ts's REDIS_READINESS_TIMEOUT_MS (3000ms) —
+// enqueue is a different operation with its own acceptable latency budget.
+const SCAN_ENQUEUE_TIMEOUT_MS = 10_000;
 
 function toScanResponse(scanJob: ScanJob): ScanResponse {
   return {
@@ -60,7 +70,34 @@ export class ScansService {
       status: 'Queued',
     });
 
-    await this.scanQueue.add('scan', { organizationId, scanJobId: scanJob.id });
+    try {
+      await withTimeout(
+        this.scanQueue.add('scan', { organizationId, scanJobId: scanJob.id }),
+        SCAN_ENQUEUE_TIMEOUT_MS,
+        'Redis enqueue timed out',
+      );
+    } catch (enqueueError) {
+      // LAT F9: without this, a queue.add() failure (e.g. Redis unavailable)
+      // leaves this ScanJob permanently stuck at 'Queued' — no worker will
+      // ever pick it up, and triggerScan's own in-flight guard above then
+      // blocks every future scan for this tenant indefinitely. Compensating
+      // write, not a transaction (Postgres and Redis are separate systems) —
+      // reuses the exact { status: 'Failed', completedAt, errorSummary }
+      // shape recoverStaleScanJobs already established for the same class
+      // of problem (packages/database/src/scan-recovery.ts).
+      try {
+        const message = enqueueError instanceof Error ? enqueueError.message : String(enqueueError);
+        await context.scanJobs.updateById(scanJob.id, {
+          status: 'Failed',
+          completedAt: new Date(),
+          errorSummary: `Failed to enqueue scan job: ${message}`,
+        });
+      } catch {
+        // Compensating write itself failed (e.g. Postgres also down) — do
+        // not mask the original enqueue error with this one.
+      }
+      throw enqueueError;
+    }
 
     return scanJob;
   }

@@ -11,7 +11,48 @@ import { ScanScheduleModule } from './scan-schedule/scan-schedule.module';
 import { HealthTrendsModule } from './health-trends/health-trends.module';
 import { GovernanceIssuesModule } from './governance/governance-issues.module';
 import { UsersModule } from './users/users.module';
+import { OnboardingStatusModule } from './onboarding-status/onboarding-status.module';
 import { requestLoggerMiddleware } from './common/request-logger.middleware';
+
+/**
+ * Phase 7 (LAT F2): explicit, bounded connection options — the prior bare
+ * `{ url }` config ran on ioredis's defaults (maxRetriesPerRequest: 20,
+ * connectTimeout: 10000ms), which let a single queue.add() call during a
+ * Redis outage feel indefinite to a caller. Safe to bound tightly here
+ * specifically because this connection is producer-only (apps/api never
+ * runs a BullMQ Worker) — a Worker connection has a documented BullMQ
+ * requirement of maxRetriesPerRequest: null, which is why apps/worker's
+ * identical bare config is deliberately NOT touched here (see
+ * docs/testing/local-acceptance-testing-report.md, F2). Exported as a
+ * standalone function so its shape is unit-testable without booting the
+ * module or touching a real Redis connection.
+ *
+ * Phase 7 correction #2: a first attempt at fixing health.service.ts's
+ * hang added an explicit `retryStrategy` that gave up (returned null) after
+ * 2 retries. That fixed the hang, but manual verification found a real
+ * regression: returning null from retryStrategy doesn't just fail the
+ * current attempt fast — it tells ioredis to stop attempting automatic
+ * reconnection *permanently*. Once Redis came back, the connection stayed
+ * dead until apps/api was restarted (confirmed live: /health/ready kept
+ * reporting redis: 'error' with Redis genuinely running again). Reverted —
+ * retryStrategy is left at ioredis's own default (infinite retry, capped
+ * backoff), so the connection keeps trying in the background and
+ * self-heals on its own once Redis returns. maxRetriesPerRequest/
+ * connectTimeout alone already correctly bound queue.add() (confirmed:
+ * 500 in 45ms during the outage test) — the health-check hang needed a
+ * different, narrower fix instead (see health.service.ts).
+ */
+export function bullConnectionOptions(): {
+  url: string | undefined;
+  maxRetriesPerRequest: number;
+  connectTimeout: number;
+} {
+  return {
+    url: process.env.REDIS_URL,
+    maxRetriesPerRequest: 1,
+    connectTimeout: 5000,
+  };
+}
 
 @Module({
   imports: [
@@ -21,11 +62,7 @@ import { requestLoggerMiddleware } from './common/request-logger.middleware';
     // inject config instead.
     ConfigModule.forRoot({ isGlobal: true, envFilePath: '../../.env' }),
     BullModule.forRootAsync({
-      useFactory: () => ({
-        connection: {
-          url: process.env.REDIS_URL,
-        },
-      }),
+      useFactory: () => ({ connection: bullConnectionOptions() }),
     }),
     HealthModule,
     AuthModule,
@@ -37,6 +74,7 @@ import { requestLoggerMiddleware } from './common/request-logger.middleware';
     HealthTrendsModule,
     GovernanceIssuesModule,
     UsersModule,
+    OnboardingStatusModule,
   ],
 })
 export class AppModule implements NestModule {

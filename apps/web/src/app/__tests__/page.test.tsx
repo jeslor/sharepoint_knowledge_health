@@ -1,5 +1,6 @@
 import { render, screen } from '@testing-library/react';
 import HomePage from '../page';
+import { startConnectFlow } from '@/lib/auth/connect-flow';
 
 const mockReplace = jest.fn();
 const mockUseIsAuthenticated = jest.fn();
@@ -18,6 +19,7 @@ describe('HomePage', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockInProgress = 'none';
+    sessionStorage.clear();
   });
 
   it('renders the product name', () => {
@@ -44,5 +46,34 @@ describe('HomePage', () => {
     mockInProgress = 'startup';
     render(<HomePage />);
     expect(mockReplace).not.toHaveBeenCalled();
+  });
+
+  // Phase 6 regression tests — the sessionStorage marker check must not
+  // alter behavior for anyone who never went through /connect.
+  describe('Phase 6 — Connect Microsoft 365 routing', () => {
+    it('an existing/returning authenticated user with no connect-flow marker still redirects straight to /dashboard', () => {
+      // No startConnectFlow() call — sessionStorage is empty, matching
+      // every returning user's real sessionStorage state.
+      mockUseIsAuthenticated.mockReturnValue(true);
+      render(<HomePage />);
+      expect(mockReplace).toHaveBeenCalledTimes(1);
+      expect(mockReplace).toHaveBeenCalledWith('/dashboard');
+    });
+
+    it('a user completing sign-in with a connect-flow marker present is routed to /connect/finishing instead', () => {
+      startConnectFlow('Acme Corporation');
+      mockUseIsAuthenticated.mockReturnValue(true);
+      render(<HomePage />);
+      expect(mockReplace).toHaveBeenCalledTimes(1);
+      expect(mockReplace).toHaveBeenCalledWith('/connect/finishing');
+    });
+
+    it('does not route to /connect/finishing while MSAL is still processing, even with a marker present', () => {
+      startConnectFlow('Acme Corporation');
+      mockUseIsAuthenticated.mockReturnValue(true);
+      mockInProgress = 'startup';
+      render(<HomePage />);
+      expect(mockReplace).not.toHaveBeenCalled();
+    });
   });
 });

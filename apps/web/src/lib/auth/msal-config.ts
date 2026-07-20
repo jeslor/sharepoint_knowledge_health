@@ -4,9 +4,9 @@ import type { Configuration, RedirectRequest } from '@azure/msal-browser';
 // fetches its JWKS from this exact same /organizations/ authority path, not
 // /common (which would also accept personal Microsoft accounts, outside
 // this product's account model).
-const AUTHORITY = 'https://login.microsoftonline.com/organizations';
+export const AUTHORITY = 'https://login.microsoftonline.com/organizations';
 
-function requireClientId(): string {
+export function requireClientId(): string {
   const clientId = process.env.NEXT_PUBLIC_ENTRA_CLIENT_ID;
   if (!clientId) {
     throw new Error('NEXT_PUBLIC_ENTRA_CLIENT_ID is not set — see apps/web/.env.example');

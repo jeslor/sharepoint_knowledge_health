@@ -1,7 +1,7 @@
 # ADR-0012: Organization Onboarding and User Provisioning
 
 Date: 2026-07-11
-Status: Accepted
+Status: Accepted (amended 2026-07-15 — Phase 6 frontend flow; amended 2026-07-20 — tenant connection lifecycle/revocation/reconnect)
 
 ---
 
@@ -206,3 +206,70 @@ it('rolls back completely if any step of the bootstrap transaction fails', async
 - A full `Invitation` model (pre-assign email + role before first sign-in) is a reasonable v2 addition once there's evidence customers want to provision access ahead of someone's first login — doesn't conflict with anything decided here, since an invited `User` would still ultimately need a real `(tid, oid)` sign-in to become `Active`, exactly as `PendingApproval` users do today.
 - If a support-assisted "connect the same Azure tenant to a second Organization" path is ever built, it should require explicit internal-team action (not exposed as a self-service option), to avoid accidentally normalizing the edge case this ADR's flow otherwise prevents.
 - The approval-inbox UX (which `Admin` sees pending users, how they're notified) is a product/frontend design question for whoever implements Phase 4 — not decided here.
+
+## Amendment (2026-07-15, Phase 6): "Connect Microsoft 365" frontend flow, and a deferred server-side verification gap
+
+LAT execution (`docs/testing/local-acceptance-testing-report.md`, Finding #1)
+found that `apps/web` had no code path calling `POST /auth/consent-callback`
+at all — the endpoint this ADR specifies has always worked correctly
+(confirmed by `packages/database/src/onboarding.spec.ts` against all 5
+acceptance criteria above), but nothing in the product ever reached it.
+Phase 6 closed that gap with a frontend-only implementation
+(`apps/web/src/app/connect/*`) — no change to this ADR's decisions, no
+backend change, no schema change:
+
+1. A new `/connect` entry page collects the organization name and navigates
+   (a raw, non-MSAL-mediated redirect) to Microsoft's own tenant-wide
+   admin-consent endpoint for this app's `Files.Read.All`/`Sites.Read.All`
+   scopes (ADR-0003).
+2. A new `/connect/admin-consent-callback` page (a second, separately
+   registered redirect URI) receives Microsoft's admin-consent result and,
+   on success, hands off to the existing MSAL `loginRedirect` sign-in flow
+   unchanged.
+3. A new `/connect/finishing` page — reached via a small, additive check in
+   `apps/web/src/app/page.tsx` — calls the existing `/auth/consent-callback`
+   with the resulting ID token, and routes on all four `ConsentResolution`
+   `kind` values from §1/§4 above (`existing`, `bootstrapped`,
+   `provisioned-pending`, `rejected`) exhaustively.
+
+**Deferred, not closed by this amendment**: `resolveOrProvisionFromConsent`
+still has no way to cryptographically verify that Microsoft's real
+tenant-wide admin-consent grant actually happened before setting
+`MicrosoftTenant.status: 'Consented'` — it trusts any successful sign-in
+token from a previously-unseen `tid`. The Phase 6 flow above makes the real
+admin-consent grant a genuine, Microsoft-verified *UI* gating step (a
+substantial practical improvement over the prior state, where nothing
+enforced this at all), but a sufficiently motivated caller could still call
+`/auth/consent-callback` directly with nothing but a valid ID token and
+skip the admin-consent step entirely — exactly as the LAT dev workaround
+already did before this flow existed. Closing this fully would require
+`apps/api` to make an authenticated Microsoft Graph call (e.g.
+`GET /servicePrincipals/{id}/appRoleAssignedTo`, comparing granted app
+roles against ADR-0003's `Files.Read.All`/`Sites.Read.All`) — a genuinely
+new integration surface, since `apps/api` today only ever verifies incoming
+ID tokens and never calls Graph itself (`docs/architecture/deployment.md`).
+Flagged here as named future work, not solved in Phase 6.
+
+## Amendment (2026-07-20): Tenant Connection Lifecycle, Revocation, and Reconnect
+
+A product/UX design review this session identified that `MicrosoftTenantStatus` has carried a `Revoked` value (`PendingConsent | Consented | Revoked`) since Phase 4's schema, but a repo-wide search confirmed nothing anywhere ever sets it or reacts to it — if a customer's Global Admin revokes this app's consent in Azure AD, every subsequent scan attempt just fails with no self-service recovery path and no visibility into why. This amendment closes that gap without changing the enum or any of this ADR's original bootstrap/provisioning decisions.
+
+### The full lifecycle
+
+```
+PendingConsent → Consented → Revoked → (Admin reconnects) → Consented
+```
+
+- **`PendingConsent → Consented`**: unchanged, this ADR's §3 bootstrap (or §2's "additional connection" path).
+- **`Consented → Revoked`**: set **only** from the new lightweight periodic health check — a cheap, tenant-wide `GET /organization` app-only Graph call riding the existing 15-minute scheduler tick (ADR-0015 §1) — receiving a `403` (`GraphPermissionError`, ADR-0013 §5's typed error hierarchy). **A scan-time `GraphPermissionError` on one specific site does *not* set `Revoked`.** This distinction matters: `Files.Read.All`/`Sites.Read.All` (ADR-0003) is broad, tenant-wide consent, but a single site can still 403 for reasons that have nothing to do with that consent being revoked — a sensitivity-label or DLP-driven restriction on one unusual site, for instance — and treating any one site's failure as "the whole tenant connection is broken" would be a false positive that locks an otherwise-healthy organization out of scanning everything else. `GET /organization` is not scoped to any site: it succeeds or fails based on the tenant-wide grant alone, so a `403` there is an unambiguous signal about the *connection itself*, not about one resource. A scan-time site-level `403` is instead recorded the same way any other per-site scan failure already is (`ScanJob.errorSummary`, unchanged) — visible, but not tenant-connection-altering. This is a deliberate, narrow trust boundary: **no API endpoint may set `Revoked` directly, and no scan-time error alone may set it either** — only the dedicated tenant-wide health check's own real Graph rejection, never inferred, never client-settable, the same "only cryptographically observed facts drive state" discipline ADR-0011 already established for identity.
+- **`Revoked → Consented`** (reconnect): an Admin-only action, `POST /organizations/:id/microsoft-tenant/reconnect`, that mirrors `/connect`'s existing admin-consent redirect construction but scoped to the organization's already-known `entraTenantId` rather than starting a fresh bootstrap — this is §2's existing "additional connection for an existing Organization" pattern, applied to *reconnecting the same tenant* rather than adding a new one. No new `Organization`, `MicrosoftTenant`, or `User` row is created; the existing `MicrosoftTenant` row transitions back to `Consented` once Microsoft's redirect confirms consent again.
+
+`MicrosoftTenant` gains `revokedAt DateTime?` (nullable, additive) — set alongside the `Revoked` transition, cleared on successful reconnect, purely for display ("connection lost since March 3").
+
+### A state this lifecycle does not yet need, but should be ready for: `NeedsReconsent`
+
+ADR-0003 itself already names a future scenario this lifecycle isn't built for yet: "if a future feature needs to write back to SharePoint... request the additional write scope as a separate, explicitly-justified consent step." That scenario is not `Revoked` (nothing was rejected; the existing grant is still fully valid) and not plain `Consented` (the app now needs a scope it doesn't have yet) — it is a distinct third state, `NeedsReconsent`, that this amendment names explicitly so a future implementer doesn't have to choose between awkwardly overloading `Revoked` or silently expanding this enum without an ADR. **Not built now** — no code path produces or consumes it today — named here only so the two-state (`Consented`/`Revoked`) model isn't mistaken for a permanent ceiling.
+
+### Security boundary, restated
+
+Reconnection is Admin-only (`RolesGuard`/`@Roles('Admin')`), identical to every other tenant-connection-management action this ADR already restricts to Admins (§2). Detection stays strictly reactive to the periodic health check's own tenant-wide Graph call — never a guess, never inferred from a site-level scan failure, never settable through any generic "update tenant" surface.

@@ -6,6 +6,8 @@ import { useSharePointSiteManagement } from '@/lib/api/hooks/use-sharepoint-site
 import { SharePointSiteFilter, type SharePointSiteFilterValue } from '@/components/sharepoint/sharepoint-site-filter';
 import { SharePointSiteList } from '@/components/sharepoint/sharepoint-site-list';
 import { ErrorState, LoadingState } from '@/components/ui/query-state';
+import { Button } from '@/components/ui/button';
+import { PageHeader } from '@/components/ui/page-header';
 
 // ADR-0014: this page is the only place discovery/approval/revocation are
 // reachable from the web UI (Phase 9.5 — previously API-only, see
@@ -29,19 +31,16 @@ export default function SharePointSitesPage(): JSX.Element {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold text-slate-900">SharePoint Sites</h1>
-        {isAdmin && (
-          <button
-            type="button"
-            disabled={discovering}
-            onClick={() => void discover()}
-            className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {discovering ? 'Discovering…' : sites && sites.length > 0 ? 'Refresh discovery' : 'Discover sites'}
-          </button>
-        )}
-      </div>
+      <PageHeader
+        title="SharePoint Sites"
+        action={
+          isAdmin && (
+            <Button disabled={discovering} onClick={() => void discover()}>
+              {discovering ? 'Discovering…' : sites && sites.length > 0 ? 'Refresh discovery' : 'Discover sites'}
+            </Button>
+          )
+        }
+      />
 
       {discoverError && <p className="text-sm text-red-700">{discoverError.message}</p>}
       {mutateError && <p className="text-sm text-red-700">{mutateError.message}</p>}

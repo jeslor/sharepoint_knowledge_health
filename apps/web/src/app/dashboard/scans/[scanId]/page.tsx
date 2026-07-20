@@ -29,7 +29,7 @@ export default function ScanDetailPage({ params }: ScanDetailPageProps): JSX.Ele
     <div className="max-w-3xl space-y-6">
       <div>
         <div className="flex items-center gap-3">
-          <h1 className="text-xl font-semibold text-slate-900">Scan {scan.id}</h1>
+          <h1 className="text-page-title text-slate-900">Scan {scan.id}</h1>
           <ScanStatusBadge status={scan.status} />
         </div>
         <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm text-slate-600">
@@ -53,7 +53,7 @@ export default function ScanDetailPage({ params }: ScanDetailPageProps): JSX.Ele
       </div>
 
       <div>
-        <h2 className="text-lg font-semibold text-slate-900">Comparison to previous scan</h2>
+        <h2 className="text-section-title text-slate-900">Comparison to previous scan</h2>
         <div className="mt-2">
           {comparisonLoading && <LoadingState label="Loading comparison…" />}
           {comparisonError && <ErrorState error={comparisonError} />}

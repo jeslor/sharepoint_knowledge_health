@@ -29,8 +29,18 @@ requires redeploying the others.
 - **Multi-tenant** ("accounts in any organizational directory") — required
   because each customer authenticates against their *own* Entra tenant, not
   a shared one (ADR-0001, ADR-0011).
-- Redirect URI registered as a **SPA** platform entry, matching `apps/web`'s
-  deployed origin (`NEXT_PUBLIC_REDIRECT_URI`).
+- **Two** redirect URIs registered as **SPA** platform entries:
+  - `NEXT_PUBLIC_REDIRECT_URI` — `apps/web`'s deployed origin, where MSAL's
+    own `loginRedirect` lands (unchanged, existing).
+  - `NEXT_PUBLIC_ADMIN_CONSENT_REDIRECT_URI` — the "Connect Microsoft 365"
+    admin-consent callback (`/connect/admin-consent-callback`, Phase 6).
+    Deliberately a **separate** URI from the MSAL sign-in redirect: this is
+    Microsoft's raw admin-consent endpoint callback, not an MSAL-mediated
+    redirect, and its query-string shape (`?tenant=&admin_consent=&state=`
+    or `?error=&error_description=`) is not something MSAL's
+    `handleRedirectPromise()` recognizes — keeping them as two distinct
+    registered URIs avoids two different redirect-response shapes ever
+    landing on the same page.
 - **API permissions** (ADR-0003), application (app-only), granted via
   tenant-admin consent at each customer's onboarding — not delegated:
   - `Files.Read.All`
@@ -62,6 +72,7 @@ surfacing later as an opaque failure deep in a request handler.
 | `WORKER_CONCURRENCY` | worker | BullMQ processor concurrency for `SCAN_QUEUE`, defaults to `5` |
 | `WEB_APP_ORIGIN` | api | Phase 9: comma-separated allowed CORS origins; defaults to `http://localhost:3000` if unset — **must be set explicitly in staging/production** |
 | `NEXT_PUBLIC_ENTRA_CLIENT_ID`, `NEXT_PUBLIC_API_BASE_URL`, `NEXT_PUBLIC_REDIRECT_URI` | web | MSAL/browser-side config, baked in at Next.js build time |
+| `NEXT_PUBLIC_ADMIN_CONSENT_REDIRECT_URI` | web | Phase 6: the "Connect Microsoft 365" admin-consent callback URI (see above); optional — defaults to `${origin}/connect/admin-consent-callback` if unset, matching how `NEXT_PUBLIC_REDIRECT_URI` defaults to `window.location.origin` |
 
 Local development uses `docker-compose.yml` (Postgres 16 + Redis 7 only —
 the three apps themselves run via `pnpm dev`, not containerized locally)

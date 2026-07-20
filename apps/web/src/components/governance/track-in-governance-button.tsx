@@ -3,6 +3,7 @@
 import { useRouter } from 'next/navigation';
 import type { GovernanceIssueTypeValue } from '@sph/types';
 import { useCreateGovernanceIssue } from '@/lib/api/hooks/use-create-governance-issue';
+import { Button } from '@/components/ui/button';
 
 interface TrackInGovernanceButtonProps {
   documentId: string;
@@ -27,14 +28,9 @@ export function TrackInGovernanceButton({ documentId, issueType }: TrackInGovern
 
   return (
     <div>
-      <button
-        type="button"
-        disabled={creating}
-        onClick={() => void handleClick()}
-        className="rounded-md border border-slate-300 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-      >
+      <Button variant="secondary" size="sm" disabled={creating} onClick={() => void handleClick()}>
         {creating ? 'Opening…' : 'Track in governance'}
-      </button>
+      </Button>
       {error && <p className="mt-1 text-xs text-red-700">{error.message}</p>}
     </div>
   );

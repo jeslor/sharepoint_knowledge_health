@@ -69,7 +69,8 @@ describe('GovernanceIssueControls', () => {
       />,
     );
 
-    fireEvent.change(screen.getByLabelText(/assigned to/i), { target: { value: 'user-1' } });
+    fireEvent.click(screen.getByRole('combobox', { name: /assigned to/i }));
+    fireEvent.click(screen.getByRole('option', { name: 'Sarah' }));
 
     expect(onUpdate).toHaveBeenCalledWith({ assignedUserId: 'user-1' });
   });

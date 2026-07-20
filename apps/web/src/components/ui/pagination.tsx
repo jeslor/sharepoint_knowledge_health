@@ -1,4 +1,5 @@
 import type { PaginationMeta } from '@sph/types';
+import { Button } from './button';
 
 export function Pagination({ pagination, onPageChange }: { pagination: PaginationMeta; onPageChange: (page: number) => void }): JSX.Element {
   const { page, totalPages, total } = pagination;
@@ -7,25 +8,15 @@ export function Pagination({ pagination, onPageChange }: { pagination: Paginatio
     <div className="flex items-center justify-between text-sm text-slate-600">
       <span>{total} total</span>
       <div className="flex items-center gap-2">
-        <button
-          type="button"
-          disabled={page <= 1}
-          onClick={() => onPageChange(page - 1)}
-          className="rounded-md border border-slate-300 px-3 py-1 disabled:cursor-not-allowed disabled:opacity-50"
-        >
+        <Button variant="secondary" size="sm" disabled={page <= 1} onClick={() => onPageChange(page - 1)}>
           Previous
-        </button>
+        </Button>
         <span>
           Page {page} of {totalPages}
         </span>
-        <button
-          type="button"
-          disabled={page >= totalPages}
-          onClick={() => onPageChange(page + 1)}
-          className="rounded-md border border-slate-300 px-3 py-1 disabled:cursor-not-allowed disabled:opacity-50"
-        >
+        <Button variant="secondary" size="sm" disabled={page >= totalPages} onClick={() => onPageChange(page + 1)}>
           Next
-        </button>
+        </Button>
       </div>
     </div>
   );

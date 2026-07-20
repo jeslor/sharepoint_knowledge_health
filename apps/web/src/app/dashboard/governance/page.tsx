@@ -9,6 +9,8 @@ import { GovernanceIssueList } from '@/components/governance/governance-issue-li
 import { GovernanceIssueFilters, type GovernanceIssueFilterValues } from '@/components/governance/governance-issue-filters';
 import { GovernanceSummaryCards } from '@/components/governance/governance-summary-cards';
 import { IssuesByType } from '@/components/governance/issues-by-type';
+import { Card } from '@/components/ui/card';
+import { PageHeader } from '@/components/ui/page-header';
 import { Pagination } from '@/components/ui/pagination';
 import { LoadingState, ErrorState } from '@/components/ui/query-state';
 import { useAssignableUsers } from '@/lib/api/hooks/use-assignable-users';
@@ -57,24 +59,26 @@ function GovernanceDashboardContent(): JSX.Element {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold text-slate-900">Governance</h1>
-        <Link href="/dashboard/governance/analytics" className="text-sm font-medium text-slate-900 underline">
-          View executive analytics
-        </Link>
-      </div>
+      <PageHeader
+        title="Governance"
+        action={
+          <Link href="/dashboard/governance/analytics" className="text-sm font-medium text-brand-700 hover:text-brand-800">
+            View executive analytics
+          </Link>
+        }
+      />
 
       {summaryLoading && <LoadingState label="Loading summary…" />}
       {summaryError && <ErrorState error={summaryError} />}
       {summary && (
         <div className="space-y-4">
           <GovernanceSummaryCards summary={summary} />
-          <div className="rounded-lg border border-slate-200 bg-white p-4">
-            <h2 className="text-sm font-medium text-slate-500">Open issues by type</h2>
-            <div className="mt-2">
+          <Card>
+            <h2 className="text-body-strong text-slate-700">Open issues by type</h2>
+            <div className="mt-3">
               <IssuesByType byType={summary.byType} />
             </div>
-          </div>
+          </Card>
         </div>
       )}
 
@@ -93,14 +97,14 @@ function GovernanceDashboardContent(): JSX.Element {
         </>
       )}
 
-      <div className="rounded-lg border border-slate-200 bg-white p-4">
-        <h2 className="text-sm font-medium text-slate-500">Recent governance activity</h2>
-        <div className="mt-2">
+      <Card>
+        <h2 className="text-body-strong text-slate-700">Recent governance activity</h2>
+        <div className="mt-3">
           {activityLoading && <LoadingState label="Loading recent activity…" />}
           {activityError && <ErrorState error={activityError} />}
           {recentActivity && <ActivityList activities={recentActivity.data} showIssueLink />}
         </div>
-      </div>
+      </Card>
     </div>
   );
 }

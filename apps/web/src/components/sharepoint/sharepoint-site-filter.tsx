@@ -1,3 +1,5 @@
+import { Button } from '@/components/ui/button';
+
 export type SharePointSiteFilterValue = 'all' | 'approved' | 'pending';
 
 const OPTIONS: { value: SharePointSiteFilterValue; label: string }[] = [
@@ -13,21 +15,17 @@ interface SharePointSiteFilterProps {
 
 export function SharePointSiteFilter({ value, onChange }: SharePointSiteFilterProps): JSX.Element {
   return (
-    <div role="group" aria-label="Filter sites" className="flex gap-2 text-sm">
+    <div role="group" aria-label="Filter sites" className="flex gap-2">
       {OPTIONS.map((option) => (
-        <button
+        <Button
           key={option.value}
-          type="button"
+          variant={value === option.value ? 'primary' : 'secondary'}
+          size="sm"
           onClick={() => onChange(option.value)}
           aria-pressed={value === option.value}
-          className={
-            value === option.value
-              ? 'rounded-md bg-slate-900 px-3 py-1 font-medium text-white'
-              : 'rounded-md border border-slate-300 px-3 py-1 text-slate-600 hover:bg-slate-50'
-          }
         >
           {option.label}
-        </button>
+        </Button>
       ))}
     </div>
   );

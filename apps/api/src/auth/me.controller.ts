@@ -1,5 +1,5 @@
 import { Controller, Get, UseGuards } from '@nestjs/common';
-import type { User } from '@sph/database';
+import { createTenantContext, type User } from '@sph/database';
 import type { MeResponse } from '@sph/types';
 import { EntraJwtGuard } from './entra-jwt.guard';
 import { TenantContextGuard } from './tenant-context.guard';
@@ -13,11 +13,17 @@ import { CurrentUser } from './current-user.decorator';
 export class MeController {
   @Get('me')
   @UseGuards(EntraJwtGuard, TenantContextGuard)
-  getMe(@CurrentUser() user: User): MeResponse {
+  async getMe(@CurrentUser() user: User): Promise<MeResponse> {
+    const context = createTenantContext(user.organizationId);
+    const [consentedTenant] = await context.microsoftTenants.findMany({ where: { status: 'Consented' }, take: 1 });
+
     return {
       id: user.id,
       role: user.role,
       organizationId: user.organizationId,
+      displayName: user.displayName,
+      email: user.email,
+      tenantName: consentedTenant?.tenantName ?? null,
     };
   }
 }

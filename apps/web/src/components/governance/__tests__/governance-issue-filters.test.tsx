@@ -6,7 +6,8 @@ describe('GovernanceIssueFilters', () => {
     const onChange = jest.fn();
     render(<GovernanceIssueFilters values={{}} assignableUsers={[]} onChange={onChange} />);
 
-    fireEvent.change(screen.getByLabelText(/status/i), { target: { value: 'Open' } });
+    fireEvent.click(screen.getByRole('combobox', { name: /status/i }));
+    fireEvent.click(screen.getByRole('option', { name: 'Open' }));
 
     expect(onChange).toHaveBeenCalledWith({ status: 'Open' });
   });
@@ -21,9 +22,10 @@ describe('GovernanceIssueFilters', () => {
       />,
     );
 
+    fireEvent.click(screen.getByRole('combobox', { name: /assigned to/i }));
     expect(screen.getByRole('option', { name: 'Sarah' })).toBeInTheDocument();
 
-    fireEvent.change(screen.getByLabelText(/assigned to/i), { target: { value: 'user-1' } });
+    fireEvent.click(screen.getByRole('option', { name: 'Sarah' }));
 
     expect(onChange).toHaveBeenCalledWith({ assignedUserId: 'user-1' });
   });
@@ -32,7 +34,8 @@ describe('GovernanceIssueFilters', () => {
     const onChange = jest.fn();
     render(<GovernanceIssueFilters values={{ severity: 'RequiresReview' }} assignableUsers={[]} onChange={onChange} />);
 
-    fireEvent.change(screen.getByLabelText(/severity/i), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('combobox', { name: /severity/i }));
+    fireEvent.click(screen.getByRole('option', { name: 'All' }));
 
     expect(onChange).toHaveBeenCalledWith({ severity: undefined });
   });
