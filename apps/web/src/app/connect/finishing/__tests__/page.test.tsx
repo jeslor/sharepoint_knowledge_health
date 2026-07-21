@@ -2,17 +2,18 @@ import { render, screen, waitFor } from '@testing-library/react';
 import type { ConsentResolution } from '@sph/types';
 import ConnectFinishingPage from '../page';
 import { ApiError } from '@/lib/api/client';
-import { isConnectFlowInProgress, startConnectFlow } from '@/lib/auth/connect-flow';
 
 const mockReplace = jest.fn();
 const mockUseIsAuthenticated = jest.fn();
 let mockInProgress = 'none';
+let mockSearchParams = new URLSearchParams();
 const mockGetAccessToken = jest.fn();
 const mockPostConsentCallback = jest.fn();
 const mockGetOnboardingStatus = jest.fn();
 
 jest.mock('next/navigation', () => ({
   useRouter: () => ({ replace: mockReplace }),
+  useSearchParams: () => mockSearchParams,
 }));
 
 jest.mock('@azure/msal-react', () => ({
@@ -28,6 +29,10 @@ jest.mock('@/lib/api/endpoints', () => ({
   postConsentCallback: (idToken: string, tenantName: string) => mockPostConsentCallback(idToken, tenantName),
   getOnboardingStatus: (organizationId: string, idToken: string) => mockGetOnboardingStatus(organizationId, idToken),
 }));
+
+function withTenantName(tenantName: string): void {
+  mockSearchParams = new URLSearchParams({ tenantName });
+}
 
 function resolution(kind: ConsentResolution['kind']): ConsentResolution {
   if (kind === 'rejected') return { kind, reason: 'tenant-not-consented' };
@@ -48,6 +53,7 @@ describe('ConnectFinishingPage', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockInProgress = 'none';
+    mockSearchParams = new URLSearchParams();
     mockUseIsAuthenticated.mockReturnValue(true);
     mockGetAccessToken.mockResolvedValue('id-token-123');
     mockGetOnboardingStatus.mockResolvedValue(onboardingStatus('Completed'));
@@ -58,22 +64,27 @@ describe('ConnectFinishingPage', () => {
     jest.useRealTimers();
   });
 
-  it('does not call postConsentCallback and falls back to /dashboard when no connect flow was ever started', async () => {
+  it('does not call postConsentCallback and falls back to /dashboard when no tenantName query param is present', async () => {
     render(<ConnectFinishingPage />);
     await waitFor(() => expect(mockReplace).toHaveBeenCalledWith('/dashboard'));
     expect(mockPostConsentCallback).not.toHaveBeenCalled();
   });
 
-  it('does not call postConsentCallback while MSAL interaction is still in progress, even with a pending flow', async () => {
-    startConnectFlow('Acme Corporation');
+  it('does not call postConsentCallback while MSAL interaction is still in progress, even with tenantName present', async () => {
+    withTenantName('Acme Corporation');
     mockInProgress = 'startup';
     render(<ConnectFinishingPage />);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(mockPostConsentCallback).not.toHaveBeenCalled();
   });
 
-  it('obtains the token via useAccessToken and posts it with the stored tenant name once settled', async () => {
-    startConnectFlow('Acme Corporation');
+  // Root cause regression test (2026-07-22): the tenant name used to be
+  // read back out of sessionStorage here, expected to have survived the
+  // MSAL sign-in redirect round trip — live testing showed that hop losing
+  // the value intermittently. It's now read from the query string instead,
+  // populated by app/page.tsx from MSAL's own `state` parameter.
+  it('obtains the token via useAccessToken and posts it with the tenantName query param once settled', async () => {
+    withTenantName('Acme Corporation');
     mockPostConsentCallback.mockResolvedValue(resolution('bootstrapped'));
 
     render(<ConnectFinishingPage />);
@@ -82,19 +93,18 @@ describe('ConnectFinishingPage', () => {
     expect(mockGetAccessToken).toHaveBeenCalledTimes(1);
   });
 
-  it('routes to /dashboard and clears the connect-flow marker on kind: existing (no discovery polling — not a fresh consent transition)', async () => {
-    startConnectFlow('Acme Corporation');
+  it('routes to /dashboard on kind: existing (no discovery polling — not a fresh consent transition)', async () => {
+    withTenantName('Acme Corporation');
     mockPostConsentCallback.mockResolvedValue(resolution('existing'));
 
     render(<ConnectFinishingPage />);
 
     await waitFor(() => expect(mockReplace).toHaveBeenCalledWith('/dashboard'));
-    expect(isConnectFlowInProgress()).toBe(false);
     expect(mockGetOnboardingStatus).not.toHaveBeenCalled();
   });
 
   it('polls onboarding-status on kind: bootstrapped (ADR-0017 — purely reactive to backend-reported discoveryStatus) and routes to /dashboard once Completed', async () => {
-    startConnectFlow('Acme Corporation');
+    withTenantName('Acme Corporation');
     mockPostConsentCallback.mockResolvedValue(resolution('bootstrapped'));
     mockGetOnboardingStatus.mockResolvedValue(onboardingStatus('Completed'));
 
@@ -102,11 +112,10 @@ describe('ConnectFinishingPage', () => {
 
     await waitFor(() => expect(mockGetOnboardingStatus).toHaveBeenCalledWith('org-1', 'id-token-123'));
     await waitFor(() => expect(mockReplace).toHaveBeenCalledWith('/dashboard'));
-    expect(isConnectFlowInProgress()).toBe(false);
   });
 
   it('routes to /dashboard once discoveryStatus reports Failed (does not wait forever, does not block onboarding on a failed discovery)', async () => {
-    startConnectFlow('Acme Corporation');
+    withTenantName('Acme Corporation');
     mockPostConsentCallback.mockResolvedValue(resolution('bootstrapped'));
     mockGetOnboardingStatus.mockResolvedValue(onboardingStatus('Failed'));
 
@@ -117,7 +126,7 @@ describe('ConnectFinishingPage', () => {
   });
 
   it('renders "Discovering your SharePoint sites…" while discoveryStatus is Running — rendering backend state directly, no separate progress model', async () => {
-    startConnectFlow('Acme Corporation');
+    withTenantName('Acme Corporation');
     mockPostConsentCallback.mockResolvedValue(resolution('bootstrapped'));
     mockGetOnboardingStatus.mockResolvedValue(onboardingStatus('Running'));
 
@@ -127,7 +136,7 @@ describe('ConnectFinishingPage', () => {
   });
 
   it('still routes to /dashboard on kind: bootstrapped even when reading onboarding-status fails (best-effort — the dashboard/Sites page remain the source of truth)', async () => {
-    startConnectFlow('Acme Corporation');
+    withTenantName('Acme Corporation');
     mockPostConsentCallback.mockResolvedValue(resolution('bootstrapped'));
     mockGetOnboardingStatus.mockRejectedValue(new Error('Network error'));
 
@@ -138,7 +147,7 @@ describe('ConnectFinishingPage', () => {
 
   it('gives up after a bounded number of polls and routes to /dashboard anyway when discovery never leaves Queued/Running', async () => {
     jest.useFakeTimers({ advanceTimers: true });
-    startConnectFlow('Acme Corporation');
+    withTenantName('Acme Corporation');
     mockPostConsentCallback.mockResolvedValue(resolution('bootstrapped'));
     mockGetOnboardingStatus.mockResolvedValue(onboardingStatus('Queued'));
 
@@ -149,50 +158,46 @@ describe('ConnectFinishingPage', () => {
     expect(mockGetOnboardingStatus).toHaveBeenCalledTimes(10);
   }, 35_000);
 
-  it('renders a pending-approval message and clears the marker on kind: provisioned-pending', async () => {
-    startConnectFlow('Acme Corporation');
+  it('renders a pending-approval message on kind: provisioned-pending', async () => {
+    withTenantName('Acme Corporation');
     mockPostConsentCallback.mockResolvedValue(resolution('provisioned-pending'));
 
     render(<ConnectFinishingPage />);
 
     expect(await screen.findByText('Almost there')).toBeInTheDocument();
     expect(mockReplace).not.toHaveBeenCalled();
-    expect(isConnectFlowInProgress()).toBe(false);
   });
 
-  it('renders a not-connected message and clears the marker on kind: rejected', async () => {
-    startConnectFlow('Acme Corporation');
+  it('renders a not-connected message on kind: rejected', async () => {
+    withTenantName('Acme Corporation');
     mockPostConsentCallback.mockResolvedValue(resolution('rejected'));
 
     render(<ConnectFinishingPage />);
 
     expect(await screen.findByText(/hasn.t completed admin consent/i)).toBeInTheDocument();
-    expect(isConnectFlowInProgress()).toBe(false);
   });
 
-  it('renders the server-provided message and clears the marker on an unexpected ApiError', async () => {
-    startConnectFlow('Acme Corporation');
+  it('renders the server-provided message on an unexpected ApiError', async () => {
+    withTenantName('Acme Corporation');
     mockPostConsentCallback.mockRejectedValue(new ApiError(500, 'Internal server error'));
 
     render(<ConnectFinishingPage />);
 
     expect(await screen.findByText('Internal server error')).toBeInTheDocument();
     expect(screen.getByText('Something went wrong')).toBeInTheDocument();
-    expect(isConnectFlowInProgress()).toBe(false);
   });
 
-  it('renders a generic message and clears the marker for a non-ApiError failure', async () => {
-    startConnectFlow('Acme Corporation');
+  it('renders a generic message for a non-ApiError failure', async () => {
+    withTenantName('Acme Corporation');
     mockGetAccessToken.mockRejectedValue(new Error('network down'));
 
     render(<ConnectFinishingPage />);
 
     expect(await screen.findByText(/something went wrong while connecting your organization/i)).toBeInTheDocument();
-    expect(isConnectFlowInProgress()).toBe(false);
   });
 
   it('provides a "Try again" link back to /connect on the rejected branch', async () => {
-    startConnectFlow('Acme Corporation');
+    withTenantName('Acme Corporation');
     mockPostConsentCallback.mockResolvedValue(resolution('rejected'));
 
     render(<ConnectFinishingPage />);

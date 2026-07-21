@@ -1,9 +1,10 @@
-import { render, screen } from '@testing-library/react';
+import React from 'react';
+import { render, screen, waitFor } from '@testing-library/react';
 import HomePage from '../page';
-import { startConnectFlow } from '@/lib/auth/connect-flow';
 
 const mockReplace = jest.fn();
 const mockUseIsAuthenticated = jest.fn();
+const mockConsumeLastLoginState = jest.fn();
 let mockInProgress = 'none';
 
 jest.mock('next/navigation', () => ({
@@ -15,11 +16,15 @@ jest.mock('@azure/msal-react', () => ({
   useMsal: () => ({ instance: { loginRedirect: jest.fn() }, inProgress: mockInProgress }),
 }));
 
+jest.mock('@/lib/auth/msal-instance', () => ({
+  consumeLastLoginState: () => mockConsumeLastLoginState(),
+}));
+
 describe('HomePage', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockInProgress = 'none';
-    sessionStorage.clear();
+    mockConsumeLastLoginState.mockReturnValue(null);
   });
 
   it('renders the product name', () => {
@@ -48,32 +53,72 @@ describe('HomePage', () => {
     expect(mockReplace).not.toHaveBeenCalled();
   });
 
-  // Phase 6 regression tests — the sessionStorage marker check must not
-  // alter behavior for anyone who never went through /connect.
-  describe('Phase 6 — Connect Microsoft 365 routing', () => {
-    it('an existing/returning authenticated user with no connect-flow marker still redirects straight to /dashboard', () => {
-      // No startConnectFlow() call — sessionStorage is empty, matching
-      // every returning user's real sessionStorage state.
+  // Root cause regression tests (2026-07-22): the connect-flow marker used
+  // to be a sessionStorage key that had to survive the MSAL sign-in
+  // redirect round trip — live testing showed that hop losing the value
+  // intermittently. It's now read out of MSAL's own `state` parameter via
+  // consumeLastLoginState() instead, which login.microsoftonline.com
+  // round-trips as part of the OAuth response itself.
+  describe('Connect Microsoft 365 routing via consumeLastLoginState', () => {
+    it('an existing/returning authenticated user with no captured login state still redirects straight to /dashboard', () => {
+      mockConsumeLastLoginState.mockReturnValue(null);
       mockUseIsAuthenticated.mockReturnValue(true);
       render(<HomePage />);
       expect(mockReplace).toHaveBeenCalledTimes(1);
       expect(mockReplace).toHaveBeenCalledWith('/dashboard');
     });
 
-    it('a user completing sign-in with a connect-flow marker present is routed to /connect/finishing instead', () => {
-      startConnectFlow('Acme Corporation');
+    it('a user completing sign-in with a connect-flow state payload is routed to /connect/finishing with the tenant name in the query string', () => {
+      mockConsumeLastLoginState.mockReturnValue(JSON.stringify({ kind: 'connect', tenantName: 'Acme Corporation' }));
       mockUseIsAuthenticated.mockReturnValue(true);
       render(<HomePage />);
       expect(mockReplace).toHaveBeenCalledTimes(1);
-      expect(mockReplace).toHaveBeenCalledWith('/connect/finishing');
+      expect(mockReplace).toHaveBeenCalledWith('/connect/finishing?tenantName=Acme%20Corporation');
     });
 
-    it('does not route to /connect/finishing while MSAL is still processing, even with a marker present', () => {
-      startConnectFlow('Acme Corporation');
+    it('treats an unparseable or wrong-shaped state payload as a plain sign-in (fails open to /dashboard)', () => {
+      mockConsumeLastLoginState.mockReturnValue('not-json-at-all');
+      mockUseIsAuthenticated.mockReturnValue(true);
+      render(<HomePage />);
+      expect(mockReplace).toHaveBeenCalledWith('/dashboard');
+    });
+
+    it('does not route to /connect/finishing while MSAL is still processing, even with a connect-flow state present', () => {
+      mockConsumeLastLoginState.mockReturnValue(JSON.stringify({ kind: 'connect', tenantName: 'Acme Corporation' }));
       mockUseIsAuthenticated.mockReturnValue(true);
       mockInProgress = 'startup';
       render(<HomePage />);
       expect(mockReplace).not.toHaveBeenCalled();
+    });
+  });
+
+  // Root cause regression test (2026-07-22): confirmed via an isolated
+  // StrictMode-wrapped render during this investigation that, without a
+  // re-entry guard, React 18 Strict Mode's dev-only double-effect-
+  // invocation called consumeLastLoginState() twice on mount — the first
+  // call correctly consumed the real connect-flow state and called
+  // router.replace('/connect/finishing?...'), but the second call always
+  // saw null (consumeLastLoginState() clears on read) and called
+  // router.replace('/dashboard') immediately after, which won since it was
+  // the last call issued. This wraps the real component in
+  // <React.StrictMode> specifically to exercise that double-invocation and
+  // prove the consumedRef guard closes it.
+  describe('React 18 Strict Mode safety (apps/web/next.config.ts sets reactStrictMode: true)', () => {
+    it('under StrictMode, consumeLastLoginState is called only once and the correct target wins, even though the effect body runs twice', async () => {
+      mockConsumeLastLoginState.mockReturnValue(JSON.stringify({ kind: 'connect', tenantName: 'Acme Corporation' }));
+      mockUseIsAuthenticated.mockReturnValue(true);
+
+      render(
+        <React.StrictMode>
+          <HomePage />
+        </React.StrictMode>,
+      );
+
+      await waitFor(() => expect(mockReplace).toHaveBeenCalled());
+
+      expect(mockConsumeLastLoginState).toHaveBeenCalledTimes(1);
+      expect(mockReplace).toHaveBeenCalledTimes(1);
+      expect(mockReplace).toHaveBeenCalledWith('/connect/finishing?tenantName=Acme%20Corporation');
     });
   });
 });

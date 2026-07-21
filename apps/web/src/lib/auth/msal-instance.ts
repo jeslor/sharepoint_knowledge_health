@@ -35,11 +35,47 @@ if (!msalInstance.getActiveAccount() && msalInstance.getAllAccounts().length > 0
   }
 }
 
+/**
+ * Root cause fix (2026-07-22): the onboarding flow previously carried the
+ * tenant name across the sign-in redirect via a custom sessionStorage key
+ * (sph:connect:tenantName), on the assumption that sessionStorage reliably
+ * survives a full top-level round trip through login.microsoftonline.com
+ * and back. Extensive live testing showed this specific hop — not the
+ * earlier admin-consent redirect, which reliably validates every time —
+ * losing that value intermittently, with no reproducible single cause
+ * found (browser storage-partitioning heuristics around cross-origin
+ * "bounce" navigations are the leading suspect, but the point is this
+ * mechanism itself is inherently fragile for this hop, not any one bug in
+ * it). Replaced with the OAuth `state` parameter itself: admin-consent-
+ * callback/page.tsx now passes the tenant name as loginRedirect's own
+ * `state` option, which login.microsoftonline.com round-trips as part of
+ * the protocol response, not as separate client storage. This capture
+ * lives in memory only (not sessionStorage) since it only needs to survive
+ * from this event firing to app/page.tsx's effect reading it a moment
+ * later on the same page load — a far shorter, same-page window than a
+ * full cross-origin redirect.
+ */
+let lastLoginState: string | null = null;
+
+// Mutating read, by design — clears on consumption so a value is never
+// accidentally reused. Callers MUST guard against calling this more than
+// once per real login event (app/page.tsx does this via a useRef — React
+// 18 Strict Mode's dev-only double-effect-invocation would otherwise call
+// this twice per mount, and the second call would always see null
+// regardless of what actually happened; confirmed via an isolated
+// StrictMode-wrapped test of app/page.tsx during this investigation).
+export function consumeLastLoginState(): string | null {
+  const value = lastLoginState;
+  lastLoginState = null;
+  return value;
+}
+
 msalInstance.addEventCallback((event) => {
   if (event.eventType === EventType.LOGIN_SUCCESS && event.payload) {
     const result = event.payload as AuthenticationResult;
     if (result.account) {
       msalInstance.setActiveAccount(result.account);
     }
+    lastLoginState = result.state ?? null;
   }
 });

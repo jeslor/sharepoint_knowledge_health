@@ -1,14 +1,14 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { Suspense, useEffect, useRef, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useIsAuthenticated, useMsal } from '@azure/msal-react';
 import { InteractionStatus } from '@azure/msal-browser';
 import type { ConsentResolution, DiscoveryStatusValue } from '@sph/types';
 import { useAccessToken } from '@/lib/auth/use-access-token';
 import { getOnboardingStatus, postConsentCallback } from '@/lib/api/endpoints';
 import { ApiError } from '@/lib/api/client';
-import { clearConnectFlow, readConnectFlowTenantName } from '@/lib/auth/connect-flow';
+import { clearConnectFlow } from '@/lib/auth/connect-flow';
 
 type FinishingState =
   | { status: 'working' }
@@ -39,14 +39,23 @@ function sleep(ms: number): Promise<void> {
  *
  * ADR-0014 amendment / ADR-0017: discovery itself is no longer triggered
  * from this page — the consent-callback bootstrap enqueues it server-side
- * the moment a MicrosoftTenant transitions to Consented (a frontend-
- * orchestrated call lived here in an earlier session; removed). This page's
- * only remaining discovery-related job is purely reactive: poll
+ * the moment a MicrosoftTenant transitions to Consented. This page's only
+ * remaining discovery-related job is purely reactive: poll
  * GET .../onboarding-status and render exactly what it reports — no
  * separate client-side progress model of its own.
+ *
+ * Root cause fix (2026-07-22): the tenant name used to be read back out of
+ * sessionStorage here (set by /connect, expected to survive the MSAL
+ * sign-in redirect round trip in between). Live testing showed that
+ * specific hop losing the value intermittently. app/page.tsx now passes it
+ * through as a query param instead, sourced from MSAL's own `state`
+ * parameter (see msal-instance.ts's consumeLastLoginState()) — the OAuth
+ * protocol's own reliably-round-tripped channel, not a sessionStorage
+ * side-channel with no such guarantee across a cross-origin redirect.
  */
-export default function ConnectFinishingPage(): JSX.Element {
+function ConnectFinishingContent(): JSX.Element {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { inProgress } = useMsal();
   const isAuthenticated = useIsAuthenticated();
   const getAccessToken = useAccessToken();
@@ -61,11 +70,11 @@ export default function ConnectFinishingPage(): JSX.Element {
     if (startedRef.current) return;
     startedRef.current = true;
 
-    const tenantName = readConnectFlowTenantName();
+    const tenantName = searchParams.get('tenantName');
     if (!tenantName) {
       // Reachable only by directly visiting this URL outside the connect
-      // flow (no marker was ever set) — nothing to bootstrap, so just
-      // fall back to the normal authenticated destination.
+      // flow (no tenantName param was ever set) — nothing to bootstrap, so
+      // just fall back to the normal authenticated destination.
       router.replace('/dashboard');
       return;
     }
@@ -133,7 +142,7 @@ export default function ConnectFinishingPage(): JSX.Element {
         setState({ status: 'error', message });
       }
     })();
-  }, [isAuthenticated, inProgress, router, getAccessToken]);
+  }, [isAuthenticated, inProgress, router, getAccessToken, searchParams]);
 
   if (state.status === 'discovering') {
     return (
@@ -150,8 +159,8 @@ export default function ConnectFinishingPage(): JSX.Element {
       <main className="flex min-h-screen flex-col items-center justify-center gap-4 bg-slate-50 p-8">
         <h1 className="text-2xl font-semibold text-slate-900">Almost there</h1>
         <p className="max-w-md text-center text-slate-600">
-          Your identity was confirmed, but your organization is already connected. An
-          administrator needs to approve your account before you can continue.
+          Your identity was confirmed, but your organization is already connected. An administrator
+          needs to approve your account before you can continue.
         </p>
       </main>
     );
@@ -188,5 +197,19 @@ export default function ConnectFinishingPage(): JSX.Element {
     <main className="flex min-h-screen flex-col items-center justify-center gap-4 bg-slate-50 p-8">
       <p className="text-slate-600">Finishing setup…</p>
     </main>
+  );
+}
+
+export default function ConnectFinishingPage(): JSX.Element {
+  return (
+    <Suspense
+      fallback={
+        <main className="flex min-h-screen flex-col items-center justify-center gap-4 bg-slate-50 p-8">
+          <p className="text-slate-600">Finishing setup…</p>
+        </main>
+      }
+    >
+      <ConnectFinishingContent />
+    </Suspense>
   );
 }
