@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { AuthenticatedTemplate, UnauthenticatedTemplate } from '@azure/msal-react';
 import { SignInButton } from './sign-in-button';
@@ -24,7 +24,8 @@ import { ApiError } from '@/lib/api/client';
  */
 function AuthenticatedGate({ children }: { children: ReactNode }): JSX.Element | null {
   const router = useRouter();
-  const { loading, error } = useCurrentUser();
+  const { loading, error, refetch } = useCurrentUser();
+  const [checking, setChecking] = useState(false);
 
   const notConnected = error instanceof ApiError && error.status === 403 && error.message === 'Organization not connected';
   const pendingApproval = error instanceof ApiError && error.status === 403 && error.message === 'Account pending approval';
@@ -43,6 +44,13 @@ function AuthenticatedGate({ children }: { children: ReactNode }): JSX.Element |
   if (loading || notConnected) return null;
 
   if (pendingApproval) {
+    // No polling (deliberately) — an Admin approving this user is a rare,
+    // one-off event, not something worth a recurring background request for
+    // the whole time this screen is up. refetch() is the same primitive
+    // /connect/finishing uses post-provisioning: it resolves once GET
+    // /auth/me actually completes, so a click here reliably either clears
+    // pendingApproval (falls through to `children` below once error is
+    // gone) or leaves this exact screen up if still not approved yet.
     return (
       <main className="flex min-h-screen flex-col items-center justify-center gap-4 bg-slate-50 p-8">
         <h1 className="text-2xl font-semibold text-slate-900">Almost there</h1>
@@ -50,6 +58,17 @@ function AuthenticatedGate({ children }: { children: ReactNode }): JSX.Element |
           Your identity was confirmed, but your organization is already connected. An
           administrator needs to approve your account before you can continue.
         </p>
+        <button
+          type="button"
+          disabled={checking}
+          onClick={() => {
+            setChecking(true);
+            void refetch().finally(() => setChecking(false));
+          }}
+          className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:cursor-wait disabled:opacity-70"
+        >
+          {checking ? 'Checking…' : 'Check again'}
+        </button>
       </main>
     );
   }

@@ -1,5 +1,5 @@
 import { render, screen, waitFor } from '@testing-library/react';
-import type { ConsentResolution } from '@sph/types';
+import type { ConsentResolution, MeResponse } from '@sph/types';
 import ConnectFinishingPage from '../page';
 import { ApiError } from '@/lib/api/client';
 
@@ -10,6 +10,7 @@ let mockSearchParams = new URLSearchParams();
 const mockGetAccessToken = jest.fn();
 const mockPostConsentCallback = jest.fn();
 const mockGetOnboardingStatus = jest.fn();
+const mockRefetchCurrentUser = jest.fn();
 
 jest.mock('next/navigation', () => ({
   useRouter: () => ({ replace: mockReplace }),
@@ -25,10 +26,26 @@ jest.mock('@/lib/auth/use-access-token', () => ({
   useAccessToken: () => mockGetAccessToken,
 }));
 
+jest.mock('@/lib/auth/current-user-context', () => ({
+  useCurrentUser: () => ({ refetch: mockRefetchCurrentUser }),
+}));
+
 jest.mock('@/lib/api/endpoints', () => ({
   postConsentCallback: (idToken: string, tenantName: string) => mockPostConsentCallback(idToken, tenantName),
   getOnboardingStatus: (organizationId: string, idToken: string) => mockGetOnboardingStatus(organizationId, idToken),
 }));
+
+function meResponse(overrides: Partial<MeResponse> = {}): MeResponse {
+  return {
+    id: 'user-1',
+    role: 'Admin',
+    organizationId: 'org-1',
+    displayName: 'Admin',
+    email: 'admin@example.com',
+    tenantName: 'Acme Corporation',
+    ...overrides,
+  };
+}
 
 function withTenantName(tenantName: string): void {
   mockSearchParams = new URLSearchParams({ tenantName });
@@ -57,6 +74,7 @@ describe('ConnectFinishingPage', () => {
     mockUseIsAuthenticated.mockReturnValue(true);
     mockGetAccessToken.mockResolvedValue('id-token-123');
     mockGetOnboardingStatus.mockResolvedValue(onboardingStatus('Completed'));
+    mockRefetchCurrentUser.mockResolvedValue(meResponse());
     sessionStorage.clear();
   });
 
@@ -204,5 +222,80 @@ describe('ConnectFinishingPage', () => {
 
     const link = await screen.findByRole('link', { name: /try again/i });
     expect(link).toHaveAttribute('href', '/connect');
+  });
+
+  // Root cause regression tests (2026-07-22): CurrentUserProvider's own GET
+  // /auth/me is dispatched the instant isAuthenticated flips true, on "/" —
+  // necessarily before this page even mounts, let alone before
+  // POST /auth/consent-callback bootstraps an Organization. That first,
+  // necessarily-403 result used to sit uninvalidated for the rest of the
+  // session, so AuthGate on /dashboard read it and bounced a
+  // successfully-onboarded user straight back to /connect. These tests prove
+  // the fix: /dashboard is only ever reached after refetchCurrentUser()
+  // itself resolves successfully.
+  describe('deterministic post-provisioning refetch (root cause fix)', () => {
+    it('awaits refetchCurrentUser() and only navigates to /dashboard once it resolves, on kind: bootstrapped', async () => {
+      withTenantName('Acme Corporation');
+      mockPostConsentCallback.mockResolvedValue(resolution('bootstrapped'));
+      let resolveRefetch!: (user: MeResponse) => void;
+      mockRefetchCurrentUser.mockReturnValue(new Promise<MeResponse>((resolve) => (resolveRefetch = resolve)));
+
+      render(<ConnectFinishingPage />);
+
+      await waitFor(() => expect(mockRefetchCurrentUser).toHaveBeenCalledTimes(1));
+      // The refetch promise is still pending — navigation must not have
+      // happened yet, proving this isn't a fire-and-forget call.
+      expect(mockReplace).not.toHaveBeenCalled();
+
+      resolveRefetch(meResponse());
+      await waitFor(() => expect(mockReplace).toHaveBeenCalledWith('/dashboard'));
+    });
+
+    it('does not navigate to /dashboard when refetchCurrentUser rejects, even though provisioning already succeeded', async () => {
+      withTenantName('Acme Corporation');
+      mockPostConsentCallback.mockResolvedValue(resolution('bootstrapped'));
+      mockRefetchCurrentUser.mockRejectedValue(new Error('network down'));
+
+      render(<ConnectFinishingPage />);
+
+      expect(await screen.findByText('Something went wrong')).toBeInTheDocument();
+      expect(mockReplace).not.toHaveBeenCalledWith('/dashboard');
+    });
+
+    it('rejects (and does not navigate) if the refetched user has no organizationId, even on a 200 response', async () => {
+      withTenantName('Acme Corporation');
+      mockPostConsentCallback.mockResolvedValue(resolution('bootstrapped'));
+      mockRefetchCurrentUser.mockResolvedValue(meResponse({ organizationId: '' }));
+
+      render(<ConnectFinishingPage />);
+
+      expect(await screen.findByText('Something went wrong')).toBeInTheDocument();
+      expect(mockReplace).not.toHaveBeenCalledWith('/dashboard');
+    });
+
+    it('applies the same await-refetch-before-navigating sequence on kind: existing (returning user, no provisioning needed)', async () => {
+      withTenantName('Acme Corporation');
+      mockPostConsentCallback.mockResolvedValue(resolution('existing'));
+      let resolveRefetch!: (user: MeResponse) => void;
+      mockRefetchCurrentUser.mockReturnValue(new Promise<MeResponse>((resolve) => (resolveRefetch = resolve)));
+
+      render(<ConnectFinishingPage />);
+
+      await waitFor(() => expect(mockRefetchCurrentUser).toHaveBeenCalledTimes(1));
+      expect(mockReplace).not.toHaveBeenCalled();
+
+      resolveRefetch(meResponse());
+      await waitFor(() => expect(mockReplace).toHaveBeenCalledWith('/dashboard'));
+    });
+
+    it('never calls refetchCurrentUser for kind: provisioned-pending or kind: rejected (no dashboard destination to reach)', async () => {
+      withTenantName('Acme Corporation');
+      mockPostConsentCallback.mockResolvedValue(resolution('provisioned-pending'));
+
+      render(<ConnectFinishingPage />);
+
+      await screen.findByText('Almost there');
+      expect(mockRefetchCurrentUser).not.toHaveBeenCalled();
+    });
   });
 });

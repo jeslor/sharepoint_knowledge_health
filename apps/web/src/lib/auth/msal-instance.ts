@@ -1,4 +1,4 @@
-import { PublicClientApplication, EventType, type AuthenticationResult } from '@azure/msal-browser';
+import { PublicClientApplication, EventType, InteractionType, type AuthenticationResult } from '@azure/msal-browser';
 import { msalConfig } from './msal-config';
 
 /**
@@ -71,7 +71,22 @@ export function consumeLastLoginState(): string | null {
 }
 
 msalInstance.addEventCallback((event) => {
-  if (event.eventType === EventType.LOGIN_SUCCESS && event.payload) {
+  // Root cause fix (2026-07-22): msal-browser's StandardController only
+  // emits LOGIN_SUCCESS if the number of cached accounts actually increased
+  // as a result of this redirect (handleRedirectPromiseInternal). For a
+  // browser that already has this same account cached from an earlier
+  // sign-in in this app — not a rare edge case, just any returning user
+  // repeating the connect flow — it emits ACQUIRE_TOKEN_SUCCESS instead,
+  // with an identical AuthenticationResult payload (including `state`).
+  // Reacting to both, gated on interactionType === Redirect (as opposed to
+  // Silent, e.g. a background token renewal elsewhere in the app, which
+  // carries no meaningful `state` and would otherwise clobber this), covers
+  // both cases without caring which one MSAL chose to emit.
+  if (
+    (event.eventType === EventType.LOGIN_SUCCESS || event.eventType === EventType.ACQUIRE_TOKEN_SUCCESS) &&
+    event.interactionType === InteractionType.Redirect &&
+    event.payload
+  ) {
     const result = event.payload as AuthenticationResult;
     if (result.account) {
       msalInstance.setActiveAccount(result.account);

@@ -1,10 +1,11 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { AuthGate } from '../auth-gate';
 import { ApiError } from '@/lib/api/client';
 
 const mockUseIsAuthenticated = jest.fn();
 const mockReplace = jest.fn();
 const mockUseCurrentUser = jest.fn();
+const mockRefetch = jest.fn();
 
 jest.mock('@azure/msal-react', () => ({
   useIsAuthenticated: () => mockUseIsAuthenticated(),
@@ -26,7 +27,7 @@ jest.mock('@/lib/auth/current-user-context', () => ({
 describe('AuthGate', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockUseCurrentUser.mockReturnValue({ user: undefined, loading: false, error: undefined });
+    mockUseCurrentUser.mockReturnValue({ user: undefined, loading: false, error: undefined, refetch: mockRefetch });
   });
 
   it('renders a sign-in prompt instead of children when unauthenticated', () => {
@@ -103,6 +104,7 @@ describe('AuthGate', () => {
         user: undefined,
         loading: false,
         error: new ApiError(403, 'Account pending approval'),
+        refetch: mockRefetch,
       });
     });
 
@@ -116,6 +118,59 @@ describe('AuthGate', () => {
       expect(await screen.findByText('Almost there')).toBeInTheDocument();
       expect(screen.queryByText('Protected content')).not.toBeInTheDocument();
       expect(mockReplace).not.toHaveBeenCalled();
+    });
+
+    // Root cause regression test (2026-07-22): an Admin approving this user
+    // (apps/api/src/users/users.service.ts's approveUser) is invisible to
+    // this already-open tab — CurrentUserProvider only ever fetched
+    // /auth/me once, off isAuthenticated, which never changes again. No
+    // polling (deliberately — a one-off event, not worth a recurring
+    // request); "Check again" calls the same refetch() /connect/finishing
+    // uses post-provisioning.
+    it('"Check again" calls refetch, and once it resolves without the pending-approval error, renders children instead', async () => {
+      mockRefetch.mockImplementation(() => {
+        mockUseCurrentUser.mockReturnValue({
+          user: { organizationId: 'org-1' },
+          loading: false,
+          error: undefined,
+          refetch: mockRefetch,
+        });
+        return Promise.resolve({ organizationId: 'org-1' });
+      });
+
+      const { rerender } = render(
+        <AuthGate>
+          <div>Protected content</div>
+        </AuthGate>,
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: /check again/i }));
+      expect(mockRefetch).toHaveBeenCalledTimes(1);
+
+      rerender(
+        <AuthGate>
+          <div>Protected content</div>
+        </AuthGate>,
+      );
+
+      await waitFor(() => expect(screen.getByText('Protected content')).toBeInTheDocument());
+      expect(screen.queryByText('Almost there')).not.toBeInTheDocument();
+    });
+
+    it('"Check again" leaves the pending-approval screen up if refetch resolves but the user is still pending', async () => {
+      mockRefetch.mockResolvedValue(undefined);
+
+      render(
+        <AuthGate>
+          <div>Protected content</div>
+        </AuthGate>,
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: /check again/i }));
+
+      await waitFor(() => expect(mockRefetch).toHaveBeenCalledTimes(1));
+      expect(screen.getByText('Almost there')).toBeInTheDocument();
+      expect(screen.queryByText('Protected content')).not.toBeInTheDocument();
     });
   });
 

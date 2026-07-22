@@ -9,6 +9,7 @@ import { useAccessToken } from '@/lib/auth/use-access-token';
 import { getOnboardingStatus, postConsentCallback } from '@/lib/api/endpoints';
 import { ApiError } from '@/lib/api/client';
 import { clearConnectFlow } from '@/lib/auth/connect-flow';
+import { useCurrentUser } from '@/lib/auth/current-user-context';
 
 type FinishingState =
   | { status: 'working' }
@@ -59,6 +60,7 @@ function ConnectFinishingContent(): JSX.Element {
   const { inProgress } = useMsal();
   const isAuthenticated = useIsAuthenticated();
   const getAccessToken = useAccessToken();
+  const { refetch: refetchCurrentUser } = useCurrentUser();
   const [state, setState] = useState<FinishingState>({ status: 'working' });
   const startedRef = useRef(false);
 
@@ -97,13 +99,29 @@ function ConnectFinishingContent(): JSX.Element {
       }
     }
 
-    function routeOnResolution(resolution: ConsentResolution): void {
+    // Root cause fix (2026-07-22): CurrentUserProvider's own GET /auth/me is
+    // fetched eagerly off isAuthenticated, on "/" — necessarily before this
+    // page has even mounted, let alone bootstrapped an Organization — and
+    // that first, necessarily-403 result used to sit uninvalidated for the
+    // rest of the session (isAuthenticated never changes again), so
+    // AuthGate on /dashboard read the stale error and bounced a
+    // successfully-onboarded user straight back to /connect. Awaiting
+    // refetchCurrentUser() here — after provisioning has genuinely
+    // completed, before navigating — forces a fresh GET /auth/me and
+    // guarantees AuthGate never sees anything but the post-provisioning
+    // truth.
+    async function routeOnResolution(resolution: ConsentResolution): Promise<void> {
       clearConnectFlow();
       switch (resolution.kind) {
         case 'bootstrapped':
-        case 'existing':
+        case 'existing': {
+          const user = await refetchCurrentUser();
+          if (!user.organizationId) {
+            throw new Error('Provisioning completed but organization is still unavailable');
+          }
           router.replace('/dashboard');
           return;
+        }
         case 'provisioned-pending':
           setState({ status: 'provisioned-pending' });
           return;
@@ -132,8 +150,16 @@ function ConnectFinishingContent(): JSX.Element {
           await pollUntilDiscoveryComplete(resolution.organizationId, idToken);
         }
 
-        routeOnResolution(resolution);
+        await routeOnResolution(resolution);
       } catch (caught) {
+        // Reachable both for a genuine consent-callback failure (ApiError
+        // from postConsentCallback) and for a post-provisioning refetch/
+        // verification failure inside routeOnResolution — either way, the
+        // user must never be silently sent to /dashboard without a
+        // resolvable CurrentUser, since the Organization/User already
+        // existing server-side does not mean this tab actually knows that
+        // yet. clearConnectFlow() is idempotent, so calling it again here is
+        // harmless even when routeOnResolution's own call already ran.
         clearConnectFlow();
         const message =
           caught instanceof ApiError
@@ -142,7 +168,7 @@ function ConnectFinishingContent(): JSX.Element {
         setState({ status: 'error', message });
       }
     })();
-  }, [isAuthenticated, inProgress, router, getAccessToken, searchParams]);
+  }, [isAuthenticated, inProgress, router, getAccessToken, searchParams, refetchCurrentUser]);
 
   if (state.status === 'discovering') {
     return (
