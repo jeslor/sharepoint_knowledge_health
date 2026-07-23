@@ -28,6 +28,16 @@ export const msalConfig: Configuration = {
     clientId: requireClientId(),
     authority: AUTHORITY,
     redirectUri: process.env.NEXT_PUBLIC_REDIRECT_URI ?? defaultRedirectUri(),
+    // The "Connect Microsoft 365" flow calls loginRedirect() from
+    // /connect/admin-consent-callback, not from redirectUri itself. MSAL's
+    // default (true) would navigate the browser back to that originating
+    // page once the redirect response is processed, undoing the whole
+    // point of a fixed redirectUri: app/page.tsx's effect (which reads
+    // consumeLastLoginState() and routes to /connect/finishing) never gets
+    // a chance to run, and the user lands back on the admin-consent-
+    // callback screen with its button, as if nothing happened. false keeps
+    // the browser on redirectUri, where that routing logic actually lives.
+    navigateToLoginRequestUrl: false,
   },
   cache: {
     // MSAL's own recommended default, set explicitly rather than left

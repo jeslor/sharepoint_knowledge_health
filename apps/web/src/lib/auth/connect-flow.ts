@@ -2,8 +2,14 @@ import { AUTHORITY } from './msal-config';
 
 // Namespaced (sph:connect:*) to avoid any collision with MSAL's own
 // sessionStorage keys (msal-config.ts: cacheLocation: 'sessionStorage').
-// Two flat keys, not one JSON blob — keeps "is a flow in progress at all"
-// a single, cheap presence check (STATE_KEY) independent of parsing.
+// Both only ever need to survive the admin-consent redirect (Microsoft's
+// raw /adminconsent endpoint and back) — read by
+// admin-consent-callback/page.tsx on the very next page load, never past
+// that point. Carrying the tenant name further, through the *subsequent*
+// MSAL sign-in redirect, used to also go through TENANT_NAME_KEY here;
+// that's now done via MSAL's own `state` parameter instead (msal-
+// instance.ts's consumeLastLoginState()), which is why STATE_KEY no longer
+// needs to double as an "is a flow in progress" marker past this page.
 const STATE_KEY = 'sph:connect:state';
 const TENANT_NAME_KEY = 'sph:connect:tenantName';
 
@@ -34,13 +40,10 @@ function generateOpaqueState(): string {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-// Presence of STATE_KEY doubles as the "connect flow in progress" marker —
-// root page.tsx checks this before its existing dashboard-redirect so a
-// not-yet-bootstrapped user is routed to /connect/finishing instead.
-export function isConnectFlowInProgress(): boolean {
-  return sessionStorage.getItem(STATE_KEY) !== null;
-}
-
+// Browser-only, like every other function in this file — callers must only
+// invoke this from an effect or event handler, never a component's render
+// body (admin-consent-callback/page.tsx defers it to an effect specifically
+// so this is never reached during Next.js's server render of that page).
 export function validateConnectFlowState(candidateState: string): boolean {
   return sessionStorage.getItem(STATE_KEY) === candidateState;
 }
@@ -50,8 +53,10 @@ export function readConnectFlowTenantName(): string | null {
 }
 
 // Called only once the flow reaches a terminal outcome (success or
-// rejected) — not right after state validation — so root page.tsx can
-// still detect "in progress" all the way through the MSAL sign-in hop.
+// rejected) — closes the replay window on this specific admin-consent
+// state/tenant-name pair. app/page.tsx no longer depends on either key
+// still being present by this point (it reads the tenant name back out of
+// MSAL's own `state` parameter instead — see msal-instance.ts).
 export function clearConnectFlow(): void {
   sessionStorage.removeItem(STATE_KEY);
   sessionStorage.removeItem(TENANT_NAME_KEY);

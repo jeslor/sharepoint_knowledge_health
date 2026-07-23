@@ -87,15 +87,25 @@ This keeps the weights/thresholds as data, not logic, so v2's per-organization c
 
 ---
 
-## Proposed Amendment (2026-07-13, Phase 8 review — NOT YET ACCEPTED)
+## Amendment (2026-07-13, Phase 8 review — Accepted 2026-07-23)
 
-**Amendment status: Proposed.** This section proposes a change to a
-scoring *input*; it does not take effect on its own. It requires its own
-explicit review and acceptance, separate from ADR-0016 (Document
-Governance Actions and Issue Management), which references this amendment
-but deliberately does not implement it — see ADR-0016 §10 (Scope
-Discipline) and §13 (Phase 8A is schema-only for review metadata; this
-amendment is what would eventually wire that schema into scoring).
+**Amendment status: Accepted and implemented (2026-07-23).** This section
+proposed a change to a scoring *input*, separate from ADR-0016 (Document
+Governance Actions and Issue Management), which referenced this amendment
+but deliberately did not implement it — see ADR-0016 §10 (Scope
+Discipline) and §13 (Phase 8A was schema-only for review metadata; this
+amendment is what wires that schema into scoring).
+
+**Implementation note (2026-07-23):** `hasReviewDate` now reads
+`document.nextReviewDueAt !== null` at the same call site
+(`apps/worker/src/queue/document-collector.processor.ts`), exactly as
+proposed below — no other change to `scoreReviewStatus` or its 15% weight.
+Since nothing previously wrote `Document.nextReviewDueAt`, a minimal write
+path was added at the same time: `PATCH
+/organizations/:id/documents/:documentId/review` (Admin/GovernanceManager,
+matching ADR-0016 §4.6/§7's already-proposed shape), always stamping
+`reviewDateSource: Manual` — the only source that exists until a future,
+separately-decided Graph List Items API integration (ADR-0016 §9).
 
 ### Current behavior
 

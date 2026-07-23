@@ -1,7 +1,6 @@
 import {
   buildAdminConsentUrl,
   clearConnectFlow,
-  isConnectFlowInProgress,
   readConnectFlowTenantName,
   startConnectFlow,
   validateConnectFlowState,
@@ -24,16 +23,15 @@ describe('connect-flow', () => {
     });
   });
 
-  describe('startConnectFlow / isConnectFlowInProgress / readConnectFlowTenantName', () => {
-    it('is not in progress before startConnectFlow is called', () => {
-      expect(isConnectFlowInProgress()).toBe(false);
+  describe('startConnectFlow / readConnectFlowTenantName', () => {
+    it('has no tenant name before startConnectFlow is called', () => {
+      expect(readConnectFlowTenantName()).toBeNull();
     });
 
-    it('persists a fresh state and the tenant name, and reports in-progress afterward', () => {
+    it('persists a fresh state and the tenant name', () => {
       const state = startConnectFlow('Acme Corporation');
 
       expect(state).toBeTruthy();
-      expect(isConnectFlowInProgress()).toBe(true);
       expect(readConnectFlowTenantName()).toBe('Acme Corporation');
       expect(validateConnectFlowState(state)).toBe(true);
     });
@@ -57,11 +55,10 @@ describe('connect-flow', () => {
   });
 
   describe('clearConnectFlow', () => {
-    it('removes both keys, ending the in-progress state', () => {
+    it('removes both keys', () => {
       startConnectFlow('Acme Corporation');
       clearConnectFlow();
 
-      expect(isConnectFlowInProgress()).toBe(false);
       expect(readConnectFlowTenantName()).toBeNull();
     });
   });
