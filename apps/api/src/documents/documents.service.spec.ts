@@ -10,7 +10,7 @@ describe('DocumentsService', () => {
   const governanceActivityService = { record: jest.fn() };
   const service = new DocumentsService(governanceActivityService as unknown as GovernanceActivityService);
 
-  const documents = { findMany: jest.fn(), count: jest.fn(), findFirstById: jest.fn() };
+  const documents = { findMany: jest.fn(), count: jest.fn(), findFirstById: jest.fn(), updateById: jest.fn() };
   const healthScores = { findMany: jest.fn() };
   const healthIssues = { findMany: jest.fn() };
   const sharePointSites = { findMany: jest.fn() };
@@ -284,6 +284,49 @@ describe('DocumentsService', () => {
         activityType: 'OwnerRemoved',
         previousValue: 'Sarah',
       });
+    });
+  });
+
+  // ADR-0002 amendment / ADR-0016 §4.3, §7: the only write path for
+  // Document.nextReviewDueAt, the real signal apps/worker's scoring pass
+  // reads for the ReviewStatus criterion.
+  describe('setReviewDate', () => {
+    it('returns null when the document does not exist for this organization', async () => {
+      documents.findFirstById.mockResolvedValue(null);
+      const result = await service.setReviewDate('org-1', 'doc-from-another-org', '2026-12-01T00:00:00.000Z');
+      expect(result).toBeNull();
+      expect(documents.updateById).not.toHaveBeenCalled();
+    });
+
+    it('sets nextReviewDueAt and stamps reviewDateSource: Manual', async () => {
+      documents.findFirstById.mockResolvedValue({ id: 'doc-1' });
+      documents.updateById.mockResolvedValue({
+        id: 'doc-1',
+        nextReviewDueAt: new Date('2026-12-01T00:00:00.000Z'),
+        reviewDateSource: 'Manual',
+      });
+
+      const result = await service.setReviewDate('org-1', 'doc-1', '2026-12-01T00:00:00.000Z');
+
+      expect(documents.updateById).toHaveBeenCalledWith('doc-1', {
+        nextReviewDueAt: new Date('2026-12-01T00:00:00.000Z'),
+        reviewDateSource: 'Manual',
+      });
+      expect(result).toEqual({
+        documentId: 'doc-1',
+        nextReviewDueAt: '2026-12-01T00:00:00.000Z',
+        reviewDateSource: 'Manual',
+      });
+    });
+
+    it('clears nextReviewDueAt when passed null', async () => {
+      documents.findFirstById.mockResolvedValue({ id: 'doc-1' });
+      documents.updateById.mockResolvedValue({ id: 'doc-1', nextReviewDueAt: null, reviewDateSource: 'Manual' });
+
+      const result = await service.setReviewDate('org-1', 'doc-1', null);
+
+      expect(documents.updateById).toHaveBeenCalledWith('doc-1', { nextReviewDueAt: null, reviewDateSource: 'Manual' });
+      expect(result).toEqual({ documentId: 'doc-1', nextReviewDueAt: null, reviewDateSource: 'Manual' });
     });
   });
 

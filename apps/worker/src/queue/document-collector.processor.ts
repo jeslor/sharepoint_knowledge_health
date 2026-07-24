@@ -27,11 +27,15 @@ interface ScanAggregateSummary {
  * Approved, persists normalized metadata, and scores every document in the
  * tenant. Metadata analysis only — no document content is ever downloaded.
  *
- * Known limitation (Phase 5 foundation): Graph's driveItem endpoint has no
- * native "review date" — that's a SharePoint custom list column, which
- * requires the separate List Items API (out of scope here). hasReviewDate
- * is always false until that's built, so every document currently reports
- * a ReviewStatus issue. This is a real gap, not a placeholder oversight.
+ * ReviewStatus scoring input (ADR-0002 amendment, accepted 2026-07-23):
+ * Graph's driveItem endpoint has no native "review date" — that's a
+ * SharePoint custom list column, which requires the separate List Items
+ * API that packages/graph-client does not implement (ADR-0013 §8). Until
+ * that exists, `hasReviewDate` reflects `Document.nextReviewDueAt`, set
+ * only via `PATCH /organizations/:id/documents/:documentId/review`
+ * (`reviewDateSource: Manual`) — the only review-date source that exists
+ * today. A document nobody has set a review date for continues to fail
+ * ReviewStatus exactly as before; this only stops it being *unconditional*.
  */
 @Processor(SCAN_QUEUE, { concurrency: Number(process.env.WORKER_CONCURRENCY) || 5 })
 export class DocumentCollectorProcessor extends WorkerHost {
@@ -279,8 +283,8 @@ export class DocumentCollectorProcessor extends WorkerHost {
         sourceCreatedAt: document.sourceCreatedAt,
         sourceModifiedAt: document.sourceModifiedAt,
         sizeBytes: Number(document.sizeBytes),
-        // No source for this yet (see class-level doc comment).
-        hasReviewDate: false,
+        // See class-level doc comment — Manual is the only source today.
+        hasReviewDate: document.nextReviewDueAt !== null,
         owners: ownerInputs,
         siblingDocuments: siblingsByKey.get(key) ?? [],
       });

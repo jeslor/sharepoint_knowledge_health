@@ -10,6 +10,7 @@ describe('DocumentsController', () => {
     listOwners: jest.fn(),
     assignOwner: jest.fn(),
     removeOwner: jest.fn(),
+    setReviewDate: jest.fn(),
     listDocumentHealth: jest.fn(),
   };
   const controller = new DocumentsController(service as unknown as DocumentsService);
@@ -99,6 +100,39 @@ describe('DocumentsController', () => {
     it('delegates organizationId, documentId, ownerId, and the current user id', async () => {
       await controller.removeOwner('org-1', 'doc-1', 'owner-1', { id: 'admin-1' } as never);
       expect(service.removeOwner).toHaveBeenCalledWith('org-1', 'doc-1', 'owner-1', 'admin-1');
+    });
+  });
+
+  describe('setReviewDate', () => {
+    it('delegates organizationId, documentId, and the parsed date', async () => {
+      service.setReviewDate.mockResolvedValue({ documentId: 'doc-1', nextReviewDueAt: '2026-12-01T00:00:00.000Z', reviewDateSource: 'Manual' });
+
+      await controller.setReviewDate('org-1', 'doc-1', { nextReviewDueAt: '2026-12-01T00:00:00.000Z' });
+
+      expect(service.setReviewDate).toHaveBeenCalledWith('org-1', 'doc-1', '2026-12-01T00:00:00.000Z');
+    });
+
+    it('delegates null to clear a previously-set review date', async () => {
+      service.setReviewDate.mockResolvedValue({ documentId: 'doc-1', nextReviewDueAt: null, reviewDateSource: 'Manual' });
+
+      await controller.setReviewDate('org-1', 'doc-1', { nextReviewDueAt: null });
+
+      expect(service.setReviewDate).toHaveBeenCalledWith('org-1', 'doc-1', null);
+    });
+
+    it('rejects an invalid date string with 400', async () => {
+      await expect(
+        controller.setReviewDate('org-1', 'doc-1', { nextReviewDueAt: 'not-a-date' }),
+      ).rejects.toThrow(BadRequestException);
+      expect(service.setReviewDate).not.toHaveBeenCalled();
+    });
+
+    it('throws 404 when the service resolves null (document not found)', async () => {
+      service.setReviewDate.mockResolvedValue(null);
+
+      await expect(
+        controller.setReviewDate('org-1', 'doc-missing', { nextReviewDueAt: null }),
+      ).rejects.toThrow(NotFoundException);
     });
   });
 
