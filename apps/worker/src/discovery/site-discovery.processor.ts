@@ -98,6 +98,14 @@ export class SiteDiscoveryProcessor extends WorkerHost {
 
     let count = 0;
     for await (const graphSite of listSites(entraTenantId, { correlationId: microsoftTenantId })) {
+      // Product-specific discovery rule (ADR-0013's boundary: packages/graph-client
+      // returns raw Graph data only, this worker decides what's in scope) — a
+      // personal OneDrive site is not an organizational SharePoint site and is
+      // outside this product's mission. isPersonalSite is an authoritative Graph
+      // field, not a guessed heuristic; an unrecognized/system site with no such
+      // flag still passes through and requires the normal admin approval step.
+      if (graphSite.isPersonalSite) continue;
+
       const existing = existingByGraphSiteId.get(graphSite.id);
 
       if (existing) {
