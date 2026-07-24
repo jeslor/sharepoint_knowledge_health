@@ -104,3 +104,16 @@ export interface AssignDocumentOwnerRequest {
   displayName?: string | null;
   email?: string | null;
 }
+
+// ADR-0002 amendment / ADR-0016 §4.3, §7: the only write path for
+// Document.nextReviewDueAt, the real signal apps/worker's scoring pass
+// reads for the ReviewStatus criterion. null clears a previously-set date.
+export interface SetDocumentReviewDateRequest {
+  nextReviewDueAt: string | null;
+}
+
+export interface DocumentReviewResponse {
+  documentId: string;
+  nextReviewDueAt: string | null;
+  reviewDateSource: string;
+}

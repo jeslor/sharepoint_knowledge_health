@@ -53,11 +53,18 @@ Given a `ScanJobPayload { organizationId, scanJobId }`:
    calls `@sph/scoring`'s `calculateScore()` per document. Writes one
    `HealthScore` + its `HealthIssue`s per document, and points
    `Document.currentHealthScoreId` at it.
-   - **Known, documented gap**: Graph's `driveItem` has no native "review
-     date" field — that requires SharePoint's separate List Items API,
-     out of scope so far. `hasReviewDate` is always `false`, so every
-     document currently reports a `ReviewStatus` issue. This is a real
-     scoring limitation, not a placeholder bug.
+   - **ReviewStatus scoring input** (ADR-0002 amendment, accepted
+     2026-07-23): `hasReviewDate` reads `document.nextReviewDueAt !== null`
+     — a document with no review date set still correctly fails
+     `ReviewStatus`, exactly as before this change. `nextReviewDueAt` is set
+     today only through the manual review-date API (`PATCH
+     /organizations/:id/documents/:documentId/review`, Admin/
+     GovernanceManager, `reviewDateSource: Manual`). Graph's `driveItem`
+     endpoint still has no native "review date" field — that requires
+     SharePoint's separate List Items API, which `packages/graph-client`
+     does not implement (ADR-0013 §8); syncing a Graph-sourced review date
+     (`reviewDateSource: GraphMetadata`) into the same field remains future
+     work (ADR-0016 §9).
 8. Marks the `ScanJob` `Completed` (or `Failed`, if zero documents were
    scanned and at least one failure occurred), with an `errorSummary`
    (first 20 site-level errors, joined).

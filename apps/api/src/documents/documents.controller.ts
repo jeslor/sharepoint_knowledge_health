@@ -7,6 +7,7 @@ import {
   HttpCode,
   NotFoundException,
   Param,
+  Patch,
   Post,
   Query,
   UseGuards,
@@ -19,10 +20,12 @@ import type {
   DocumentHealthSortBy,
   DocumentOwnerResponse,
   DocumentResponse,
+  DocumentReviewResponse,
   DocumentScoreHistoryResponse,
   IssueSeverityFilter,
   PaginatedResponse,
   DocumentHealthResponse,
+  SetDocumentReviewDateRequest,
   SortDirection,
 } from '@sph/types';
 
@@ -106,6 +109,30 @@ export class DocumentsController {
     @CurrentUser() user: User,
   ): Promise<void> {
     return this.documentsService.removeOwner(organizationId, documentId, ownerId, user.id);
+  }
+
+  // ADR-0016 §4.6/§7: same mutation-permission tier as owner assignment —
+  // Admin or GovernanceManager, never Member.
+  @Patch('documents/:documentId/review')
+  @UseGuards(RolesGuard)
+  @Roles('Admin', 'GovernanceManager')
+  async setReviewDate(
+    @Param('id') organizationId: string,
+    @Param('documentId') documentId: string,
+    @Body() body: SetDocumentReviewDateRequest,
+  ): Promise<DocumentReviewResponse> {
+    const nextReviewDueAt = this.parseReviewDate(body?.nextReviewDueAt ?? null);
+    const result = await this.documentsService.setReviewDate(organizationId, documentId, nextReviewDueAt);
+    if (!result) throw new NotFoundException('Document not found');
+    return result;
+  }
+
+  private parseReviewDate(value: string | null): string | null {
+    if (value === null) return null;
+    if (Number.isNaN(new Date(value).getTime())) {
+      throw new BadRequestException('nextReviewDueAt must be a valid ISO date string or null');
+    }
+    return value;
   }
 
   @Get('document-health')

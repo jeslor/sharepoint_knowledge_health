@@ -273,6 +273,7 @@ describe('DocumentCollectorProcessor', () => {
         sourceCreatedAt: new Date('2020-01-01'),
         sourceModifiedAt: new Date('2020-01-01'),
         sizeBytes: BigInt(2048),
+        nextReviewDueAt: null,
       };
       documents.findMany.mockResolvedValue([scoredDocument]);
       healthScores.create.mockResolvedValue({ id: 'score-1' });
@@ -291,6 +292,43 @@ describe('DocumentCollectorProcessor', () => {
       await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
 
       expect(healthScores.create).not.toHaveBeenCalled();
+    });
+
+    // ADR-0002 amendment (accepted 2026-07-23): hasReviewDate is no longer a
+    // hardcoded constant — it derives from Document.nextReviewDueAt, set
+    // only via PATCH .../documents/:documentId/review.
+    describe('ReviewStatus scoring input (ADR-0002 amendment)', () => {
+      const baseDocument = {
+        id: 'doc-1',
+        name: 'Employee Handbook.docx',
+        sourceCreatedAt: new Date('2020-01-01'),
+        sourceModifiedAt: new Date('2020-01-01'),
+        sizeBytes: BigInt(2048),
+      };
+
+      it('fails ReviewStatus (score 0, RequiresReview issue) when nextReviewDueAt is null', async () => {
+        documents.findMany.mockResolvedValue([{ ...baseDocument, nextReviewDueAt: null }]);
+        healthScores.create.mockResolvedValue({ id: 'score-1' });
+
+        await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+        expect(healthScores.create).toHaveBeenCalledWith(expect.objectContaining({ reviewStatusScore: 0 }));
+        expect(healthIssues.create).toHaveBeenCalledWith(
+          expect.objectContaining({ healthScoreId: 'score-1', criterion: 'ReviewStatus', severity: 'RequiresReview' }),
+        );
+      });
+
+      it('passes ReviewStatus (score 100, no issue) when nextReviewDueAt is set', async () => {
+        documents.findMany.mockResolvedValue([{ ...baseDocument, nextReviewDueAt: new Date('2026-12-01') }]);
+        healthScores.create.mockResolvedValue({ id: 'score-1' });
+
+        await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+        expect(healthScores.create).toHaveBeenCalledWith(expect.objectContaining({ reviewStatusScore: 100 }));
+        expect(healthIssues.create).not.toHaveBeenCalledWith(
+          expect.objectContaining({ criterion: 'ReviewStatus' }),
+        );
+      });
     });
   });
 

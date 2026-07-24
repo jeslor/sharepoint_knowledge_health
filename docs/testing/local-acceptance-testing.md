@@ -54,19 +54,28 @@ per-tenant API routes (`.../microsoft-tenants/:tenantId/discover-sites`,
 `.../sharepoint-sites/:siteId/approve|revoke`) are unchanged — still usable directly via
 curl/Postman if you want to test the API layer in isolation from the UI.
 
-### 1.3 `ReviewStatus` always fails, and "Healthy" is currently unreachable
+### 1.3 ~~`ReviewStatus` always fails, and "Healthy" is currently unreachable~~ — RESOLVED (2026-07-23, ADR-0002 amendment)
 
-`apps/worker`'s `scoreTenantDocuments` hardcodes `hasReviewDate: false` for every document
-(no SharePoint "review due date" integration exists yet — `packages/scoring/src/rules/
-review-status.ts`). This means **every single document, regardless of quality, scores 0
-on ReviewStatus and gets a `RequiresReview` issue.** Given the weights
-(`packages/scoring/src/config.ts`: Freshness .30 / Ownership .20 / ReviewStatus .15 /
-Metadata .15 / Duplication .10 / Age .10), the maximum composite score any document can
-achieve today is **85** (a perfect score on every other criterion), and the `Healthy` band
-requires ≥90. **No document will ever land in the `Healthy` band in this build.** Do not
-report this as a scoring bug during LAT — verify the *math* is internally consistent
-(every non-ReviewStatus criterion scoring correctly, composite correctly weighted) rather
-than expecting to see a `Healthy` document.
+`apps/worker`'s `scoreTenantDocuments` no longer hardcodes `hasReviewDate: false`. It now
+reads `document.nextReviewDueAt !== null` (`packages/scoring/src/rules/review-status.ts`'s
+own rule is unchanged — only the value passed into it changed). `nextReviewDueAt` is set
+today only through the manual review-date API (`PATCH /organizations/:id/documents/
+:documentId/review`, Admin/GovernanceManager, `reviewDateSource: Manual`) — there is still
+no Graph-sourced review date; that requires SharePoint's separate List Items API, out of
+scope (ADR-0013 §8), with the eventual integration deferred to ADR-0016 §9.
+
+**What to actually verify during LAT** (this is now real, variable behavior — test it,
+don't assume an outcome):
+- A document with no `nextReviewDueAt` set still fails `ReviewStatus` (score 0, a
+  `RequiresReview` issue) — confirm this is still true, it should be.
+- A document given a review date via the manual API scores 100 on `ReviewStatus` (no
+  issue) starting with its *next* scan — scoring reads the field at scan time, not
+  retroactively against past `HealthScore` rows.
+- Given the weights (`packages/scoring/src/config.ts`: Freshness .30 / Ownership .20 /
+  ReviewStatus .15 / Metadata .15 / Duplication .10 / Age .10), a document with a review
+  date set and a perfect score on every other criterion can now reach the `Healthy` band
+  (≥90). Confirm this is actually reachable — a document *without* a review date set is
+  still capped at a maximum composite of 85, exactly as before.
 
 ### 1.4 A worker crash mid-scan permanently wedges that tenant's scanning — MITIGATED (Phase 9.5)
 
@@ -164,7 +173,7 @@ Deliberately hand-picked to hit every scoring rule at least once:
 | 2 | Same file name **and** same byte size, uploaded to **two different sites** in the same tenant | Duplication flagged cross-site (scoring is tenant-scoped, not per-site — see 5.9) |
 | 2 | Uploaded via a path that drops `createdBy` (e.g. certain sync-client uploads, or a file moved between libraries) | Ownership RequiresReview (no identifiable owner) |
 | 1 | Authored by someone who is a registered product `User` but whose account is `Deactivated` | Ownership NeedsAttention (all resolvable owners inactive) |
-| Remaining | Normal, healthy-looking files | Composite ceiling of 85 (see §1.3) |
+| Remaining | Normal, healthy-looking files — give at least one a review date via the manual API (§1.3) | Without a review date: composite ceiling of 85. With one: can reach `Healthy` (≥90) if every other criterion also scores well (see §1.3) |
 
 ### 3.3 Medium tenant (~3–5 sites, 200–500 documents)
 - At least one site left in `Discovered` (never approved) — confirms it's silently
@@ -406,11 +415,13 @@ cited are exact (`apps/api/src/**/*.controller.ts`).
   each of the 6 sub-scores by hand from its real `sourceCreatedAt`/`sourceModifiedAt`/
   name/owners against the rules in §1.3, then compare to the `HealthScore` row.
 - *Expected*: `compositeScore` = `round(0.30·Freshness + 0.20·Ownership + 0.15·
-  ReviewStatus(always 0) + 0.15·Metadata + 0.10·Duplication + 0.10·Age)`, and matches your
-  hand calculation exactly (deterministic, no randomness).
-- *Failure scenarios*: confirm `healthBand` never comes back `Healthy` (§1.3); confirm a
-  `HealthIssue` row exists for every sub-score below 70, with the correct severity split
-  at 40.
+  ReviewStatus + 0.15·Metadata + 0.10·Duplication + 0.10·Age)`, and matches your
+  hand calculation exactly (deterministic, no randomness). `ReviewStatus` is 0 for a
+  document with no `nextReviewDueAt` set, 100 for one that has it set (§1.3).
+- *Failure scenarios*: confirm `healthBand` comes back `Healthy` for a document with a
+  review date set and ≥90 on every other criterion, and confirm it does **not** for an
+  otherwise-identical document with no review date set (§1.3); confirm a `HealthIssue` row
+  exists for every sub-score below 70, with the correct severity split at 40.
 
 **5.9.2 — Duplication is tenant-wide, not per-site**
 - *Steps*: use the two identically-named/-sized files uploaded to two *different* sites
@@ -698,7 +709,7 @@ Copy this into an issue tracker or check off directly in this file as you go.
 - [ ] 5.8.1 Live progress fields update correctly mid-scan; 0-site scan completes instantly
 
 ### Health scoring (5.9)
-- [ ] 5.9.1 Hand-verified composite score matches formula; Healthy band confirmed unreachable
+- [ ] 5.9.1 Hand-verified composite score matches formula; Healthy band reachable with a review date set, still capped at 85 without one
 - [ ] 5.9.2 Cross-site duplication detected
 - [ ] 5.9.3 Rescan updates, doesn't duplicate, Document rows
 - [ ] 5.9.4 Upstream-deleted document marked Removed, not deleted

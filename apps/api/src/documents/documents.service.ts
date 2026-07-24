@@ -7,6 +7,7 @@ import type {
   DocumentHealthResponse,
   DocumentOwnerResponse,
   DocumentResponse,
+  DocumentReviewResponse,
   DocumentScoreHistoryResponse,
   PaginatedResponse,
 } from '@sph/types';
@@ -191,6 +192,34 @@ export class DocumentsService {
       activityType: 'OwnerRemoved',
       previousValue: existing.displayName ?? existing.email,
     });
+  }
+
+  // ADR-0002 amendment / ADR-0016 §4.3, §7: the only write path for
+  // Document.nextReviewDueAt — the real signal apps/worker's scoring pass
+  // now reads for the ReviewStatus criterion, in place of the previous
+  // hardcoded-false constant. Always stamps reviewDateSource: Manual, the
+  // only source that exists until a future Graph List Items API
+  // integration (ADR-0016 §9); passing null clears a previously-set date.
+  async setReviewDate(
+    organizationId: string,
+    documentId: string,
+    nextReviewDueAt: string | null,
+  ): Promise<DocumentReviewResponse | null> {
+    const context = createTenantContext(organizationId);
+    const document = await context.documents.findFirstById(documentId);
+    if (!document) return null;
+
+    const updated = await context.documents.updateById(documentId, {
+      nextReviewDueAt: nextReviewDueAt !== null ? new Date(nextReviewDueAt) : null,
+      reviewDateSource: 'Manual',
+    });
+    if (!updated) return null;
+
+    return {
+      documentId: updated.id,
+      nextReviewDueAt: updated.nextReviewDueAt?.toISOString() ?? null,
+      reviewDateSource: updated.reviewDateSource,
+    };
   }
 
   async listDocumentHealth(
