@@ -68,4 +68,22 @@ describe('SharePointSiteList', () => {
 
     expect(screen.getByText('Never')).toBeInTheDocument();
   });
+
+  // Root cause regression test (2026-07-25): the action button used to be
+  // three mutually-exclusive JSX branches, so a status change unmounted one
+  // Button and mounted a different one — a hard swap CSS transitions can't
+  // animate across. It must now be the same persistent element throughout.
+  it('keeps the same button DOM node across a status transition (no remount)', () => {
+    const { rerender } = render(
+      <SharePointSiteList sites={[site({ status: 'Discovered' })]} canManage onApprove={jest.fn()} onRevoke={jest.fn()} mutatingSiteId={null} />,
+    );
+    const approveButton = screen.getByRole('button', { name: /approve/i });
+
+    rerender(
+      <SharePointSiteList sites={[site({ status: 'Approved' })]} canManage onApprove={jest.fn()} onRevoke={jest.fn()} mutatingSiteId={null} />,
+    );
+    const revokeButton = screen.getByRole('button', { name: /revoke/i });
+
+    expect(revokeButton).toBe(approveButton); // same DOM node, only its props/text changed
+  });
 });
