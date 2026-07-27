@@ -29,6 +29,19 @@ describe('TriggerScanButton', () => {
     expect(screen.getByRole('button', { name: /starting scan/i })).toBeDisabled();
   });
 
+  // Root cause regression test (2026-07-25): a plain text swap read as an
+  // abrupt change with no sense of ongoing activity — a spinner during the
+  // in-flight request makes it read as live feedback, not a static label.
+  it('shows a spinner while the trigger request is in flight, and none otherwise', () => {
+    mockTriggering = true;
+    const { rerender } = render(<TriggerScanButton disabled={false} onTriggered={jest.fn()} />);
+    expect(screen.getByRole('button').querySelector('svg')).toBeInTheDocument();
+
+    mockTriggering = false;
+    rerender(<TriggerScanButton disabled={false} onTriggered={jest.fn()} />);
+    expect(screen.getByRole('button').querySelector('svg')).not.toBeInTheDocument();
+  });
+
   it('is enabled when no scan is active and nothing is in flight', () => {
     render(<TriggerScanButton disabled={false} onTriggered={jest.fn()} />);
 

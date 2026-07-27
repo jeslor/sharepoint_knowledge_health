@@ -23,6 +23,29 @@ describe('SharePointSitesService', () => {
     mockedCreateContext.mockReturnValue({ microsoftTenants, sharePointSites } as never);
   });
 
+  // Root cause regression test (2026-07-25): findMany() with no orderBy
+  // makes no ordering guarantee — an approve/revoke UPDATE could change a
+  // row's returned position on the next query, observed live as a site
+  // visibly relocating in the web UI. A stable orderBy fixes this.
+  describe('listSites', () => {
+    it('requests a deterministic order (by displayName)', async () => {
+      sharePointSites.findMany.mockResolvedValue([]);
+
+      await service.listSites('org-1');
+
+      expect(sharePointSites.findMany).toHaveBeenCalledWith({ orderBy: { displayName: 'asc' } });
+    });
+
+    it('returns whatever the repository resolves, unchanged', async () => {
+      const sites = [{ id: 'site-1' }, { id: 'site-2' }];
+      sharePointSites.findMany.mockResolvedValue(sites);
+
+      const result = await service.listSites('org-1');
+
+      expect(result).toBe(sites);
+    });
+  });
+
   describe('enqueueDiscovery', () => {
     it('delegates to DiscoveryProducerService, unchanged', async () => {
       const queued = { id: 'tenant-1', discoveryStatus: 'Queued' };

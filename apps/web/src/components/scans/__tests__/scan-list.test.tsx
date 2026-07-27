@@ -74,5 +74,32 @@ describe('ScanList', () => {
       expect(row && within(row).getAllByText('—').length).toBeGreaterThan(0);
       expect(screen.queryByText(/Site \d+ of \d+/)).not.toBeInTheDocument();
     });
+
+    it('shows "Waiting to start…" for a Queued scan', () => {
+      render(<ScanList scans={[scan({ status: 'Queued', totalSites: null, sitesCompleted: 0, currentSiteName: null })]} />);
+
+      expect(screen.getByText('Waiting to start…')).toBeInTheDocument();
+    });
+  });
+
+  // Root cause regression tests (2026-07-25): polling used to leave a
+  // Queued/Running row looking indistinguishable from static text between
+  // ticks — a spinner makes the live rows read as active.
+  describe('live indicator for in-flight scans (2026-07-25)', () => {
+    it.each(['Queued', 'Running'])('shows a spinner for a %s scan', (status) => {
+      render(<ScanList scans={[scan({ status, totalSites: null, sitesCompleted: 0, currentSiteName: null })]} />);
+
+      const [row] = screen.getAllByRole('row').slice(1);
+      expect(row).toBeDefined();
+      expect(row && row.querySelector('svg')).toBeInTheDocument();
+    });
+
+    it.each(['Completed', 'Failed', 'Cancelled'])('shows no spinner for a terminal %s scan', (status) => {
+      render(<ScanList scans={[scan({ status })]} />);
+
+      const [row] = screen.getAllByRole('row').slice(1);
+      expect(row).toBeDefined();
+      expect(row && row.querySelector('svg')).not.toBeInTheDocument();
+    });
   });
 });

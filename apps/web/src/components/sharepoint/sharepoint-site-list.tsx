@@ -11,6 +11,13 @@ interface SharePointSiteListProps {
   onApprove: (siteId: string) => Promise<void>;
   onRevoke: (siteId: string) => Promise<void>;
   mutatingSiteId: string | null;
+  // Ids currently fading out before their owner removes them from `sites`
+  // (2026-07-25) — e.g. approving a site while viewing the "Pending" filter
+  // tab. Opacity only, deliberately: <tr> elements don't reliably animate
+  // transform/height across browsers due to table layout rules, but
+  // opacity/color transitions already work (confirmed by the action
+  // button's own transition below).
+  exitingSiteIds?: ReadonlySet<string>;
 }
 
 interface RowAction {
@@ -47,7 +54,14 @@ function rowAction(site: SharePointSiteResponse, onApprove: (id: string) => void
 
 // ADR-0014: a site is scan-eligible only once Approved, and never
 // auto-approved — this is the one place in the product that action exists.
-export function SharePointSiteList({ sites, canManage, onApprove, onRevoke, mutatingSiteId }: SharePointSiteListProps): JSX.Element {
+export function SharePointSiteList({
+  sites,
+  canManage,
+  onApprove,
+  onRevoke,
+  mutatingSiteId,
+  exitingSiteIds,
+}: SharePointSiteListProps): JSX.Element {
   if (sites.length === 0) {
     return <EmptyState label="No SharePoint sites match this filter yet." />;
   }
@@ -72,8 +86,12 @@ export function SharePointSiteList({ sites, canManage, onApprove, onRevoke, muta
             (id) => void onApprove(id),
             (id) => void onRevoke(id),
           );
+          const isExiting = exitingSiteIds?.has(site.id) ?? false;
           return (
-            <tr key={site.id} className="transition-colors duration-150 ease-premium hover:bg-slate-50">
+            <tr
+              key={site.id}
+              className={`transition-[opacity,background-color] duration-200 ease-premium hover:bg-slate-50 ${isExiting ? 'opacity-0' : ''}`}
+            >
               <td className="py-3">
                 <a href={site.siteUrl} target="_blank" rel="noreferrer" className="font-medium text-slate-900 hover:underline">
                   {site.displayName}

@@ -47,9 +47,16 @@ export class SharePointSitesService {
     return this.enqueueDiscovery(organizationId, onlyTenant.id);
   }
 
+  // Deterministic order (2026-07-25 fix): findMany() with no orderBy makes
+  // no ordering guarantee, and an UPDATE (approveSite/revokeSite) can
+  // change a row's returned position on the next query under Postgres's
+  // MVCC — observed live as an approved site visibly relocating in the web
+  // UI's list. Ordering by displayName means a site's position no longer
+  // depends on its status at all, so approving/revoking it never
+  // repositions it within the full (unfiltered) list.
   async listSites(organizationId: string): Promise<SharePointSite[]> {
     const context = createTenantContext(organizationId);
-    return context.sharePointSites.findMany();
+    return context.sharePointSites.findMany({ orderBy: { displayName: 'asc' } });
   }
 
   async approveSite(organizationId: string, siteId: string, approvedByUserId: string): Promise<SharePointSite> {

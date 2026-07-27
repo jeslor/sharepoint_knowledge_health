@@ -332,6 +332,117 @@ describe('DocumentCollectorProcessor', () => {
     });
   });
 
+  // F3 fix regression tests: Document.currentHealthScoreId must only be
+  // repointed when the overall scan succeeds. HealthScore/HealthIssue
+  // history is unaffected either way — only the "current" promotion step
+  // is gated.
+  describe('currentHealthScoreId promotion is gated on scan success (F3)', () => {
+    beforeEach(() => {
+      scanJobs.findFirstById.mockResolvedValue({ id: 'scan-1', microsoftTenantId: 'tenant-1' });
+      microsoftTenants.findFirstById.mockResolvedValue({ id: 'tenant-1', entraTenantId: 'entra-1' });
+    });
+
+    it('a Failed scan (every site failed to collect) still writes HealthScore/HealthIssue history, but never promotes currentHealthScoreId', async () => {
+      sharePointSites.findMany.mockResolvedValue([{ id: 'site-1', graphSiteId: 'graph-site-1', displayName: 'Team Site' }]);
+      mockedListDrives.mockReturnValue(
+        (async function* (): AsyncGenerator<GraphDrive> {
+          throw new GraphTransientError('Graph unavailable');
+        })(),
+      );
+      const previouslyScoredDocument = {
+        id: 'doc-1',
+        name: 'Employee Handbook.docx',
+        sourceCreatedAt: new Date('2020-01-01'),
+        sourceModifiedAt: new Date('2020-01-01'),
+        sizeBytes: BigInt(2048),
+        nextReviewDueAt: null,
+        currentHealthScoreId: 'score-previous', // already has a current score from an earlier successful scan
+      };
+      documents.findMany.mockResolvedValue([previouslyScoredDocument]);
+      healthScores.create.mockResolvedValue({ id: 'score-new' });
+
+      await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+      const finalUpdate = scanJobs.updateById.mock.calls.at(-1);
+      expect(finalUpdate?.[1]).toEqual(expect.objectContaining({ status: 'Failed' }));
+
+      // History is preserved regardless of outcome.
+      expect(healthScores.create).toHaveBeenCalledWith(expect.objectContaining({ documentId: 'doc-1', scanJobId: 'scan-1' }));
+
+      // But the "current" pointer is never touched by a Failed scan.
+      expect(documents.updateById).not.toHaveBeenCalledWith('doc-1', { currentHealthScoreId: expect.anything() });
+    });
+
+    it('a Failed first-ever scan for a tenant never sets a currentHealthScoreId pointer at all', async () => {
+      sharePointSites.findMany.mockResolvedValue([{ id: 'site-1', graphSiteId: 'graph-site-1', displayName: 'Team Site' }]);
+      mockedListDrives.mockReturnValue(
+        (async function* (): AsyncGenerator<GraphDrive> {
+          throw new GraphTransientError('Graph unavailable');
+        })(),
+      );
+      const neverScoredDocument = {
+        id: 'doc-1',
+        name: 'New Document.docx',
+        sourceCreatedAt: new Date('2026-01-01'),
+        sourceModifiedAt: new Date('2026-01-01'),
+        sizeBytes: BigInt(1024),
+        nextReviewDueAt: null,
+        currentHealthScoreId: null,
+      };
+      documents.findMany.mockResolvedValue([neverScoredDocument]);
+      healthScores.create.mockResolvedValue({ id: 'score-1' });
+
+      await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+      expect(documents.updateById).not.toHaveBeenCalledWith(expect.anything(), { currentHealthScoreId: expect.anything() });
+    });
+
+    it('a partial item failure that still leaves documentsScanned > 0 keeps status Completed and still promotes — unchanged existing behavior', async () => {
+      const drive: GraphDrive = { id: 'drive-1', name: 'Documents', webUrl: 'https://x/drive', driveType: 'documentLibrary' };
+      const okItem: GraphDriveItem = {
+        id: 'item-ok',
+        name: 'Ok.docx',
+        webUrl: 'https://x/Ok.docx',
+        size: 100,
+        createdDateTime: '2026-01-01T00:00:00.000Z',
+        lastModifiedDateTime: '2026-01-01T00:00:00.000Z',
+        file: { mimeType: 'application/msword' },
+        parentReference: { driveId: 'drive-1', path: '/drives/drive-1/root:' },
+      };
+      const badItem: GraphDriveItem = { ...okItem, id: 'item-bad', name: 'Bad.docx' };
+      const createdDoc = {
+        id: 'doc-ok',
+        siteId: 'site-1',
+        graphItemId: 'item-ok',
+        name: 'Ok.docx',
+        sourceCreatedAt: new Date('2026-01-01'),
+        sourceModifiedAt: new Date('2026-01-01'),
+        sizeBytes: BigInt(100),
+        nextReviewDueAt: null,
+      };
+
+      sharePointSites.findMany.mockResolvedValue([{ id: 'site-1', graphSiteId: 'graph-site-1', displayName: 'Team Site' }]);
+      mockedListDrives.mockReturnValue(asyncGen([drive]));
+      mockedListDocuments.mockReturnValue(asyncGen([okItem, badItem]));
+      documents.findMany.mockImplementation(async ({ where }: { where: Record<string, unknown> }) => {
+        if ('graphItemId' in where) return []; // upsert existence check — both items are new
+        if ('siteId' in where) return []; // reconciliation — nothing stale
+        return [createdDoc]; // scoring pass
+      });
+      documents.create.mockImplementation(async (data: { graphItemId: string }) => {
+        if (data.graphItemId === 'item-bad') throw new Error('unique constraint violation');
+        return createdDoc;
+      });
+      healthScores.create.mockResolvedValue({ id: 'score-new' });
+
+      await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+      const finalUpdate = scanJobs.updateById.mock.calls.at(-1);
+      expect(finalUpdate?.[1]).toEqual(expect.objectContaining({ status: 'Completed', documentsScanned: 1, documentsFailed: 1 }));
+      expect(documents.updateById).toHaveBeenCalledWith('doc-ok', { currentHealthScoreId: 'score-new' });
+    });
+  });
+
   describe('progress tracking and snapshots (ADR-0015 §3/§5)', () => {
     const siteA = { id: 'site-a', graphSiteId: 'graph-a', displayName: 'Site A' };
     const siteB = { id: 'site-b', graphSiteId: 'graph-b', displayName: 'Site B' };
