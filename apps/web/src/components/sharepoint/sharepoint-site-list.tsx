@@ -1,8 +1,8 @@
 'use client';
 
-import type { SharePointSiteResponse } from '@sph/types';
+import type { SharePointSiteResponse, SharePointSiteStatusValue } from '@sph/types';
 import { EmptyState } from '@/components/ui/query-state';
-import { Button } from '@/components/ui/button';
+import { Button, type ButtonVariant } from '@/components/ui/button';
 import { SharePointSiteStatusBadge } from './sharepoint-site-status-badge';
 
 interface SharePointSiteListProps {
@@ -11,6 +11,38 @@ interface SharePointSiteListProps {
   onApprove: (siteId: string) => Promise<void>;
   onRevoke: (siteId: string) => Promise<void>;
   mutatingSiteId: string | null;
+}
+
+interface RowAction {
+  label: string;
+  savingLabel: string;
+  variant: ButtonVariant;
+  className?: string;
+  onClick: () => void;
+}
+
+// Root cause fix (2026-07-25): this used to be three mutually-exclusive
+// <Button> JSX branches keyed off site.status — when status changed (e.g.
+// Discovered → Approved right after an approve), React unmounted one
+// Button and mounted a different one (different variant, different DOM
+// node), which is a hard swap CSS transitions can't animate across. One
+// action config, rendered through a single persistent <Button> below,
+// means only its props change across a status transition — letting the
+// transition classes already on Button (transition-[color,background-
+// color,border-color,transform]) animate the change instead of cutting.
+function rowAction(site: SharePointSiteResponse, onApprove: (id: string) => void, onRevoke: (id: string) => void): RowAction | null {
+  const ACTIONS: Record<SharePointSiteStatusValue, RowAction> = {
+    Discovered: { label: 'Approve', savingLabel: 'Approving…', variant: 'secondary', onClick: () => onApprove(site.id) },
+    Approved: {
+      label: 'Revoke',
+      savingLabel: 'Revoking…',
+      variant: 'ghost',
+      className: 'text-red-700 hover:bg-red-50 hover:underline',
+      onClick: () => onRevoke(site.id),
+    },
+    Removed: { label: 'Re-approve', savingLabel: 'Approving…', variant: 'secondary', onClick: () => onApprove(site.id) },
+  };
+  return ACTIONS[site.status] ?? null;
 }
 
 // ADR-0014: a site is scan-eligible only once Approved, and never
@@ -35,6 +67,11 @@ export function SharePointSiteList({ sites, canManage, onApprove, onRevoke, muta
       <tbody>
         {sites.map((site) => {
           const saving = mutatingSiteId === site.id;
+          const action = rowAction(
+            site,
+            (id) => void onApprove(id),
+            (id) => void onRevoke(id),
+          );
           return (
             <tr key={site.id} className="transition-colors duration-150 ease-premium hover:bg-slate-50">
               <td className="py-3">
@@ -50,25 +87,9 @@ export function SharePointSiteList({ sites, canManage, onApprove, onRevoke, muta
               </td>
               {canManage && (
                 <td className="py-3">
-                  {site.status === 'Discovered' && (
-                    <Button variant="secondary" size="sm" disabled={saving} onClick={() => void onApprove(site.id)}>
-                      {saving ? 'Approving…' : 'Approve'}
-                    </Button>
-                  )}
-                  {site.status === 'Approved' && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      disabled={saving}
-                      onClick={() => void onRevoke(site.id)}
-                      className="text-red-700 hover:bg-red-50 hover:underline"
-                    >
-                      {saving ? 'Revoking…' : 'Revoke'}
-                    </Button>
-                  )}
-                  {site.status === 'Removed' && (
-                    <Button variant="secondary" size="sm" disabled={saving} onClick={() => void onApprove(site.id)}>
-                      {saving ? 'Approving…' : 'Re-approve'}
+                  {action && (
+                    <Button variant={action.variant} size="sm" disabled={saving} onClick={action.onClick} className={action.className}>
+                      {saving ? action.savingLabel : action.label}
                     </Button>
                   )}
                 </td>

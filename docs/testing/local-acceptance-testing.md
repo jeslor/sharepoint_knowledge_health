@@ -311,11 +311,32 @@ cited are exact (`apps/api/src/**/*.controller.ts`).
   API layer directly: `POST /organizations/:id/discover-sites`, which auto-resolves the
   org's one Consented tenant, or the original `POST .../microsoft-tenants/:tenantId/
   discover-sites` if you want to pass a tenant explicitly).
-- *Expected*: every SharePoint site your Graph app-only permissions can see comes back,
-  each as `status: 'Discovered'`, shown in the "Pending" filter on the page. Verify
-  against the actual SharePoint admin center site list — counts should match (barring
-  OneDrive-only or restricted sites, which `Sites.Read.All` may not surface — a real
-  thing to verify, not assume).
+- *Expected*: every organizational SharePoint site your Graph app-only permissions can
+  see comes back, each as `status: 'Discovered'`, shown in the "Pending" filter on the
+  page. Verify against the actual SharePoint admin center site list — counts should
+  match, **including private/restricted sites** (`listSites()` enumerates via `GET
+  /sites/getAllSites`, not a search index — see ADR-0013/ADR-0014's 2026-07-25
+  implementation notes). Personal OneDrive sites are deliberately excluded by design
+  (`isPersonalSite`), not a coverage gap — don't expect to see them.
+
+**5.4.1b — Private sites and personal OneDrive sites (2026-07-25 reliability fix)**
+- *Context*: discovery previously used a search-index-backed Graph call that could miss
+  a private site the app-only token could otherwise read directly, and could return
+  empty/error results for a newly created site whose search index hadn't caught up yet
+  — both confirmed live during this fix's investigation. Neither failure mode depends on
+  waiting; `getAllSites` enumerates site collections directly.
+- *Steps*: 1) Create (or identify) a private/restricted SharePoint site in the connected
+  tenant. 2) Run discovery. 3) Separately confirm the tenant has at least one real user
+  with a personal OneDrive/MySite.
+- *Expected*: the private site appears as `status: 'Discovered'`, same as any public
+  site — it still requires the normal Admin approval step before anything in it is ever
+  scanned (§4/§6 of ADR-0014 are unchanged by this fix). No personal OneDrive site
+  (`isPersonalSite: true`) appears anywhere in the discovered list.
+- *Failure scenarios*: an unrecognized/system site (e.g. the tenant's built-in Search
+  Center) may also appear as `Discovered` with a URL-shaped display name if Graph
+  reports no `displayName`/`name` for it — this is expected, not a bug; it's exactly the
+  fallback ADR-0013's implementation note describes, and it still requires the same
+  approval step as any other site (no auto-exclusion by guessed pattern, ADR-0014 §6).
 
 **5.4.2 — Re-running discovery (Refresh) never resets an already-Approved site**
 - *Steps*: approve a site (5.5.1), then click "Refresh discovery" again.
@@ -690,6 +711,7 @@ Copy this into an issue tracker or check off directly in this file as you go.
 
 ### SharePoint discovery (5.4)
 - [ ] 5.4.1 Discovery lists real sites matching SharePoint admin center
+- [ ] 5.4.1b Private sites are discovered and still require approval; personal OneDrive sites never appear
 - [ ] 5.4.2 Re-discovery never resets an Approved site; removed-upstream sites aren't auto-pruned
 
 ### Site approval (5.5)

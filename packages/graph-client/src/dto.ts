@@ -7,6 +7,11 @@ export interface GraphSite {
   id: string;
   webUrl: string;
   displayName: string;
+  // Authoritative Graph field distinguishing a user's personal OneDrive site
+  // from an organizational SharePoint site — not a heuristic. Optional
+  // because getSite() (GET /sites/{id}) does not return it; only listSites()
+  // (GET /sites/getAllSites) does.
+  isPersonalSite?: boolean;
 }
 
 export interface GraphDrive {

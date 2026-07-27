@@ -81,6 +81,38 @@ describe('SiteDiscoveryProcessor', () => {
     });
   });
 
+  // Root cause regression test: getAllSites returns personal OneDrive sites
+  // (isPersonalSite: true), an authoritative Graph field — outside this
+  // product's scope, filtered here rather than in packages/graph-client
+  // (ADR-0013's boundary: the Graph client returns raw data, this worker
+  // decides what's product-relevant).
+  it('skips a personal OneDrive site (isPersonalSite: true)', async () => {
+    mockedListSites.mockReturnValue(asyncGen([graphSite({ isPersonalSite: true })]));
+
+    await processor.process(job(payload));
+
+    expect(sharePointSites.create).not.toHaveBeenCalled();
+  });
+
+  // No heuristic filtering: an unrecognized/system site (e.g. the tenant's
+  // built-in Search Center, which has no isPersonalSite flag set) still
+  // gets persisted as Discovered — a human decides via the existing
+  // approval workflow, not a guessed exclusion rule (ADR-0014 §6).
+  it('persists an unrecognized/system site as Discovered, same as any other site', async () => {
+    mockedListSites.mockReturnValue(
+      asyncGen([graphSite({ id: 'search-site', webUrl: 'https://contoso.sharepoint.com/search', displayName: 'https://contoso.sharepoint.com/search' })]),
+    );
+
+    await processor.process(job(payload));
+
+    expect(sharePointSites.create).toHaveBeenCalledWith({
+      microsoftTenantId: 'tenant-1',
+      graphSiteId: 'search-site',
+      siteUrl: 'https://contoso.sharepoint.com/search',
+      displayName: 'https://contoso.sharepoint.com/search',
+    });
+  });
+
   it('does not duplicate an already-known site (idempotent, matched by graphSiteId)', async () => {
     sharePointSites.findMany.mockResolvedValue([
       { id: 'site-row-1', graphSiteId: 'graph-site-1', siteUrl: 'https://contoso.sharepoint.com/sites/finance', displayName: 'Finance' },
