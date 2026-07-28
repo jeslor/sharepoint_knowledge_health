@@ -1,6 +1,7 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { createTenantContext, type MicrosoftTenant, type SharePointSite } from '@sph/database';
 import { DiscoveryProducerService } from '../discovery/discovery-producer.service';
+import { AuditLogService } from '../audit-log/audit-log.service';
 
 /**
  * ADR-0014 (amended 2026-07-20): approval decisions are made here, but
@@ -12,7 +13,10 @@ import { DiscoveryProducerService } from '../discovery/discovery-producer.servic
  */
 @Injectable()
 export class SharePointSitesService {
-  constructor(private readonly discoveryProducer: DiscoveryProducerService) {}
+  constructor(
+    private readonly discoveryProducer: DiscoveryProducerService,
+    private readonly auditLog: AuditLogService,
+  ) {}
 
   async enqueueDiscovery(organizationId: string, microsoftTenantId: string): Promise<MicrosoftTenant> {
     return this.discoveryProducer.enqueueDiscovery(organizationId, microsoftTenantId);
@@ -67,13 +71,25 @@ export class SharePointSitesService {
       approvedByUserId,
     });
     if (!updated) throw new NotFoundException('SharePoint site not found');
+    await this.auditLog.record(organizationId, {
+      actorUserId: approvedByUserId,
+      action: 'sharepoint_site.approved',
+      targetType: 'SharePointSite',
+      targetId: updated.id,
+    });
     return updated;
   }
 
-  async revokeSite(organizationId: string, siteId: string): Promise<SharePointSite> {
+  async revokeSite(organizationId: string, siteId: string, revokedByUserId: string): Promise<SharePointSite> {
     const context = createTenantContext(organizationId);
     const updated = await context.sharePointSites.updateById(siteId, { status: 'Removed' });
     if (!updated) throw new NotFoundException('SharePoint site not found');
+    await this.auditLog.record(organizationId, {
+      actorUserId: revokedByUserId,
+      action: 'sharepoint_site.revoked',
+      targetType: 'SharePointSite',
+      targetId: updated.id,
+    });
     return updated;
   }
 }

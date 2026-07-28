@@ -3,6 +3,7 @@ import { resolveOrProvisionFromConsent } from '@sph/database';
 import { entraJwks, verifyEntraToken } from './entra-jwt.guard';
 import type { ConsentCallbackRequest } from './consent-callback.dto';
 import { DiscoveryProducerService } from '../discovery/discovery-producer.service';
+import { AuditLogService } from '../audit-log/audit-log.service';
 
 /**
  * ADR-0012 §1/§3: the ONLY place a brand-new Organization can be created.
@@ -15,7 +16,10 @@ import { DiscoveryProducerService } from '../discovery/discovery-producer.servic
 export class ConsentCallbackController {
   private readonly logger = new Logger(ConsentCallbackController.name);
 
-  constructor(private readonly discoveryProducer: DiscoveryProducerService) {}
+  constructor(
+    private readonly discoveryProducer: DiscoveryProducerService,
+    private readonly auditLog: AuditLogService,
+  ) {}
 
   @Post('consent-callback')
   async handleConsentCallback(@Body() body: ConsentCallbackRequest) {
@@ -48,6 +52,21 @@ export class ConsentCallbackController {
     // enqueue failure, and the manual "Discover sites" button remains a
     // self-service retry path regardless.
     if (resolution.kind === 'bootstrapped') {
+      // Recorded here, not inside the discovery try/catch below: the
+      // bootstrap transaction (Organization/MicrosoftTenant/first User)
+      // has already fully committed by the time resolution.kind ===
+      // 'bootstrapped' is observed — the tenant genuinely is connected
+      // regardless of whether the best-effort discovery enqueue that
+      // follows succeeds. Only 'bootstrapped' logs this action: 'existing'
+      // and 'provisioned-pending' mean this tid was already connected, not
+      // a new connection event.
+      await this.auditLog.record(resolution.organizationId, {
+        actorUserId: resolution.userId,
+        action: 'microsoft_tenant.connected',
+        targetType: 'MicrosoftTenant',
+        targetId: resolution.microsoftTenantId,
+      });
+
       try {
         await this.discoveryProducer.enqueueDiscovery(resolution.organizationId, resolution.microsoftTenantId);
       } catch (error) {

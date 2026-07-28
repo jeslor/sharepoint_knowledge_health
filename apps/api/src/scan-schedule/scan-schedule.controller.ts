@@ -1,9 +1,11 @@
 import { BadRequestException, Body, Controller, Delete, Get, HttpCode, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import type { User } from '@sph/database';
 import type { CreateScanScheduleRequest, ScanScheduleFrequencyValue, ScanScheduleResponse, UpdateScanScheduleRequest } from '@sph/types';
 import { EntraJwtGuard } from '../auth/entra-jwt.guard';
 import { TenantContextGuard } from '../auth/tenant-context.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
+import { CurrentUser } from '../auth/current-user.decorator';
 import { OrganizationAccessGuard } from '../common/organization-access.guard';
 import { ScanScheduleService } from './scan-schedule.service';
 
@@ -25,9 +27,10 @@ export class ScanScheduleController {
   async createSchedule(
     @Param('id') organizationId: string,
     @Body() body: CreateScanScheduleRequest,
+    @CurrentUser() actor: User,
   ): Promise<ScanScheduleResponse> {
     this.validateFrequency(body.frequency);
-    return this.scanScheduleService.createSchedule(organizationId, body);
+    return this.scanScheduleService.createSchedule(organizationId, body, actor.id);
   }
 
   @Patch('scan-schedule')
@@ -36,12 +39,13 @@ export class ScanScheduleController {
   async updateSchedule(
     @Param('id') organizationId: string,
     @Body() body: UpdateScanScheduleRequest,
+    @CurrentUser() actor: User,
   ): Promise<ScanScheduleResponse> {
     if (body.frequency === undefined && body.enabled === undefined) {
       throw new BadRequestException('At least one of frequency or enabled must be provided');
     }
     if (body.frequency !== undefined) this.validateFrequency(body.frequency);
-    return this.scanScheduleService.updateSchedule(organizationId, body);
+    return this.scanScheduleService.updateSchedule(organizationId, body, actor.id);
   }
 
   @Delete('scan-schedule')

@@ -3,6 +3,7 @@ import { resolveOrProvisionFromConsent, type ConsentResolution } from '@sph/data
 import { verifyEntraToken } from './entra-jwt.guard';
 import { ConsentCallbackController } from './consent-callback.controller';
 import type { DiscoveryProducerService } from '../discovery/discovery-producer.service';
+import { AuditLogService } from '../audit-log/audit-log.service';
 
 jest.mock('@sph/database');
 jest.mock('./entra-jwt.guard', () => ({
@@ -20,7 +21,8 @@ function resolution(kind: ConsentResolution['kind']): ConsentResolution {
 
 describe('ConsentCallbackController', () => {
   const discoveryProducer = { enqueueDiscovery: jest.fn() };
-  const controller = new ConsentCallbackController(discoveryProducer as unknown as DiscoveryProducerService);
+  const auditLog = { record: jest.fn() } as unknown as jest.Mocked<AuditLogService>;
+  const controller = new ConsentCallbackController(discoveryProducer as unknown as DiscoveryProducerService, auditLog);
 
   const previousClientId = process.env.ENTRA_CLIENT_ID;
 
@@ -42,11 +44,12 @@ describe('ConsentCallbackController', () => {
     expect(discoveryProducer.enqueueDiscovery).not.toHaveBeenCalled();
   });
 
-  it('throws ForbiddenException on a rejected resolution, without enqueueing discovery', async () => {
+  it('throws ForbiddenException on a rejected resolution, without enqueueing discovery or recording an audit entry', async () => {
     mockedResolve.mockResolvedValue(resolution('rejected'));
 
     await expect(controller.handleConsentCallback({ idToken: 'token', tenantName: 'Acme' })).rejects.toThrow(ForbiddenException);
     expect(discoveryProducer.enqueueDiscovery).not.toHaveBeenCalled();
+    expect(auditLog.record).not.toHaveBeenCalled();
   });
 
   it('enqueues discovery when the resolution is bootstrapped (a MicrosoftTenant just transitioned to Consented)', async () => {
@@ -58,14 +61,28 @@ describe('ConsentCallbackController', () => {
     expect(result).toEqual(resolution('bootstrapped'));
   });
 
+  it('records a microsoft_tenant.connected audit entry only for a bootstrapped resolution', async () => {
+    mockedResolve.mockResolvedValue(resolution('bootstrapped'));
+
+    await controller.handleConsentCallback({ idToken: 'token', tenantName: 'Acme' });
+
+    expect(auditLog.record).toHaveBeenCalledWith('org-1', {
+      actorUserId: 'user-1',
+      action: 'microsoft_tenant.connected',
+      targetType: 'MicrosoftTenant',
+      targetId: 'tenant-1',
+    });
+  });
+
   it.each(['existing', 'provisioned-pending'] as const)(
-    'does not enqueue discovery for kind: %s (not a fresh consent transition)',
+    'does not enqueue discovery or record an audit entry for kind: %s (not a fresh connection)',
     async (kind) => {
       mockedResolve.mockResolvedValue(resolution(kind));
 
       await controller.handleConsentCallback({ idToken: 'token', tenantName: 'Acme' });
 
       expect(discoveryProducer.enqueueDiscovery).not.toHaveBeenCalled();
+      expect(auditLog.record).not.toHaveBeenCalled();
     },
   );
 
@@ -76,5 +93,10 @@ describe('ConsentCallbackController', () => {
     const result = await controller.handleConsentCallback({ idToken: 'token', tenantName: 'Acme' });
 
     expect(result).toEqual(resolution('bootstrapped'));
+    // The connection audit entry was already recorded before the
+    // best-effort discovery enqueue was even attempted — a downstream
+    // discovery failure must never retroactively un-log a connection that
+    // genuinely happened.
+    expect(auditLog.record).toHaveBeenCalledWith('org-1', expect.objectContaining({ action: 'microsoft_tenant.connected' }));
   });
 });

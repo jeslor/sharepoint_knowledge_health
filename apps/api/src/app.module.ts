@@ -12,6 +12,7 @@ import { HealthTrendsModule } from './health-trends/health-trends.module';
 import { GovernanceIssuesModule } from './governance/governance-issues.module';
 import { UsersModule } from './users/users.module';
 import { OnboardingStatusModule } from './onboarding-status/onboarding-status.module';
+import { AuditLogModule } from './audit-log/audit-log.module';
 import { requestLoggerMiddleware } from './common/request-logger.middleware';
 
 /**
@@ -75,6 +76,7 @@ export function bullConnectionOptions(): {
     GovernanceIssuesModule,
     UsersModule,
     OnboardingStatusModule,
+    AuditLogModule,
   ],
 })
 export class AppModule implements NestModule {

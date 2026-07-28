@@ -2,6 +2,7 @@ import { ConflictException, NotFoundException } from '@nestjs/common';
 import { createTenantContext } from '@sph/database';
 import type { Queue } from 'bullmq';
 import { ScansService } from './scans.service';
+import { AuditLogService } from '../audit-log/audit-log.service';
 
 jest.mock('@sph/database');
 
@@ -15,8 +16,9 @@ describe('ScansService', () => {
   const healthIssues = { findMany: jest.fn() };
   const documents = { findMany: jest.fn() };
   const queue = { add: jest.fn() };
+  const auditLog = { record: jest.fn() } as unknown as jest.Mocked<AuditLogService>;
 
-  const service = new ScansService(queue as unknown as Queue);
+  const service = new ScansService(queue as unknown as Queue, auditLog);
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -42,6 +44,7 @@ describe('ScansService', () => {
 
       await expect(service.triggerScan('org-1', 'tenant-missing', 'user-1')).rejects.toThrow(NotFoundException);
       expect(queue.add).not.toHaveBeenCalled();
+      expect(auditLog.record).not.toHaveBeenCalled();
     });
 
     it('creates a Queued ScanJob and enqueues a job carrying only { organizationId, scanJobId }', async () => {
@@ -60,6 +63,20 @@ describe('ScansService', () => {
       expect(result).toBe(scanJob);
     });
 
+    it('records an audit log entry only once the job is genuinely enqueued', async () => {
+      microsoftTenants.findFirstById.mockResolvedValue({ id: 'tenant-1' });
+      scanJobs.create.mockResolvedValue({ id: 'scan-1', status: 'Queued' });
+
+      await service.triggerScan('org-1', 'tenant-1', 'user-1');
+
+      expect(auditLog.record).toHaveBeenCalledWith('org-1', {
+        actorUserId: 'user-1',
+        action: 'scan.triggered',
+        targetType: 'ScanJob',
+        targetId: 'scan-1',
+      });
+    });
+
     it('rejects with 409 when a scan is already Queued or Running for this Microsoft tenant', async () => {
       microsoftTenants.findFirstById.mockResolvedValue({ id: 'tenant-1' });
       scanJobs.findMany.mockResolvedValue([{ id: 'scan-existing', status: 'Running' }]);
@@ -67,6 +84,7 @@ describe('ScansService', () => {
       await expect(service.triggerScan('org-1', 'tenant-1', 'user-1')).rejects.toThrow(ConflictException);
       expect(scanJobs.create).not.toHaveBeenCalled();
       expect(queue.add).not.toHaveBeenCalled();
+      expect(auditLog.record).not.toHaveBeenCalled();
     });
 
     // LAT F9: a queue.add() failure (e.g. Redis unavailable) must not leave
@@ -87,6 +105,9 @@ describe('ScansService', () => {
           completedAt: expect.any(Date),
           errorSummary: 'Failed to enqueue scan job: connect ECONNREFUSED 127.0.0.1:6379',
         });
+        // A failed enqueue never produces a "scan.triggered" audit record —
+        // the action didn't genuinely succeed (the caller sees a 500).
+        expect(auditLog.record).not.toHaveBeenCalled();
       });
 
       it('does not leave the ScanJob orphaned at Queued — a subsequent trigger is not blocked by it', async () => {

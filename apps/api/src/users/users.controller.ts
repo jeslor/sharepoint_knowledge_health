@@ -1,9 +1,11 @@
 import { Controller, Get, Param, Patch, UseGuards } from '@nestjs/common';
+import type { User } from '@sph/database';
 import type { OrganizationUserResponse } from '@sph/types';
 import { EntraJwtGuard } from '../auth/entra-jwt.guard';
 import { TenantContextGuard } from '../auth/tenant-context.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
+import { CurrentUser } from '../auth/current-user.decorator';
 import { OrganizationAccessGuard } from '../common/organization-access.guard';
 import { UsersService } from './users.service';
 
@@ -29,15 +31,17 @@ export class UsersController {
   async approveUser(
     @Param('id') organizationId: string,
     @Param('userId') userId: string,
+    @CurrentUser() actor: User,
   ): Promise<OrganizationUserResponse> {
-    return this.usersService.approveUser(organizationId, userId);
+    return this.usersService.approveUser(organizationId, userId, actor.id);
   }
 
   @Patch(':userId/reject')
   async rejectUser(
     @Param('id') organizationId: string,
     @Param('userId') userId: string,
+    @CurrentUser() actor: User,
   ): Promise<OrganizationUserResponse> {
-    return this.usersService.rejectUser(organizationId, userId);
+    return this.usersService.rejectUser(organizationId, userId, actor.id);
   }
 }

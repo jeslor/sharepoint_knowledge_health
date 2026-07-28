@@ -1,6 +1,7 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { createTenantContext, type User } from '@sph/database';
 import type { OrganizationUserResponse } from '@sph/types';
+import { AuditLogService } from '../audit-log/audit-log.service';
 
 function toResponse(user: User): OrganizationUserResponse {
   return {
@@ -25,25 +26,42 @@ function toResponse(user: User): OrganizationUserResponse {
  */
 @Injectable()
 export class UsersService {
+  constructor(private readonly auditLog: AuditLogService) {}
+
   async listUsers(organizationId: string): Promise<OrganizationUserResponse[]> {
     const context = createTenantContext(organizationId);
     const users = await context.users.findMany({ orderBy: { createdAt: 'asc' } });
     return users.map(toResponse);
   }
 
-  async approveUser(organizationId: string, userId: string): Promise<OrganizationUserResponse> {
+  async approveUser(organizationId: string, userId: string, actorUserId: string): Promise<OrganizationUserResponse> {
     const user = await this.requirePending(organizationId, userId);
     const context = createTenantContext(organizationId);
     const updated = await context.users.updateById(user.id, { status: 'Active' });
     if (!updated) throw new NotFoundException('User not found');
+    // Recorded only once the status transition has actually succeeded — a
+    // rejected (409/404) request never reaches this line, so it never
+    // produces an audit record for an action that didn't happen.
+    await this.auditLog.record(organizationId, {
+      actorUserId,
+      action: 'user.approved',
+      targetType: 'User',
+      targetId: updated.id,
+    });
     return toResponse(updated);
   }
 
-  async rejectUser(organizationId: string, userId: string): Promise<OrganizationUserResponse> {
+  async rejectUser(organizationId: string, userId: string, actorUserId: string): Promise<OrganizationUserResponse> {
     const user = await this.requirePending(organizationId, userId);
     const context = createTenantContext(organizationId);
     const updated = await context.users.updateById(user.id, { status: 'Deactivated' });
     if (!updated) throw new NotFoundException('User not found');
+    await this.auditLog.record(organizationId, {
+      actorUserId,
+      action: 'user.rejected',
+      targetType: 'User',
+      targetId: updated.id,
+    });
     return toResponse(updated);
   }
 

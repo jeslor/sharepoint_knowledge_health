@@ -47,11 +47,11 @@ describe('SharePointSitesController', () => {
     expect(service.approveSite).toHaveBeenCalledWith('org-1', 'site-1', 'user-1');
   });
 
-  it('revokeSite delegates organizationId and siteId', async () => {
+  it('revokeSite delegates organizationId, siteId, and the current user id — never trusts a client-supplied revoker', async () => {
     service.revokeSite.mockResolvedValue({ id: 'site-1', status: 'Removed' });
 
-    await controller.revokeSite('org-1', 'site-1');
+    await controller.revokeSite('org-1', 'site-1', { id: 'user-1' } as never);
 
-    expect(service.revokeSite).toHaveBeenCalledWith('org-1', 'site-1');
+    expect(service.revokeSite).toHaveBeenCalledWith('org-1', 'site-1', 'user-1');
   });
 });

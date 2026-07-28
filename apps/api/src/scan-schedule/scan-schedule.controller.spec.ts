@@ -22,40 +22,42 @@ describe('ScanScheduleController', () => {
   });
 
   describe('createSchedule', () => {
-    it('delegates organizationId and body when frequency is valid', async () => {
+    it('delegates organizationId, body, and the current user id as actor when frequency is valid', async () => {
       service.createSchedule.mockResolvedValue({ id: 'schedule-1' });
 
-      await controller.createSchedule('org-1', { frequency: 'Daily' });
+      await controller.createSchedule('org-1', { frequency: 'Daily' }, { id: 'admin-1' } as never);
 
-      expect(service.createSchedule).toHaveBeenCalledWith('org-1', { frequency: 'Daily' });
+      expect(service.createSchedule).toHaveBeenCalledWith('org-1', { frequency: 'Daily' }, 'admin-1');
     });
 
     it('rejects an invalid frequency with 400 before calling the service', async () => {
-      await expect(controller.createSchedule('org-1', { frequency: 'Hourly' as never })).rejects.toThrow(
-        BadRequestException,
-      );
+      await expect(
+        controller.createSchedule('org-1', { frequency: 'Hourly' as never }, { id: 'admin-1' } as never),
+      ).rejects.toThrow(BadRequestException);
       expect(service.createSchedule).not.toHaveBeenCalled();
     });
   });
 
   describe('updateSchedule', () => {
     it('rejects an empty body (neither frequency nor enabled given)', async () => {
-      await expect(controller.updateSchedule('org-1', {})).rejects.toThrow(BadRequestException);
+      await expect(controller.updateSchedule('org-1', {}, { id: 'admin-1' } as never)).rejects.toThrow(
+        BadRequestException,
+      );
       expect(service.updateSchedule).not.toHaveBeenCalled();
     });
 
-    it('accepts a bare enabled toggle', async () => {
+    it('accepts a bare enabled toggle, delegating the current user id as actor', async () => {
       service.updateSchedule.mockResolvedValue({ id: 'schedule-1', enabled: false });
 
-      await controller.updateSchedule('org-1', { enabled: false });
+      await controller.updateSchedule('org-1', { enabled: false }, { id: 'admin-1' } as never);
 
-      expect(service.updateSchedule).toHaveBeenCalledWith('org-1', { enabled: false });
+      expect(service.updateSchedule).toHaveBeenCalledWith('org-1', { enabled: false }, 'admin-1');
     });
 
     it('rejects an invalid frequency with 400', async () => {
-      await expect(controller.updateSchedule('org-1', { frequency: 'Monthly' as never })).rejects.toThrow(
-        BadRequestException,
-      );
+      await expect(
+        controller.updateSchedule('org-1', { frequency: 'Monthly' as never }, { id: 'admin-1' } as never),
+      ).rejects.toThrow(BadRequestException);
       expect(service.updateSchedule).not.toHaveBeenCalled();
     });
   });

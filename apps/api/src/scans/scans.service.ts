@@ -4,6 +4,7 @@ import { Queue } from 'bullmq';
 import { createTenantContext, type HealthIssue, type HealthScore, type ScanJob, type TenantContext } from '@sph/database';
 import { SCAN_QUEUE, type ScanComparisonIssue, type ScanComparisonResponse, type ScanJobPayload, type ScanResponse } from '@sph/types';
 import { withTimeout } from '../common/with-timeout';
+import { AuditLogService } from '../audit-log/audit-log.service';
 
 const MOST_RECENT_SCANS_LIMIT = 50;
 
@@ -43,7 +44,10 @@ function toScanResponse(scanJob: ScanJob): ScanResponse {
  */
 @Injectable()
 export class ScansService {
-  constructor(@InjectQueue(SCAN_QUEUE) private readonly scanQueue: Queue<ScanJobPayload>) {}
+  constructor(
+    @InjectQueue(SCAN_QUEUE) private readonly scanQueue: Queue<ScanJobPayload>,
+    private readonly auditLog: AuditLogService,
+  ) {}
 
   async triggerScan(organizationId: string, microsoftTenantId: string, triggeredByUserId: string): Promise<ScanJob> {
     const context = createTenantContext(organizationId);
@@ -98,6 +102,20 @@ export class ScansService {
       }
       throw enqueueError;
     }
+
+    // Recorded only once the job is genuinely enqueued — an enqueue
+    // failure above rethrows before reaching this line, so a failed
+    // trigger attempt never produces an audit record. This method is only
+    // ever called from apps/api (the scheduler's own tick logic lives
+    // entirely in apps/worker's SchedulerProcessor and never calls into
+    // this service — confirmed by ADR-0009's app-boundary rule), so every
+    // call here is unconditionally a manual, human-triggered scan.
+    await this.auditLog.record(organizationId, {
+      actorUserId: triggeredByUserId,
+      action: 'scan.triggered',
+      targetType: 'ScanJob',
+      targetId: scanJob.id,
+    });
 
     return scanJob;
   }

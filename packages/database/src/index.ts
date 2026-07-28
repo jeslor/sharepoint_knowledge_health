@@ -33,6 +33,7 @@ export type {
   ScanSchedule,
   GovernanceIssue,
   GovernanceActivity,
+  AuditLog,
 } from '@prisma/client';
 
 export {

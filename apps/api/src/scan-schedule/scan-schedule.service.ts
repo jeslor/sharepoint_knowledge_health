@@ -6,6 +6,7 @@ import type {
   ScanScheduleResponse,
   UpdateScanScheduleRequest,
 } from '@sph/types';
+import { AuditLogService } from '../audit-log/audit-log.service';
 
 function computeInitialNextRunAt(frequency: ScanScheduleFrequencyValue, now: Date): Date {
   const next = new Date(now);
@@ -36,13 +37,19 @@ function toScanScheduleResponse(schedule: ScanSchedule): ScanScheduleResponse {
  */
 @Injectable()
 export class ScanScheduleService {
+  constructor(private readonly auditLog: AuditLogService) {}
+
   async getSchedule(organizationId: string): Promise<ScanScheduleResponse | null> {
     const context = createTenantContext(organizationId);
     const [schedule] = await context.scanSchedules.findMany({ take: 1 });
     return schedule ? toScanScheduleResponse(schedule) : null;
   }
 
-  async createSchedule(organizationId: string, request: CreateScanScheduleRequest): Promise<ScanScheduleResponse> {
+  async createSchedule(
+    organizationId: string,
+    request: CreateScanScheduleRequest,
+    actorUserId: string,
+  ): Promise<ScanScheduleResponse> {
     const context = createTenantContext(organizationId);
     const [existing] = await context.scanSchedules.findMany({ take: 1 });
     if (existing) {
@@ -55,10 +62,20 @@ export class ScanScheduleService {
       enabled: request.enabled ?? true,
       nextRunAt: computeInitialNextRunAt(request.frequency, now),
     });
+    await this.auditLog.record(organizationId, {
+      actorUserId,
+      action: 'scan_schedule.created',
+      targetType: 'ScanSchedule',
+      targetId: schedule.id,
+    });
     return toScanScheduleResponse(schedule);
   }
 
-  async updateSchedule(organizationId: string, request: UpdateScanScheduleRequest): Promise<ScanScheduleResponse> {
+  async updateSchedule(
+    organizationId: string,
+    request: UpdateScanScheduleRequest,
+    actorUserId: string,
+  ): Promise<ScanScheduleResponse> {
     const context = createTenantContext(organizationId);
     const [existing] = await context.scanSchedules.findMany({ take: 1 });
     if (!existing) {
@@ -81,6 +98,16 @@ export class ScanScheduleService {
         : {}),
     });
     if (!updated) throw new NotFoundException('No scan schedule configured for this organization');
+    await this.auditLog.record(organizationId, {
+      actorUserId,
+      action: 'scan_schedule.updated',
+      targetType: 'ScanSchedule',
+      targetId: updated.id,
+      metadata: {
+        ...(request.frequency !== undefined ? { frequency: request.frequency } : {}),
+        ...(request.enabled !== undefined ? { enabled: request.enabled } : {}),
+      },
+    });
     return toScanScheduleResponse(updated);
   }
 

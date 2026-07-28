@@ -15,6 +15,7 @@ interface SeededOrg {
   scanScheduleId: string;
   governanceIssueId: string;
   governanceActivityId: string;
+  auditLogId: string;
   context: TenantContext;
 }
 
@@ -157,6 +158,16 @@ async function seedOrganization(label: string): Promise<SeededOrg> {
     },
   });
 
+  const auditLog = await prisma.auditLog.create({
+    data: {
+      organizationId: organization.id,
+      actorUserId: user.id,
+      action: 'sharepoint_site.approved',
+      targetType: 'SharePointSite',
+      targetId: site.id,
+    },
+  });
+
   return {
     organizationId: organization.id,
     userId: user.id,
@@ -171,6 +182,7 @@ async function seedOrganization(label: string): Promise<SeededOrg> {
     scanScheduleId: scanSchedule.id,
     governanceIssueId: governanceIssue.id,
     governanceActivityId: governanceActivity.id,
+    auditLogId: auditLog.id,
     context: createTenantContext(organization.id),
   };
 }
@@ -304,11 +316,25 @@ describe('Cross-tenant data isolation (ADR-0001)', () => {
       expect(list.some((a) => a.id === orgB.governanceActivityId)).toBe(false);
       expect(await orgA.context.governanceActivity.findFirstById(orgB.governanceActivityId)).toBeNull();
     });
+
+    it('AuditLogRepository never leaks across organizations', async () => {
+      const list = await orgA.context.auditLogs.findMany();
+      expect(list.some((a) => a.id === orgB.auditLogId)).toBe(false);
+      expect(await orgA.context.auditLogs.findFirstById(orgB.auditLogId)).toBeNull();
+    });
   });
 
   describe('GovernanceActivityRepository — append-only (Phase 8C)', () => {
     it('has no updateById or deleteById method — immutability is enforced by the repository shape itself', () => {
       const repo = orgA.context.governanceActivity as unknown as { updateById?: unknown; deleteById?: unknown };
+      expect(repo.updateById).toBeUndefined();
+      expect(repo.deleteById).toBeUndefined();
+    });
+  });
+
+  describe('AuditLogRepository — append-only (ADR-0019)', () => {
+    it('has no updateById or deleteById method — immutability is enforced by the repository shape itself', () => {
+      const repo = orgA.context.auditLogs as unknown as { updateById?: unknown; deleteById?: unknown };
       expect(repo.updateById).toBeUndefined();
       expect(repo.deleteById).toBeUndefined();
     });
