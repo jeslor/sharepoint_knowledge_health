@@ -183,6 +183,7 @@ model Organization {
   healthSnapshots    HealthSnapshot[]
   governanceIssues   GovernanceIssue[]
   governanceActivity GovernanceActivity[]
+  auditLogs          AuditLog[]
 
   @@index([status])
 }
@@ -209,6 +210,7 @@ model User {
   assignedGovernanceIssues  GovernanceIssue[]    @relation("GovernanceIssueAssignedTo")
   assignedDocumentOwners    DocumentOwner[]      @relation("DocumentOwnerAssignedBy")
   governanceActivityAsActor GovernanceActivity[] @relation("GovernanceActivityActor")
+  auditLogEntries           AuditLog[]
 
   // The Entra oid claim (entraObjectId) is only unique WITHIN the Azure AD
   // tenant that issued it (ADR-0010) — Microsoft's own multi-tenant app
@@ -554,4 +556,35 @@ model GovernanceActivity {
   @@index([organizationId, createdAt])
   @@index([governanceIssueId, createdAt])
   @@index([organizationId, activityType])
+}
+
+/// Organization-wide administrative action history (ADR-0019) — a sibling
+/// of GovernanceActivity, not a replacement. GovernanceActivity tracks the
+/// workflow of one governed problem on one document; AuditLog tracks
+/// organization-level administrative actions (site approval, scan
+/// triggering, user approval, tenant connection) that aren't tied to any
+/// specific document's governance thread — the two never overlap in
+/// subject matter. Append-only, enforced the same way GovernanceActivity
+/// already is: AuditLogRepository exposes no update/delete method, even by
+/// mistake.
+model AuditLog {
+  id             String   @id @default(cuid())
+  organizationId String
+  // Nullable — reserved for a future system-driven event (e.g. an eventual
+  // tenant-revocation health check, ADR-0012's amendment, not yet built).
+  // Every action this phase actually writes has a real human actor.
+  actorUserId String?
+  action      String // e.g. "sharepoint_site.approved"
+  targetType  String // e.g. "SharePointSite", "User", "ScanSchedule"
+  targetId    String
+  metadata    Json?
+  createdAt   DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  // SetNull (not Restrict, unlike GovernanceActivity.actorUser): a deleted
+  // User row must never cascade away audit history, and must never be
+  // blocked by audit history either (ADR-0019 §1).
+  actorUser User? @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
 }

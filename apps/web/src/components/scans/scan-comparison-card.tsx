@@ -61,6 +61,12 @@ export function ScanComparisonCard({ comparison }: { comparison: ScanComparisonR
 
       <IssueList title="Newly introduced issues" issues={comparison.newIssues} emptyLabel="No new issues since the previous scan." />
       <IssueList title="Resolved issues" issues={comparison.resolvedIssues} emptyLabel="No issues resolved since the previous scan." />
+      {/* F4: a document that no longer exists is not the same as a fixed
+          issue — "Removed documents" names the document lifecycle event
+          directly, deliberately not "Deleted" (SharePoint items are marked
+          Removed, not hard-deleted) and not something vaguer like "No
+          longer present". */}
+      <IssueList title="Removed documents" issues={comparison.removedIssues} emptyLabel="No documents removed since the previous scan." />
     </div>
   );
 }

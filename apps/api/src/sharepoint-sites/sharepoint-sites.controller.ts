@@ -54,7 +54,11 @@ export class SharePointSitesController {
   @Patch('sharepoint-sites/:siteId/revoke')
   @UseGuards(RolesGuard)
   @Roles('Admin')
-  async revokeSite(@Param('id') organizationId: string, @Param('siteId') siteId: string): Promise<SharePointSite> {
-    return this.sharePointSitesService.revokeSite(organizationId, siteId);
+  async revokeSite(
+    @Param('id') organizationId: string,
+    @Param('siteId') siteId: string,
+    @CurrentUser() user: User,
+  ): Promise<SharePointSite> {
+    return this.sharePointSitesService.revokeSite(organizationId, siteId, user.id);
   }
 }

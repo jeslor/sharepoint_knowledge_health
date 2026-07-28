@@ -114,9 +114,21 @@ export class DocumentCollectorProcessor extends WorkerHost {
 
     await context.scanJobs.updateById(scanJobId, { currentSiteName: null });
 
-    const summary = await this.scoreTenantDocuments(context, scanJobId, microsoftTenant.id);
-
+    // Determined here, before scoring, since it depends only on the
+    // site-collection loop above — scoring itself never affects it. Moving
+    // this up (unchanged in what it computes) is what lets scoring below
+    // know, up front, whether this scan's results are eligible to become
+    // each document's "current" state.
     const status = documentsScanned === 0 && documentsFailed > 0 ? 'Failed' : 'Completed';
+
+    // F3 fix: a scan's HealthScore/HealthIssue rows are always written as
+    // history (unconditional, below) — but Document.currentHealthScoreId
+    // must only be repointed when this scan actually succeeded. Otherwise a
+    // Failed scan (e.g. every site failed to collect) silently promotes a
+    // freshly-computed-but-unvalidated score over the last genuinely
+    // successful one. Mirrors the HealthSnapshot gate a few lines below,
+    // which already only fires on `status === 'Completed'`.
+    const summary = await this.scoreTenantDocuments(context, scanJobId, microsoftTenant.id, status === 'Completed');
 
     await context.scanJobs.updateById(scanJobId, {
       status,
@@ -236,6 +248,7 @@ export class DocumentCollectorProcessor extends WorkerHost {
     context: TenantContext,
     scanJobId: string,
     microsoftTenantId: string,
+    shouldUpdateCurrentHealthScore: boolean,
   ): Promise<ScanAggregateSummary> {
     const documents = await context.documents.findMany({
       where: { status: 'Active', site: { microsoftTenantId } },
@@ -316,7 +329,12 @@ export class DocumentCollectorProcessor extends WorkerHost {
         if (issue.severity === 'NeedsAttention') warningIssuesCount += 1;
       }
 
-      await context.documents.updateById(document.id, { currentHealthScoreId: healthScore.id });
+      // F3 fix: never promote a Failed scan's results as "current" — the
+      // HealthScore/HealthIssue rows just above are still written
+      // unconditionally (history is preserved either way).
+      if (shouldUpdateCurrentHealthScore) {
+        await context.documents.updateById(document.id, { currentHealthScoreId: healthScore.id });
+      }
     }
 
     return {

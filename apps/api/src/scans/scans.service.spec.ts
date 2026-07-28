@@ -2,6 +2,7 @@ import { ConflictException, NotFoundException } from '@nestjs/common';
 import { createTenantContext } from '@sph/database';
 import type { Queue } from 'bullmq';
 import { ScansService } from './scans.service';
+import { AuditLogService } from '../audit-log/audit-log.service';
 
 jest.mock('@sph/database');
 
@@ -15,8 +16,9 @@ describe('ScansService', () => {
   const healthIssues = { findMany: jest.fn() };
   const documents = { findMany: jest.fn() };
   const queue = { add: jest.fn() };
+  const auditLog = { record: jest.fn() } as unknown as jest.Mocked<AuditLogService>;
 
-  const service = new ScansService(queue as unknown as Queue);
+  const service = new ScansService(queue as unknown as Queue, auditLog);
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -42,6 +44,7 @@ describe('ScansService', () => {
 
       await expect(service.triggerScan('org-1', 'tenant-missing', 'user-1')).rejects.toThrow(NotFoundException);
       expect(queue.add).not.toHaveBeenCalled();
+      expect(auditLog.record).not.toHaveBeenCalled();
     });
 
     it('creates a Queued ScanJob and enqueues a job carrying only { organizationId, scanJobId }', async () => {
@@ -60,6 +63,20 @@ describe('ScansService', () => {
       expect(result).toBe(scanJob);
     });
 
+    it('records an audit log entry only once the job is genuinely enqueued', async () => {
+      microsoftTenants.findFirstById.mockResolvedValue({ id: 'tenant-1' });
+      scanJobs.create.mockResolvedValue({ id: 'scan-1', status: 'Queued' });
+
+      await service.triggerScan('org-1', 'tenant-1', 'user-1');
+
+      expect(auditLog.record).toHaveBeenCalledWith('org-1', {
+        actorUserId: 'user-1',
+        action: 'scan.triggered',
+        targetType: 'ScanJob',
+        targetId: 'scan-1',
+      });
+    });
+
     it('rejects with 409 when a scan is already Queued or Running for this Microsoft tenant', async () => {
       microsoftTenants.findFirstById.mockResolvedValue({ id: 'tenant-1' });
       scanJobs.findMany.mockResolvedValue([{ id: 'scan-existing', status: 'Running' }]);
@@ -67,6 +84,7 @@ describe('ScansService', () => {
       await expect(service.triggerScan('org-1', 'tenant-1', 'user-1')).rejects.toThrow(ConflictException);
       expect(scanJobs.create).not.toHaveBeenCalled();
       expect(queue.add).not.toHaveBeenCalled();
+      expect(auditLog.record).not.toHaveBeenCalled();
     });
 
     // LAT F9: a queue.add() failure (e.g. Redis unavailable) must not leave
@@ -87,6 +105,9 @@ describe('ScansService', () => {
           completedAt: expect.any(Date),
           errorSummary: 'Failed to enqueue scan job: connect ECONNREFUSED 127.0.0.1:6379',
         });
+        // A failed enqueue never produces a "scan.triggered" audit record —
+        // the action didn't genuinely succeed (the caller sees a 500).
+        expect(auditLog.record).not.toHaveBeenCalled();
       });
 
       it('does not leave the ScanJob orphaned at Queued — a subsequent trigger is not blocked by it', async () => {
@@ -286,6 +307,7 @@ describe('ScansService', () => {
         documentCountChange: null,
         newIssues: [],
         resolvedIssues: [],
+        removedIssues: [],
       });
     });
 
@@ -301,9 +323,14 @@ describe('ScansService', () => {
       expect(result.scoreChange).toBeNull();
       expect(result.newIssues).toEqual([]);
       expect(result.resolvedIssues).toEqual([]);
+      expect(result.removedIssues).toEqual([]);
     });
 
-    it('computes score/issue/document count deltas and diffs new vs resolved issues against the immediately preceding scan', async () => {
+    // F4: doc-1 is scored in both scans (its Ownership issue genuinely
+    // disappears → resolved). doc-3 is scored only in the previous scan
+    // (its Duplication issue disappears because the document itself was
+    // never scored this run → removed, not resolved). doc-2 is a new issue.
+    it('computes score/issue/document count deltas and correctly distinguishes new, resolved, and removed issues against the immediately preceding scan', async () => {
       scanJobs.findFirstById.mockResolvedValue({ id: 'scan-2', status: 'Completed' });
       healthSnapshots.findMany
         .mockResolvedValueOnce([
@@ -344,7 +371,8 @@ describe('ScansService', () => {
       });
 
       const allIssues = [
-        { healthScoreId: 'score-2a', criterion: 'Ownership', severity: 'NeedsAttention', message: 'Owner missing' },
+        // doc-1's Ownership issue (score-1a, below) is absent here — a
+        // genuine fix, since doc-1 (score-2a) is still scored this run.
         { healthScoreId: 'score-2a', criterion: 'Freshness', severity: 'RequiresReview', message: 'Stale content' },
         { healthScoreId: 'score-2b', criterion: 'Metadata', severity: 'NeedsAttention', message: 'Missing tags' },
         { healthScoreId: 'score-1a', criterion: 'Ownership', severity: 'NeedsAttention', message: 'Owner missing' },
@@ -379,9 +407,111 @@ describe('ScansService', () => {
           { documentId: 'doc-2', documentName: 'Policy.docx', criterion: 'Metadata', severity: 'NeedsAttention', message: 'Missing tags' },
         ],
         resolvedIssues: [
+          { documentId: 'doc-1', documentName: 'Handbook.docx', criterion: 'Ownership', severity: 'NeedsAttention', message: 'Owner missing' },
+        ],
+        removedIssues: [
           { documentId: 'doc-3', documentName: 'Archive.docx', criterion: 'Duplication', severity: 'RequiresReview', message: 'Duplicate found' },
         ],
       });
+    });
+
+    // F4 scenario tests — each isolated to its own minimal fixture, kept as
+    // permanent regression coverage for the exact scenarios that motivated
+    // this fix.
+    function mockSnapshotPair(): void {
+      healthSnapshots.findMany
+        .mockResolvedValueOnce([
+          { scanJobId: 'scan-2', capturedAt: new Date('2026-07-02T00:00:00.000Z'), averageHealthScore: 90, criticalIssuesCount: 0, warningIssuesCount: 0, totalDocumentsScanned: 1 },
+        ])
+        .mockResolvedValueOnce([
+          { scanJobId: 'scan-1', capturedAt: new Date('2026-07-01T00:00:00.000Z'), averageHealthScore: 80, criticalIssuesCount: 0, warningIssuesCount: 1, totalDocumentsScanned: 1 },
+        ]);
+    }
+
+    it('true resolution: Document A scored in both scans, its issue disappears -> resolvedIssues, not removedIssues', async () => {
+      scanJobs.findFirstById.mockResolvedValue({ id: 'scan-2', status: 'Completed' });
+      mockSnapshotPair();
+      healthScores.findMany.mockImplementation(async ({ where }: { where: { scanJobId: string } }) => {
+        if (where.scanJobId === 'scan-2') return [{ id: 'score-2', documentId: 'doc-a' }]; // Document A still scored
+        if (where.scanJobId === 'scan-1') return [{ id: 'score-1', documentId: 'doc-a' }];
+        return [];
+      });
+      healthIssues.findMany.mockImplementation(async ({ where }: { where: { healthScoreId: { in: string[] } } }) => {
+        const ids = where.healthScoreId.in;
+        // Document A had "Missing owner" previously; no issues now.
+        if (ids.includes('score-1')) return [{ healthScoreId: 'score-1', criterion: 'Ownership', severity: 'RequiresReview', message: 'Missing owner' }];
+        return [];
+      });
+      documents.findMany.mockResolvedValue([{ id: 'doc-a', name: 'Document A.docx' }]);
+
+      const result = await service.getScanComparison('org-1', 'scan-2');
+
+      expect(result.resolvedIssues).toEqual([
+        { documentId: 'doc-a', documentName: 'Document A.docx', criterion: 'Ownership', severity: 'RequiresReview', message: 'Missing owner' },
+      ]);
+      expect(result.removedIssues).toEqual([]);
+    });
+
+    it('removed document: Document A had a previous HealthScore but no HealthScore row this scan -> removedIssues, not resolvedIssues', async () => {
+      scanJobs.findFirstById.mockResolvedValue({ id: 'scan-2', status: 'Completed' });
+      mockSnapshotPair();
+      healthScores.findMany.mockImplementation(async ({ where }: { where: { scanJobId: string } }) => {
+        if (where.scanJobId === 'scan-2') return []; // Document A no longer scored — not part of the evaluated dataset
+        if (where.scanJobId === 'scan-1') return [{ id: 'score-1', documentId: 'doc-a' }];
+        return [];
+      });
+      healthIssues.findMany.mockImplementation(async ({ where }: { where: { healthScoreId: { in: string[] } } }) => {
+        const ids = where.healthScoreId.in;
+        if (ids.includes('score-1')) return [{ healthScoreId: 'score-1', criterion: 'Ownership', severity: 'RequiresReview', message: 'Missing owner' }];
+        return [];
+      });
+      documents.findMany.mockResolvedValue([{ id: 'doc-a', name: 'Document A.docx' }]);
+
+      const result = await service.getScanComparison('org-1', 'scan-2');
+
+      expect(result.removedIssues).toEqual([
+        { documentId: 'doc-a', documentName: 'Document A.docx', criterion: 'Ownership', severity: 'RequiresReview', message: 'Missing owner' },
+      ]);
+      expect(result.resolvedIssues).toEqual([]);
+    });
+
+    it('combined: Document A removed and Document B\'s issue genuinely fixed in the same comparison', async () => {
+      scanJobs.findFirstById.mockResolvedValue({ id: 'scan-2', status: 'Completed' });
+      mockSnapshotPair();
+      healthScores.findMany.mockImplementation(async ({ where }: { where: { scanJobId: string } }) => {
+        if (where.scanJobId === 'scan-2') return [{ id: 'score-2b', documentId: 'doc-b' }]; // only B scored now — A is gone
+        if (where.scanJobId === 'scan-1') return [
+          { id: 'score-1a', documentId: 'doc-a' },
+          { id: 'score-1b', documentId: 'doc-b' },
+        ];
+        return [];
+      });
+      healthIssues.findMany.mockImplementation(async ({ where }: { where: { healthScoreId: { in: string[] } } }) => {
+        const ids: string[] = where.healthScoreId.in;
+        const allIssues = [
+          { healthScoreId: 'score-1a', criterion: 'Ownership', severity: 'RequiresReview', message: 'Missing owner' },
+          { healthScoreId: 'score-1b', criterion: 'Freshness', severity: 'NeedsAttention', message: 'Stale content' },
+          // score-2b (Document B, current scan) carries no issues — its
+          // Freshness issue from score-1b is genuinely fixed.
+        ];
+        return allIssues.filter((issue) => ids.includes(issue.healthScoreId));
+      });
+      documents.findMany.mockImplementation(async ({ where }: { where: { id: { in: string[] } } }) => {
+        const allDocuments = [
+          { id: 'doc-a', name: 'Document A.docx' },
+          { id: 'doc-b', name: 'Document B.docx' },
+        ];
+        return allDocuments.filter((document) => where.id.in.includes(document.id));
+      });
+
+      const result = await service.getScanComparison('org-1', 'scan-2');
+
+      expect(result.removedIssues).toEqual([
+        { documentId: 'doc-a', documentName: 'Document A.docx', criterion: 'Ownership', severity: 'RequiresReview', message: 'Missing owner' },
+      ]);
+      expect(result.resolvedIssues).toEqual([
+        { documentId: 'doc-b', documentName: 'Document B.docx', criterion: 'Freshness', severity: 'NeedsAttention', message: 'Stale content' },
+      ]);
     });
 
     it('only reads this organization\'s tenant context (org isolation via createTenantContext)', async () => {

@@ -45,5 +45,13 @@ export interface ScanComparisonResponse {
   warningIssuesChange: number | null;
   documentCountChange: number | null;
   newIssues: ScanComparisonIssue[];
+  // A document was scored in both scans, and this issue key genuinely
+  // disappeared — a real fix, not the document vanishing (F4).
   resolvedIssues: ScanComparisonIssue[];
+  // The document had a HealthScore row in the previous scan but not the
+  // current one — it's no longer part of the evaluated dataset (deleted
+  // upstream, or its SharePointSite de-approved), not fixed. Distinct from
+  // resolvedIssues on purpose: conflating the two mislabels "the document
+  // is gone" as "the problem was fixed" (F4).
+  removedIssues: ScanComparisonIssue[];
 }

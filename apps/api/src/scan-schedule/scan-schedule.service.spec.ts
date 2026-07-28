@@ -1,13 +1,15 @@
 import { ConflictException, NotFoundException } from '@nestjs/common';
 import { createTenantContext } from '@sph/database';
 import { ScanScheduleService } from './scan-schedule.service';
+import { AuditLogService } from '../audit-log/audit-log.service';
 
 jest.mock('@sph/database');
 
 const mockedCreateContext = createTenantContext as jest.MockedFunction<typeof createTenantContext>;
 
 describe('ScanScheduleService', () => {
-  const service = new ScanScheduleService();
+  const auditLog = { record: jest.fn() } as unknown as jest.Mocked<AuditLogService>;
+  const service = new ScanScheduleService(auditLog);
   const scanSchedules = { findMany: jest.fn(), create: jest.fn(), updateById: jest.fn(), deleteById: jest.fn() };
 
   beforeEach(() => {
@@ -65,26 +67,50 @@ describe('ScanScheduleService', () => {
         updatedAt: new Date('2026-07-13T00:00:00.000Z'),
       });
 
-      await service.createSchedule('org-1', { frequency: 'Daily' });
+      await service.createSchedule('org-1', { frequency: 'Daily' }, 'admin-1');
 
       expect(scanSchedules.create).toHaveBeenCalledWith(
         expect.objectContaining({ frequency: 'Daily', enabled: true }),
       );
     });
 
-    it('throws ConflictException when the organization already has a schedule', async () => {
+    it('records an audit log entry with the creating admin as actor', async () => {
+      scanSchedules.findMany.mockResolvedValue([]);
+      scanSchedules.create.mockResolvedValue({
+        id: 'schedule-1',
+        frequency: 'Daily',
+        enabled: true,
+        nextRunAt: new Date('2026-07-14T00:00:00.000Z'),
+        lastRunAt: null,
+        createdAt: new Date('2026-07-13T00:00:00.000Z'),
+        updatedAt: new Date('2026-07-13T00:00:00.000Z'),
+      });
+
+      await service.createSchedule('org-1', { frequency: 'Daily' }, 'admin-1');
+
+      expect(auditLog.record).toHaveBeenCalledWith('org-1', {
+        actorUserId: 'admin-1',
+        action: 'scan_schedule.created',
+        targetType: 'ScanSchedule',
+        targetId: 'schedule-1',
+      });
+    });
+
+    it('throws ConflictException when the organization already has a schedule, and never records an audit entry', async () => {
       scanSchedules.findMany.mockResolvedValue([{ id: 'schedule-1' }]);
 
-      await expect(service.createSchedule('org-1', { frequency: 'Daily' })).rejects.toThrow(ConflictException);
+      await expect(service.createSchedule('org-1', { frequency: 'Daily' }, 'admin-1')).rejects.toThrow(ConflictException);
       expect(scanSchedules.create).not.toHaveBeenCalled();
+      expect(auditLog.record).not.toHaveBeenCalled();
     });
   });
 
   describe('updateSchedule', () => {
-    it('throws NotFoundException when no schedule exists yet', async () => {
+    it('throws NotFoundException when no schedule exists yet, and never records an audit entry', async () => {
       scanSchedules.findMany.mockResolvedValue([]);
 
-      await expect(service.updateSchedule('org-1', { enabled: false })).rejects.toThrow(NotFoundException);
+      await expect(service.updateSchedule('org-1', { enabled: false }, 'admin-1')).rejects.toThrow(NotFoundException);
+      expect(auditLog.record).not.toHaveBeenCalled();
     });
 
     it('updates enabled without recomputing nextRunAt', async () => {
@@ -101,9 +127,34 @@ describe('ScanScheduleService', () => {
         updatedAt: new Date('2026-07-13T00:00:00.000Z'),
       });
 
-      await service.updateSchedule('org-1', { enabled: false });
+      await service.updateSchedule('org-1', { enabled: false }, 'admin-1');
 
       expect(scanSchedules.updateById).toHaveBeenCalledWith('schedule-1', { enabled: false });
+    });
+
+    it('records an audit log entry with the updating admin as actor and the changed fields as metadata', async () => {
+      scanSchedules.findMany.mockResolvedValue([
+        { id: 'schedule-1', frequency: 'Daily', nextRunAt: new Date('2026-07-14T00:00:00.000Z') },
+      ]);
+      scanSchedules.updateById.mockResolvedValue({
+        id: 'schedule-1',
+        frequency: 'Daily',
+        enabled: false,
+        nextRunAt: new Date('2026-07-14T00:00:00.000Z'),
+        lastRunAt: null,
+        createdAt: new Date('2026-07-01T00:00:00.000Z'),
+        updatedAt: new Date('2026-07-13T00:00:00.000Z'),
+      });
+
+      await service.updateSchedule('org-1', { enabled: false }, 'admin-1');
+
+      expect(auditLog.record).toHaveBeenCalledWith('org-1', {
+        actorUserId: 'admin-1',
+        action: 'scan_schedule.updated',
+        targetType: 'ScanSchedule',
+        targetId: 'schedule-1',
+        metadata: { enabled: false },
+      });
     });
 
     it('recomputes nextRunAt when frequency changes', async () => {
@@ -120,7 +171,7 @@ describe('ScanScheduleService', () => {
         updatedAt: new Date('2026-07-13T00:00:00.000Z'),
       });
 
-      await service.updateSchedule('org-1', { frequency: 'Daily' });
+      await service.updateSchedule('org-1', { frequency: 'Daily' }, 'admin-1');
 
       const [, updateArgs] = scanSchedules.updateById.mock.calls[0] as [string, { frequency: string; nextRunAt: Date }];
       expect(updateArgs.frequency).toBe('Daily');
@@ -141,7 +192,7 @@ describe('ScanScheduleService', () => {
         updatedAt: new Date('2026-07-13T00:00:00.000Z'),
       });
 
-      await service.updateSchedule('org-1', { frequency: 'Daily' });
+      await service.updateSchedule('org-1', { frequency: 'Daily' }, 'admin-1');
 
       expect(scanSchedules.updateById).toHaveBeenCalledWith('schedule-1', { frequency: 'Daily' });
     });

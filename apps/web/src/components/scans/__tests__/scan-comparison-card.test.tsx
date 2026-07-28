@@ -13,6 +13,7 @@ describe('ScanComparisonCard', () => {
       documentCountChange: null,
       newIssues: [],
       resolvedIssues: [],
+      removedIssues: [],
     };
     render(<ScanComparisonCard comparison={comparison} />);
 
@@ -29,6 +30,7 @@ describe('ScanComparisonCard', () => {
       documentCountChange: 10,
       newIssues: [],
       resolvedIssues: [],
+      removedIssues: [],
     };
     render(<ScanComparisonCard comparison={comparison} />);
 
@@ -42,7 +44,7 @@ describe('ScanComparisonCard', () => {
     expect(warningChange).toHaveClass('text-green-600');
   });
 
-  it('renders newly introduced and resolved issues with document names and severities', () => {
+  it('renders newly introduced, resolved, and removed issues with document names and severities', () => {
     const comparison: ScanComparisonResponse = {
       scanId: 'scan-2',
       previousScanId: 'scan-1',
@@ -56,6 +58,11 @@ describe('ScanComparisonCard', () => {
       resolvedIssues: [
         { documentId: 'doc-3', documentName: 'Archive.docx', criterion: 'Duplication', severity: 'RequiresReview', message: 'Duplicate found' },
       ],
+      // F4: a document no longer part of the evaluated dataset — distinct
+      // from a genuine fix, must render in its own section.
+      removedIssues: [
+        { documentId: 'doc-4', documentName: 'Old Policy.docx', criterion: 'Ownership', severity: 'NeedsAttention', message: 'Owner missing' },
+      ],
     };
     render(<ScanComparisonCard comparison={comparison} />);
 
@@ -66,6 +73,10 @@ describe('ScanComparisonCard', () => {
     expect(screen.getByText('Resolved issues')).toBeInTheDocument();
     expect(screen.getByText('Archive.docx')).toBeInTheDocument();
     expect(screen.getByText('Duplicate found')).toBeInTheDocument();
+
+    expect(screen.getByText('Removed documents')).toBeInTheDocument();
+    expect(screen.getByText('Old Policy.docx')).toBeInTheDocument();
+    expect(screen.getByText('Owner missing')).toBeInTheDocument();
   });
 
   it('shows empty-list messages when nothing changed since the previous scan', () => {
@@ -78,10 +89,12 @@ describe('ScanComparisonCard', () => {
       documentCountChange: 0,
       newIssues: [],
       resolvedIssues: [],
+      removedIssues: [],
     };
     render(<ScanComparisonCard comparison={comparison} />);
 
     expect(screen.getByText('No new issues since the previous scan.')).toBeInTheDocument();
     expect(screen.getByText('No issues resolved since the previous scan.')).toBeInTheDocument();
+    expect(screen.getByText('No documents removed since the previous scan.')).toBeInTheDocument();
   });
 });

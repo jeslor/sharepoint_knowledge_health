@@ -4,6 +4,7 @@ import { Queue } from 'bullmq';
 import { createTenantContext, type HealthIssue, type HealthScore, type ScanJob, type TenantContext } from '@sph/database';
 import { SCAN_QUEUE, type ScanComparisonIssue, type ScanComparisonResponse, type ScanJobPayload, type ScanResponse } from '@sph/types';
 import { withTimeout } from '../common/with-timeout';
+import { AuditLogService } from '../audit-log/audit-log.service';
 
 const MOST_RECENT_SCANS_LIMIT = 50;
 
@@ -43,7 +44,10 @@ function toScanResponse(scanJob: ScanJob): ScanResponse {
  */
 @Injectable()
 export class ScansService {
-  constructor(@InjectQueue(SCAN_QUEUE) private readonly scanQueue: Queue<ScanJobPayload>) {}
+  constructor(
+    @InjectQueue(SCAN_QUEUE) private readonly scanQueue: Queue<ScanJobPayload>,
+    private readonly auditLog: AuditLogService,
+  ) {}
 
   async triggerScan(organizationId: string, microsoftTenantId: string, triggeredByUserId: string): Promise<ScanJob> {
     const context = createTenantContext(organizationId);
@@ -98,6 +102,20 @@ export class ScansService {
       }
       throw enqueueError;
     }
+
+    // Recorded only once the job is genuinely enqueued — an enqueue
+    // failure above rethrows before reaching this line, so a failed
+    // trigger attempt never produces an audit record. This method is only
+    // ever called from apps/api (the scheduler's own tick logic lives
+    // entirely in apps/worker's SchedulerProcessor and never calls into
+    // this service — confirmed by ADR-0009's app-boundary rule), so every
+    // call here is unconditionally a manual, human-triggered scan.
+    await this.auditLog.record(organizationId, {
+      actorUserId: triggeredByUserId,
+      action: 'scan.triggered',
+      targetType: 'ScanJob',
+      targetId: scanJob.id,
+    });
 
     return scanJob;
   }
@@ -178,6 +196,7 @@ export class ScansService {
       documentCountChange: null,
       newIssues: [],
       resolvedIssues: [],
+      removedIssues: [],
     };
 
     const [currentSnapshot] = await context.healthSnapshots.findMany({ where: { scanJobId: scanId }, take: 1 });
@@ -195,10 +214,12 @@ export class ScansService {
         ? currentSnapshot.averageHealthScore - previousSnapshot.averageHealthScore
         : null;
 
-    const [currentIssues, previousIssues] = await Promise.all([
+    const [current, previous] = await Promise.all([
       this.issuesForScan(context, currentSnapshot.scanJobId),
       this.issuesForScan(context, previousSnapshot.scanJobId),
     ]);
+    const { issues: currentIssues, scoredDocumentIds: currentScoredDocumentIds } = current;
+    const { issues: previousIssues } = previous;
 
     const documentIds = [...new Set([...currentIssues, ...previousIssues].map((issue) => issue.documentId))];
     const documents =
@@ -225,8 +246,19 @@ export class ScansService {
     const newIssues = [...currentByKey.entries()]
       .filter(([key]) => !previousByKey.has(key))
       .map(([, issue]) => toComparisonIssue(issue));
-    const resolvedIssues = [...previousByKey.entries()]
-      .filter(([key]) => !currentByKey.has(key))
+
+    // F4: a previous-only key means the issue is no longer present in the
+    // current scan — but that's only a genuine fix if the document was
+    // actually scored this run. If it wasn't (no HealthScore row for the
+    // current scanJobId), the document itself is gone from the evaluated
+    // dataset, and the issue "disappearing" is a side effect of that, not
+    // evidence anything was fixed.
+    const disappeared = [...previousByKey.entries()].filter(([key]) => !currentByKey.has(key));
+    const resolvedIssues = disappeared
+      .filter(([, issue]) => currentScoredDocumentIds.has(issue.documentId))
+      .map(([, issue]) => toComparisonIssue(issue));
+    const removedIssues = disappeared
+      .filter(([, issue]) => !currentScoredDocumentIds.has(issue.documentId))
       .map(([, issue]) => toComparisonIssue(issue));
 
     return {
@@ -238,6 +270,7 @@ export class ScansService {
       documentCountChange: currentSnapshot.totalDocumentsScanned - previousSnapshot.totalDocumentsScanned,
       newIssues,
       resolvedIssues,
+      removedIssues,
     };
   }
 
@@ -245,23 +278,37 @@ export class ScansService {
   // HealthScore they belong to (HealthScore.scanJobId + .documentId), the
   // same relation chain documents.service.ts already walks for the
   // current health view. No schema change, just a two-step batched read.
+  //
+  // scoredDocumentIds (F4) is every document that got a HealthScore row in
+  // this scan, whether or not it has any issues — every Active document is
+  // scored unconditionally (document-collector.processor.ts), so this set
+  // is exactly "was this document part of the evaluated dataset for this
+  // specific, immutable scan," independent of the document's current (live,
+  // mutable) status. That's what makes the removed-vs-resolved distinction
+  // below correct at any point in history, not just right now.
   private async issuesForScan(
     context: TenantContext,
     scanJobId: string,
-  ): Promise<{ documentId: string; criterion: string; severity: string; message: string }[]> {
+  ): Promise<{
+    issues: { documentId: string; criterion: string; severity: string; message: string }[];
+    scoredDocumentIds: Set<string>;
+  }> {
     const scores: HealthScore[] = await context.healthScores.findMany({ where: { scanJobId } });
-    if (scores.length === 0) return [];
+    if (scores.length === 0) return { issues: [], scoredDocumentIds: new Set() };
 
     const documentIdByScoreId = new Map(scores.map((score) => [score.id, score.documentId]));
     const issues: HealthIssue[] = await context.healthIssues.findMany({
       where: { healthScoreId: { in: scores.map((score) => score.id) } },
     });
 
-    return issues.map((issue) => ({
-      documentId: documentIdByScoreId.get(issue.healthScoreId) ?? '',
-      criterion: issue.criterion,
-      severity: issue.severity,
-      message: issue.message,
-    }));
+    return {
+      issues: issues.map((issue) => ({
+        documentId: documentIdByScoreId.get(issue.healthScoreId) ?? '',
+        criterion: issue.criterion,
+        severity: issue.severity,
+        message: issue.message,
+      })),
+      scoredDocumentIds: new Set(scores.map((score) => score.documentId)),
+    };
   }
 }

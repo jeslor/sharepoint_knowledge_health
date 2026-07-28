@@ -2,6 +2,7 @@ import { ConflictException, NotFoundException } from '@nestjs/common';
 import { createTenantContext } from '@sph/database';
 import { SharePointSitesService } from './sharepoint-sites.service';
 import type { DiscoveryProducerService } from '../discovery/discovery-producer.service';
+import { AuditLogService } from '../audit-log/audit-log.service';
 
 jest.mock('@sph/database');
 
@@ -9,7 +10,8 @@ const mockedCreateContext = createTenantContext as jest.MockedFunction<typeof cr
 
 describe('SharePointSitesService', () => {
   const discoveryProducer = { enqueueDiscovery: jest.fn() };
-  const service = new SharePointSitesService(discoveryProducer as unknown as DiscoveryProducerService);
+  const auditLog = { record: jest.fn() } as unknown as jest.Mocked<AuditLogService>;
+  const service = new SharePointSitesService(discoveryProducer as unknown as DiscoveryProducerService, auditLog);
 
   const microsoftTenants = { findFirstById: jest.fn(), findMany: jest.fn() };
   const sharePointSites = {
@@ -21,6 +23,29 @@ describe('SharePointSitesService', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockedCreateContext.mockReturnValue({ microsoftTenants, sharePointSites } as never);
+  });
+
+  // Root cause regression test (2026-07-25): findMany() with no orderBy
+  // makes no ordering guarantee — an approve/revoke UPDATE could change a
+  // row's returned position on the next query, observed live as a site
+  // visibly relocating in the web UI. A stable orderBy fixes this.
+  describe('listSites', () => {
+    it('requests a deterministic order (by displayName)', async () => {
+      sharePointSites.findMany.mockResolvedValue([]);
+
+      await service.listSites('org-1');
+
+      expect(sharePointSites.findMany).toHaveBeenCalledWith({ orderBy: { displayName: 'asc' } });
+    });
+
+    it('returns whatever the repository resolves, unchanged', async () => {
+      const sites = [{ id: 'site-1' }, { id: 'site-2' }];
+      sharePointSites.findMany.mockResolvedValue(sites);
+
+      const result = await service.listSites('org-1');
+
+      expect(result).toBe(sites);
+    });
   });
 
   describe('enqueueDiscovery', () => {
@@ -74,10 +99,24 @@ describe('SharePointSitesService', () => {
       expect(result).toBe(updated);
     });
 
-    it('throws NotFoundException when the site does not exist for this organization', async () => {
+    it('records an audit log entry with the approving user as actor', async () => {
+      sharePointSites.updateById.mockResolvedValue({ id: 'site-1', status: 'Approved' });
+
+      await service.approveSite('org-1', 'site-1', 'user-1');
+
+      expect(auditLog.record).toHaveBeenCalledWith('org-1', {
+        actorUserId: 'user-1',
+        action: 'sharepoint_site.approved',
+        targetType: 'SharePointSite',
+        targetId: 'site-1',
+      });
+    });
+
+    it('throws NotFoundException when the site does not exist for this organization, and never records an audit entry', async () => {
       sharePointSites.updateById.mockResolvedValue(null);
 
       await expect(service.approveSite('org-1', 'site-missing', 'user-1')).rejects.toThrow(NotFoundException);
+      expect(auditLog.record).not.toHaveBeenCalled();
     });
   });
 
@@ -86,16 +125,30 @@ describe('SharePointSitesService', () => {
       const updated = { id: 'site-1', status: 'Removed' };
       sharePointSites.updateById.mockResolvedValue(updated);
 
-      const result = await service.revokeSite('org-1', 'site-1');
+      const result = await service.revokeSite('org-1', 'site-1', 'user-1');
 
       expect(sharePointSites.updateById).toHaveBeenCalledWith('site-1', { status: 'Removed' });
       expect(result).toBe(updated);
     });
 
-    it('throws NotFoundException when the site does not exist for this organization', async () => {
+    it('records an audit log entry with the revoking user as actor', async () => {
+      sharePointSites.updateById.mockResolvedValue({ id: 'site-1', status: 'Removed' });
+
+      await service.revokeSite('org-1', 'site-1', 'user-1');
+
+      expect(auditLog.record).toHaveBeenCalledWith('org-1', {
+        actorUserId: 'user-1',
+        action: 'sharepoint_site.revoked',
+        targetType: 'SharePointSite',
+        targetId: 'site-1',
+      });
+    });
+
+    it('throws NotFoundException when the site does not exist for this organization, and never records an audit entry', async () => {
       sharePointSites.updateById.mockResolvedValue(null);
 
-      await expect(service.revokeSite('org-1', 'site-missing')).rejects.toThrow(NotFoundException);
+      await expect(service.revokeSite('org-1', 'site-missing', 'user-1')).rejects.toThrow(NotFoundException);
+      expect(auditLog.record).not.toHaveBeenCalled();
     });
   });
 });
