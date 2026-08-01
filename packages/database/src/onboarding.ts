@@ -1,6 +1,7 @@
 import type { MicrosoftTenant, User } from '@prisma/client';
 import { prisma } from './client';
 import { findUserByEntraIdentity } from './identity';
+import { ConsentVerificationError, type ConsentVerifier } from './consent-verifier';
 
 export interface EntraProfile {
   email: string;
@@ -17,7 +18,7 @@ export type ConsentResolution =
   | ({ kind: 'existing' } & BootstrapResult)
   | ({ kind: 'bootstrapped' } & BootstrapResult)
   | ({ kind: 'provisioned-pending' } & BootstrapResult)
-  | { kind: 'rejected'; reason: 'tenant-not-consented' };
+  | { kind: 'rejected'; reason: 'tenant-not-consented' | 'graph-consent-not-verified' };
 
 /**
  * ADR-0012 §1: the pre-tenant-context lookup used to decide whether an
@@ -130,12 +131,25 @@ export async function provisionUserFromExistingTenant(
  * (ADR-0012 Acceptance Criteria #2): the second call finds the
  * already-connected MicrosoftTenant and routes into the existing
  * organization instead.
+ *
+ * ADR-0012's 2026-07-15 amendment / 2026-08-01 amendment: `verifier` closes
+ * the gap that amendment named as deferred — a caller could otherwise reach
+ * this function with nothing but a self-obtained ID token for a
+ * previously-unseen tid and cause a brand-new Organization/MicrosoftTenant
+ * to be bootstrapped as `Consented` without Microsoft's real tenant-wide
+ * admin-consent grant ever having happened. `verifyTenantConsent` is called
+ * only immediately before the brand-new-tenant bootstrap branch below —
+ * that is the one and only place `MicrosoftTenant.status` gets set to
+ * `Consented` from nothing but an ID token; every other branch either
+ * already resolved a `Consented` tenant previously verified by this same
+ * gate, or is already being rejected for an unrelated reason.
  */
 export async function resolveOrProvisionFromConsent(
   entraTenantId: string,
   entraObjectId: string,
   tenantName: string,
   profile: EntraProfile,
+  verifier: ConsentVerifier,
 ): Promise<ConsentResolution> {
   const existingUser = await findUserByEntraIdentity(entraTenantId, entraObjectId);
   if (existingUser) {
@@ -150,6 +164,19 @@ export async function resolveOrProvisionFromConsent(
   const candidates = await findMicrosoftTenantByEntraTenantId(entraTenantId);
 
   if (candidates.length === 0) {
+    try {
+      await verifier.verifyTenantConsent(entraTenantId);
+    } catch (error) {
+      if (error instanceof ConsentVerificationError) {
+        return { kind: 'rejected', reason: 'graph-consent-not-verified' };
+      }
+      // Anything else (a Graph outage, throttling, an unexpected error) is
+      // an infrastructure failure, not a consent decision — propagate it
+      // untouched rather than silently treating "Microsoft was
+      // unreachable" as "consent is missing" (see ConsentVerifier's own
+      // contract in consent-verifier.ts).
+      throw error;
+    }
     const result = await provisionOrganizationFromConsent(entraTenantId, entraObjectId, tenantName, profile);
     return { kind: 'bootstrapped', ...result };
   }

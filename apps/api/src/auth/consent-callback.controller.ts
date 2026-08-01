@@ -4,6 +4,7 @@ import { entraJwks, verifyEntraToken } from './entra-jwt.guard';
 import type { ConsentCallbackRequest } from './consent-callback.dto';
 import { DiscoveryProducerService } from '../discovery/discovery-producer.service';
 import { AuditLogService } from '../audit-log/audit-log.service';
+import { GraphConsentVerifierService } from './graph-consent-verifier.service';
 
 /**
  * ADR-0012 §1/§3: the ONLY place a brand-new Organization can be created.
@@ -19,6 +20,7 @@ export class ConsentCallbackController {
   constructor(
     private readonly discoveryProducer: DiscoveryProducerService,
     private readonly auditLog: AuditLogService,
+    private readonly consentVerifier: GraphConsentVerifierService,
   ) {}
 
   @Post('consent-callback')
@@ -30,10 +32,13 @@ export class ConsentCallbackController {
 
     const claims = await verifyEntraToken(body.idToken, { jwks: entraJwks, clientId });
 
-    const resolution = await resolveOrProvisionFromConsent(claims.tid, claims.oid, body.tenantName, {
-      email: claims.email ?? '',
-      displayName: claims.name ?? '',
-    });
+    const resolution = await resolveOrProvisionFromConsent(
+      claims.tid,
+      claims.oid,
+      body.tenantName,
+      { email: claims.email ?? '', displayName: claims.name ?? '' },
+      this.consentVerifier,
+    );
 
     if (resolution.kind === 'rejected') {
       throw new ForbiddenException('This Microsoft tenant has not completed admin consent');

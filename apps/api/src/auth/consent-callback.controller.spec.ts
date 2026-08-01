@@ -4,6 +4,7 @@ import { verifyEntraToken } from './entra-jwt.guard';
 import { ConsentCallbackController } from './consent-callback.controller';
 import type { DiscoveryProducerService } from '../discovery/discovery-producer.service';
 import { AuditLogService } from '../audit-log/audit-log.service';
+import type { GraphConsentVerifierService } from './graph-consent-verifier.service';
 
 jest.mock('@sph/database');
 jest.mock('./entra-jwt.guard', () => ({
@@ -14,15 +15,22 @@ jest.mock('./entra-jwt.guard', () => ({
 const mockedResolve = resolveOrProvisionFromConsent as jest.MockedFunction<typeof resolveOrProvisionFromConsent>;
 const mockedVerify = verifyEntraToken as jest.MockedFunction<typeof verifyEntraToken>;
 
-function resolution(kind: ConsentResolution['kind']): ConsentResolution {
-  if (kind === 'rejected') return { kind, reason: 'tenant-not-consented' };
+type RejectedReason = Extract<ConsentResolution, { kind: 'rejected' }>['reason'];
+
+function resolution(kind: ConsentResolution['kind'], reason: RejectedReason = 'tenant-not-consented'): ConsentResolution {
+  if (kind === 'rejected') return { kind, reason };
   return { kind, organizationId: 'org-1', microsoftTenantId: 'tenant-1', userId: 'user-1' };
 }
 
 describe('ConsentCallbackController', () => {
   const discoveryProducer = { enqueueDiscovery: jest.fn() };
   const auditLog = { record: jest.fn() } as unknown as jest.Mocked<AuditLogService>;
-  const controller = new ConsentCallbackController(discoveryProducer as unknown as DiscoveryProducerService, auditLog);
+  const consentVerifier = {} as GraphConsentVerifierService;
+  const controller = new ConsentCallbackController(
+    discoveryProducer as unknown as DiscoveryProducerService,
+    auditLog,
+    consentVerifier,
+  );
 
   const previousClientId = process.env.ENTRA_CLIENT_ID;
 
@@ -44,12 +52,29 @@ describe('ConsentCallbackController', () => {
     expect(discoveryProducer.enqueueDiscovery).not.toHaveBeenCalled();
   });
 
-  it('throws ForbiddenException on a rejected resolution, without enqueueing discovery or recording an audit entry', async () => {
-    mockedResolve.mockResolvedValue(resolution('rejected'));
+  it.each(['tenant-not-consented', 'graph-consent-not-verified'] as const)(
+    'throws ForbiddenException on a rejected resolution (reason: %s), without enqueueing discovery or recording an audit entry',
+    async (reason) => {
+      mockedResolve.mockResolvedValue(resolution('rejected', reason));
 
-    await expect(controller.handleConsentCallback({ idToken: 'token', tenantName: 'Acme' })).rejects.toThrow(ForbiddenException);
-    expect(discoveryProducer.enqueueDiscovery).not.toHaveBeenCalled();
-    expect(auditLog.record).not.toHaveBeenCalled();
+      await expect(controller.handleConsentCallback({ idToken: 'token', tenantName: 'Acme' })).rejects.toThrow(ForbiddenException);
+      expect(discoveryProducer.enqueueDiscovery).not.toHaveBeenCalled();
+      expect(auditLog.record).not.toHaveBeenCalled();
+    },
+  );
+
+  it('passes the injected GraphConsentVerifierService through to resolveOrProvisionFromConsent', async () => {
+    mockedResolve.mockResolvedValue(resolution('bootstrapped'));
+
+    await controller.handleConsentCallback({ idToken: 'token', tenantName: 'Acme' });
+
+    expect(mockedResolve).toHaveBeenCalledWith(
+      'entra-tenant-1',
+      'entra-object-1',
+      'Acme',
+      { email: 'admin@contoso.com', displayName: 'Admin' },
+      consentVerifier,
+    );
   });
 
   it('enqueues discovery when the resolution is bootstrapped (a MicrosoftTenant just transitioned to Consented)', async () => {

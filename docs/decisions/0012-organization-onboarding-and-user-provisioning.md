@@ -1,7 +1,7 @@
 # ADR-0012: Organization Onboarding and User Provisioning
 
 Date: 2026-07-11
-Status: Accepted (amended 2026-07-15 — Phase 6 frontend flow; amended 2026-07-20 — tenant connection lifecycle/revocation/reconnect)
+Status: Accepted (amended 2026-07-15 — Phase 6 frontend flow; amended 2026-07-20 — tenant connection lifecycle/revocation/reconnect; amended 2026-08-01 — server-side Graph consent verification, closing the gap the 2026-07-15 amendment deferred)
 
 ---
 
@@ -273,3 +273,29 @@ ADR-0003 itself already names a future scenario this lifecycle isn't built for y
 ### Security boundary, restated
 
 Reconnection is Admin-only (`RolesGuard`/`@Roles('Admin')`), identical to every other tenant-connection-management action this ADR already restricts to Admins (§2). Detection stays strictly reactive to the periodic health check's own tenant-wide Graph call — never a guess, never inferred from a site-level scan failure, never settable through any generic "update tenant" surface.
+
+## Amendment (2026-08-01): Server-side Graph consent verification (closes the 2026-07-15 deferred gap)
+
+The 2026-07-15 amendment above left one gap explicitly open: `resolveOrProvisionFromConsent` had no way to cryptographically confirm that Microsoft's real tenant-wide admin-consent grant actually happened before setting a brand-new `MicrosoftTenant.status: 'Consented'` — a caller with nothing but a self-obtained, validly-signed ID token for a previously-unseen `tid` could still reach `/auth/consent-callback` directly and bootstrap an Organization without ever completing admin consent. This amendment closes that gap.
+
+### Deviation from the originally-named approach
+
+The 2026-07-15 amendment suggested `GET /servicePrincipals/{id}/appRoleAssignedTo`, comparing granted app roles against ADR-0003's `Files.Read.All`/`Sites.Read.All`. **Not implemented that way.** Reading app role assignments requires `Directory.Read.All` or `Application.Read.All` — neither is in this app's permission set. ADR-0003 deliberately grants only `Files.Read.All`/`Sites.Read.All`, specifically to keep the requested scope minimal for enterprise security review (its own stated tradeoff: "minimizes the blast radius... simplifies the security conversation with customer IT/security teams"). An app with no directory-read permission calling `/servicePrincipals` would get a `403` regardless of whether the tenant had genuinely granted `Files.Read.All`/`Sites.Read.All` — it would reject every tenant unconditionally, not verify anything. Requesting `Directory.Read.All` solely to make this check possible would itself violate the least-privilege principle this whole permission model exists to uphold.
+
+### What was implemented instead
+
+`resolveOrProvisionFromConsent` (`packages/database/src/onboarding.ts`) now takes a `ConsentVerifier` (`packages/database/src/consent-verifier.ts`, already scaffolded — Graph-agnostic by design, per the same package-boundary rule ADR-0013 established: `packages/database` must never import `@sph/graph-client`). It calls `verifier.verifyTenantConsent(entraTenantId)` exactly once, immediately before the brand-new-tenant bootstrap branch (`candidates.length === 0`) — the one and only place `MicrosoftTenant.status` is ever set to `Consented` from nothing but an ID token. Every other resolution branch (`existing`, `provisioned-pending`) either already resolved a tenant this gate previously verified, or is already being rejected for an unrelated reason — verification is not repeated on every sign-in, only at the moment trust is first extended.
+
+The real implementation, `GraphConsentVerifierService` (`apps/api/src/auth/graph-consent-verifier.service.ts`), makes one real, permission-scoped Graph call using a permission the app is actually granted: `listSites` (`packages/graph-client`, the same call site-discovery already uses in production, ADR-0013 §4/§8). Pulling a single page (`.next()` once, not draining the whole generator) is enough to prove the app-only token genuinely works against this tenant, without enumerating it. A `GraphPermissionError` (403 — "permission missing or consent revoked," per `packages/graph-client/src/errors.ts`'s own documented mapping) is treated as definitive proof consent is missing and converted to `ConsentVerificationError`; every other error (auth failure, throttling, transient/5xx, unexpected) propagates untouched, per `ConsentVerifier`'s own documented contract — an infrastructure failure must never be silently treated as "consent is missing." A tenant with zero SharePoint sites but genuine consent still verifies successfully: the Graph call itself succeeding is the signal, not the presence of results. `Files.Read.All` is not separately probed — Microsoft's admin-consent grant is all-or-nothing for this app's one static requested permission set (ADR-0003), so a successful call under either scope is a valid proxy for both having been granted together.
+
+### Acceptance criteria
+
+- `resolveOrProvisionFromConsent` returns `{ kind: 'rejected', reason: 'graph-consent-not-verified' }` when `ConsentVerifier` throws `ConsentVerificationError`, and creates no `Organization`/`MicrosoftTenant`/`User` rows — verified in `packages/database/src/onboarding.spec.ts`.
+- Any other error thrown by the verifier (Graph outage, throttling, unexpected failure) propagates out of `resolveOrProvisionFromConsent` unchanged, rather than being mapped to a rejection — verified in the same file.
+- The verifier is invoked only on the brand-new-tenant bootstrap path, never for an already-`existing` user or an already-`Consented` tenant's new member — verified in the same file.
+- `GraphConsentVerifierService.verifyTenantConsent` throws `ConsentVerificationError` on `GraphPermissionError` and propagates every other `GraphClientError` subtype untouched — verified in `apps/api/src/auth/graph-consent-verifier.service.spec.ts`.
+- `ConsentCallbackController` returns `403 Forbidden` for both rejection reasons (`tenant-not-consented` and `graph-consent-not-verified`) and passes the injected `GraphConsentVerifierService` through to `resolveOrProvisionFromConsent` — verified in `apps/api/src/auth/consent-callback.controller.spec.ts`.
+
+### What remains out of scope
+
+This closes the specific gap named in the 2026-07-15 amendment (unverified admin consent at first-bootstrap time). It does not add any new Graph permission, does not change the `MicrosoftTenant` reconnect/revocation lifecycle from the 2026-07-20 amendment (that already has its own, separate `GET /organization` tenant-wide health check), and does not verify consent on every sign-in — only at the moment a new `Organization` would otherwise be created from an unverified claim.
