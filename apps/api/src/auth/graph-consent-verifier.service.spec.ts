@@ -1,5 +1,5 @@
 import { ConsentVerificationError } from '@sph/database';
-import { listSites, GraphPermissionError, GraphTransientError, type GraphSite } from '@sph/graph-client';
+import { listSites, GraphPermissionError, GraphAuthenticationError, GraphTransientError, type GraphSite } from '@sph/graph-client';
 import { GraphConsentVerifierService } from './graph-consent-verifier.service';
 
 jest.mock('@sph/graph-client');
@@ -45,5 +45,26 @@ describe('GraphConsentVerifierService', () => {
     mockedListSites.mockReturnValue(throwingAsyncGen(transientError));
 
     await expect(service.verifyTenantConsent('entra-tenant-1')).rejects.toBe(transientError);
+  });
+
+  it('propagates GraphAuthenticationError untouched, even for a tenant that has never installed this app at all', async () => {
+    // getTokenForTenant (packages/graph-client/src/auth/msal-token-provider.ts)
+    // wraps every acquireTokenByClientCredential failure — including the
+    // realistic "this tenant has no service principal for this app at all"
+    // case (AADSTS700016) — into GraphAuthenticationError, not
+    // GraphPermissionError. That means this is the single most common
+    // real-world "definitely hasn't consented" scenario, yet it is NOT
+    // converted to ConsentVerificationError here — it propagates as an
+    // infrastructure error instead. Documented and pinned deliberately: the
+    // caller (resolveOrProvisionFromConsent) still never bootstraps an
+    // Organization when this is thrown (it only special-cases
+    // ConsentVerificationError and otherwise re-throws), so no security
+    // bypass results — but the resulting 500 (rather than a clean
+    // graph-consent-not-verified 403) is a known, accepted classification
+    // gap, not an oversight.
+    const authError = new GraphAuthenticationError('ENTRA_CLIENT_ID/ENTRA_CLIENT_SECRET are not configured');
+    mockedListSites.mockReturnValue(throwingAsyncGen(authError));
+
+    await expect(service.verifyTenantConsent('entra-tenant-1')).rejects.toBe(authError);
   });
 });

@@ -104,7 +104,12 @@ export class DocumentCollectorProcessor extends WorkerHost {
       } catch (error) {
         documentsFailed += 1;
         const message = error instanceof GraphClientError ? error.message : String(error);
-        this.logger.error(`Site enumeration failed for "${site.displayName}" (${site.id}): ${message}`);
+        // F6: previously logged only `message`, dropping the stack — the
+        // real §5.7.2 LAT incident ("fetch failed") couldn't be root-caused
+        // beyond "a network-layer failure" from logs alone. Matches the
+        // (message, stack) shape onFailed/onError above already use.
+        const stack = error instanceof Error ? error.stack : undefined;
+        this.logger.error(`Site enumeration failed for "${site.displayName}" (${site.id}): ${message}`, stack);
         errors.push(`Site ${site.displayName}: ${message}`);
       }
 
@@ -175,7 +180,10 @@ export class DocumentCollectorProcessor extends WorkerHost {
         } catch (error) {
           itemFailures += 1;
           const message = error instanceof Error ? error.message : String(error);
-          this.logger.error(`Failed to persist document ${item.id} ("${item.name}") in site "${site.displayName}": ${message}`);
+          // F6: same fix as the site-enumeration catch above — full stack,
+          // not just the message string.
+          const stack = error instanceof Error ? error.stack : undefined;
+          this.logger.error(`Failed to persist document ${item.id} ("${item.name}") in site "${site.displayName}": ${message}`, stack);
         }
       }
     }

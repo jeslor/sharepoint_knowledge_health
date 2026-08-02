@@ -238,6 +238,53 @@ Not blocking — still a ~3x improvement over the original 21.1s, and well withi
 indefinite" — but the exact number doesn't yet match the intended design and is worth a follow-up
 look.
 
+**F10 investigation (2026-08-01, Phase B) — partially root-caused via source-level analysis; live
+reproduction still needed to close fully.** Docker was not available in this session's sandbox, so
+this could not be re-measured live — the findings below are from reading `withTimeout`'s and
+BullMQ/ioredis's actual source, not a new live measurement.
+
+- **`withTimeout`'s `Promise.race` mechanism is confirmed sound.** `RedisConnection.get client()`
+  (`bullmq/dist/cjs/classes/redis-connection.js`) returns `this.initializing`, a promise created
+  exactly once in the constructor and memoized for the connection's lifetime — every call to
+  `this.scanQueue.client` returns that same promise object, not a fresh one. While Redis is down,
+  ioredis's `retryStrategy` keeps retrying indefinitely (by design — this is what makes the
+  connection self-heal without an `apps/api` restart, per F2's Round 2 fix), so
+  `RedisConnection.waitUntilReady()`'s internal promise never resolves *or* rejects — it stays
+  permanently pending for as long as Redis stays down. That means `withTimeout`'s `Promise.race`
+  should always be won by its own `setTimeout(..., 3000)` branch, deterministically, at ~3000ms
+  from whenever `checkRedisConnection()` is *called* — not from whenever the connection started
+  retrying. Nothing in this code path should be capable of stretching that to 7.3s.
+- **Real, previously-undocumented correction: the retryStrategy in effect here is BullMQ's own
+  default, not ioredis's.** Prior comments (`health.service.ts`, `app.module.ts`) describe
+  `retryStrategy` as "left at ioredis's own default." Reading `RedisConnection`'s constructor
+  directly shows this isn't quite accurate: it builds its connection options via
+  `Object.assign({ port, host, retryStrategy: (times) => Math.max(Math.min(Math.exp(times), 20000), 1000) }, opts)`
+  — a *different* formula from ioredis's own raw default
+  (`(times) => Math.min(times * 50, 2000)`, from `ioredis`'s own `RedisOptions.js`). Since
+  `bullConnectionOptions()` (`app.module.ts`) never sets `retryStrategy` explicitly, `Object.assign`
+  means BullMQ's formula is what's actually active for this connection — retries roughly every
+  1000ms for the first ~7 attempts, growing exponentially only after that (`Math.exp(times)`
+  doesn't exceed the 1000ms floor until `times` ≈ 7). Doesn't change F2's self-healing behavior
+  (both defaults retry indefinitely), but it's the actual mechanism, not the one previously
+  documented — worth correcting in the code comments whenever this is next touched.
+- **The residual ~4.3s gap (7.3s observed vs. ~3s expected) could not be conclusively root-caused
+  without live reproduction.** Given the `Promise.race` analysis above, the most plausible remaining
+  explanation is still the one originally hypothesized: a slow, non-instant TCP-connect-refusal at
+  the OS/Docker layer for a stopped container's published port (Docker Desktop for Mac's networking
+  stack) delaying Node's own timer-firing granularity under contention from ioredis's concurrent
+  background reconnect attempts — but this is a plausible mechanism, not a confirmed one.
+- **Recommended reproduction recipe for whoever has Docker access**: instrument
+  `checkRedisConnection()` with `performance.now()` immediately before and after the `withTimeout`
+  call (not around the whole request, to rule out request-logger-middleware or client-side
+  `curl`/DNS overhead as confounds — `request-logger.middleware.ts` was checked and is trivially
+  fast, just a `Date.now()` and a header, ruled out as a contributor), then stop Redis
+  (`docker compose stop redis`) and hit `GET /health/ready` directly. If the instrumented duration
+  is still ~7.3s, the delay is inside `withTimeout`/the connection layer as hypothesized above and
+  warrants a deeper look at Node's timer/libuv behavior under concurrent connection attempts. If the
+  instrumented duration is close to 3000ms but the *end-to-end* request duration remains ~7.3s, the
+  gap is downstream of `checkRedisConnection()` entirely (measurement methodology, network path, or
+  something outside this function) and the investigation should redirect there instead.
+
 ## 3. Items fixed during this QA cycle
 
 **Missing "Re-approve" action for `Removed` SharePoint sites.** The backend (`approveSite` in
@@ -328,9 +375,14 @@ data-integrity issues found anywhere across 19 test sections and 60+ live reques
 ## Priority 3 — Future improvements (not blocking, lower urgency)
 
 10. **F10 — Root-cause why `/health/ready`'s Redis check takes ~7.3s against a real stopped Redis**
-    instead of the ~3s its explicit `withTimeout` should bound it to. Likely an environment-specific
-    TCP-connection-attempt latency (Docker Desktop's stopped-container port behavior), not yet
-    confirmed.
+    instead of the ~3s its explicit `withTimeout` should bound it to. **Partially investigated
+    (2026-08-01, Phase B)** — see F10's updated entry in §2 for the full source-level analysis.
+    `withTimeout`'s `Promise.race` mechanism is confirmed sound (should deterministically bound the
+    check to ~3000ms), and a real, previously-undocumented correction was found (the connection's
+    actual `retryStrategy` is BullMQ's own default, not ioredis's raw default, since
+    `bullConnectionOptions()` never overrides it). The residual ~4.3s gap itself is still not
+    confirmed — Docker was unavailable in this session to reproduce live. A specific reproduction
+    recipe is documented in §2 for whoever next has Docker access.
 
 3. **F3 — Gate `HealthScore` promotion on the scan's own success**, not just run scoring
    unconditionally regardless of collection outcome — likely needs the same `status`-determination
@@ -342,13 +394,20 @@ data-integrity issues found anywhere across 19 test sections and 60+ live reques
 5. **F5 — Add an audit trail for user approval/rejection**, matching the existing
    `<action>ByUserId`/`<action>At` pattern already used everywhere else in this schema
    (`MicrosoftTenant.consentGrantedByUserId`, `SharePointSite.approvedByUserId`).
-6. **F6 — Capture the full error/stack in worker site-collection failure logs**, not just the
-   message string, to make rare network-failure root-causing tractable from logs alone.
+6. ~~**F6 — Capture the full error/stack in worker site-collection failure logs**~~ **DONE
+   (2026-08-01, Phase B).** `document-collector.processor.ts`'s two remaining `message`-only catch
+   sites (site enumeration, per-document persist) now pass `error.stack` as the `Logger.error`
+   trace argument, matching the `(message, stack)` shape `onFailed`/`onError` already used.
 7. **F7 — Investigate the Entra App Registration's optional-claims config** so ID tokens reliably
    carry an `email` claim (low priority — email is already documented as display-only, never used
    for identity/authorization per ADR-0011).
-8. **F8 — Add a test exercising `AssigneeChanged`** (re-assigning an already-assigned issue) for
-   full governance-activity-type coverage.
+8. ~~**F8 — Add a test exercising `AssigneeChanged`** (re-assigning an already-assigned issue)~~
+   **Verified already covered (2026-08-01, Phase B).** `governance-issues.service.spec.ts` already
+   has both a reassignment test (`user-1 → user-2`, asserting `AssigneeChanged` not `IssueAssigned`)
+   and an unassign test (`user-1 → null`), added in Phase 8C (commit `4306ef7`) — before this LAT
+   cycle ran. The original F8 finding referred to this scenario not being exercised *live* during
+   manual QA click-through, not a missing automated test; no new test was added to avoid a
+   redundant duplicate of existing, passing coverage.
 9. Live-verify worker-crash-mid-scan recovery and BullMQ job-retry behavior in a later, dedicated
    session (accepted as code-audited-only this cycle, not because it's low-risk, but because it
    wasn't prioritized for live disruption this round).
