@@ -20,4 +20,4 @@ export {
 
 export { listSites, getSite } from './sites';
 export { listDrives, getDrive } from './drives';
-export { listDocuments, getDocument } from './documents';
+export { listDocuments, getDocument, listChildren } from './documents';
