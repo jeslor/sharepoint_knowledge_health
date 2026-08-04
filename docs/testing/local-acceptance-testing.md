@@ -181,7 +181,13 @@ Deliberately hand-picked to hit every scoring rule at least once:
 - At least one site `Approved` then later `Revoke`d — confirms it stops being scanned
   going forward but its already-collected documents/history aren't deleted.
 - A realistic folder-nesting depth (SharePoint sites with 3+ levels of subfolders) to
-  exercise Graph pagination (`listDocuments`'s async iterator) beyond a single page.
+  exercise recursive folder traversal (ADR-0020) — confirm documents at every depth are
+  discovered and scored, not just root-level ones (see 5.6.3). Separately, at least one
+  drive with enough root-level items to exercise Graph pagination beyond a single page.
+- At least one folder shared as a shortcut ("Add shortcut to OneDrive"/"Add shortcut to
+  SharePoint") pointing at a *different* site's content — confirms the `remoteItem`
+  exclusion (ADR-0020 §3) holds against real Graph response shapes, not just mocks (see
+  5.6.3).
 - Enough volume that a manual scan takes at least tens of seconds, so `ScanJob`
   progress fields (`currentSiteName`, `sitesCompleted`/`totalSites`) are observable
   mid-flight rather than jumping straight to `Completed` (see 5.8).
@@ -387,6 +393,20 @@ cited are exact (`apps/api/src/**/*.controller.ts`).
   for these roles (Phase 9.5, §1.5) — only the read-only "Next scan" line shows. The
   direct API call still returns `403`, confirming the server-side guard is the real
   boundary and the UI hiding is just the improved presentation of it.
+
+**5.6.3 — Recursive folder traversal discovers nested documents; a remote shortcut is never followed or persisted (ADR-0020)**
+- *Precondition*: use the Medium tenant profile (3.3) — a site with 3+ levels of
+  subfolders, and a folder shared as a shortcut pointing at a different site's content.
+- *Steps*: run a scan; inspect the resulting `Document` rows for that site.
+- *Expected*: documents at every nesting depth are present, each with a `path` reflecting
+  its real subfolder location (not just root-level documents). The shortcut folder's
+  contents do **not** appear as `Document` rows in this site at all — neither the
+  shortcut item itself nor anything "inside" it — confirming `remoteItem` exclusion holds
+  for both the traversal case (a shortcut to a folder) and the persistence case (a
+  shortcut to a single file), not just in the unit-test mocks.
+- *Failure scenarios*: if any content from the shortcut's target site appears as a
+  `Document` under this site's `siteId`, that's a real ADR-0014 trust-boundary violation,
+  not a cosmetic bug — treat as a blocking finding.
 
 ### 5.7 Scheduled scans
 
@@ -721,6 +741,7 @@ Copy this into an issue tracker or check off directly in this file as you go.
 ### Manual scans (5.6)
 - [ ] 5.6.1 Trigger succeeds; concurrent trigger → 409; 0/2+ tenants → 404/409
 - [ ] 5.6.2 Non-Admin blocked server-side; web UI shows a legible error
+- [ ] 5.6.3 Nested folders discovered at every depth; a remote shortcut (folder or file) is never traversed or persisted
 
 ### Scheduled scans (5.7)
 - [ ] 5.7.1 Create a schedule; duplicate → 409

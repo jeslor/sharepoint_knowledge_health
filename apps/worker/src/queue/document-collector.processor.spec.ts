@@ -1,5 +1,5 @@
 import { createTenantContext } from '@sph/database';
-import { listDrives, listDocuments, GraphTransientError, type GraphDrive, type GraphDriveItem } from '@sph/graph-client';
+import { listDrives, listDocuments, listChildren, GraphTransientError, type GraphDrive, type GraphDriveItem } from '@sph/graph-client';
 import type { Job } from 'bullmq';
 import type { ScanJobPayload } from '@sph/types';
 import { DocumentCollectorProcessor } from './document-collector.processor';
@@ -10,6 +10,7 @@ jest.mock('@sph/graph-client');
 const mockedCreateContext = createTenantContext as jest.MockedFunction<typeof createTenantContext>;
 const mockedListDrives = listDrives as jest.MockedFunction<typeof listDrives>;
 const mockedListDocuments = listDocuments as jest.MockedFunction<typeof listDocuments>;
+const mockedListChildren = listChildren as jest.MockedFunction<typeof listChildren>;
 
 async function* asyncGen<T>(items: T[]): AsyncGenerator<T> {
   for (const item of items) yield item;
@@ -256,6 +257,159 @@ describe('DocumentCollectorProcessor', () => {
       await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
 
       expect(documents.updateById).not.toHaveBeenCalledWith(expect.anything(), { status: 'Removed' });
+    });
+
+    describe('recursive folder traversal (ADR-0020)', () => {
+      function realFolder(id: string, name: string): GraphDriveItem {
+        return {
+          id,
+          name,
+          webUrl: `https://x/${name}`,
+          size: 0,
+          createdDateTime: '2026-01-01T00:00:00.000Z',
+          lastModifiedDateTime: '2026-01-01T00:00:00.000Z',
+          folder: { childCount: 1 },
+          parentReference: { driveId: 'drive-1', path: '/drives/drive-1/root:' },
+        };
+      }
+
+      function realFile(id: string, name: string, path: string): GraphDriveItem {
+        return {
+          id,
+          name,
+          webUrl: `https://x/${name}`,
+          size: 1024,
+          createdDateTime: '2026-01-01T00:00:00.000Z',
+          lastModifiedDateTime: '2026-01-01T00:00:00.000Z',
+          file: { mimeType: 'application/msword' },
+          parentReference: { driveId: 'drive-1', path },
+        };
+      }
+
+      const remoteFolderShortcut: GraphDriveItem = {
+        id: 'shortcut-folder-1',
+        name: 'Shared Folder (shortcut)',
+        webUrl: 'https://x/Shared',
+        size: 0,
+        createdDateTime: '2026-01-01T00:00:00.000Z',
+        lastModifiedDateTime: '2026-01-01T00:00:00.000Z',
+        folder: { childCount: 5 },
+        remoteItem: { id: 'remote-folder-target' },
+        parentReference: { driveId: 'drive-1', path: '/drives/drive-1/root:' },
+      };
+
+      const remoteFileShortcut: GraphDriveItem = {
+        id: 'shortcut-file-1',
+        name: 'Shared Document (shortcut).docx',
+        webUrl: 'https://x/Shared Document.docx',
+        size: 4096,
+        createdDateTime: '2026-01-01T00:00:00.000Z',
+        lastModifiedDateTime: '2026-01-01T00:00:00.000Z',
+        file: { mimeType: 'application/msword' },
+        remoteItem: { id: 'remote-file-target' },
+        parentReference: { driveId: 'drive-1', path: '/drives/drive-1/root:' },
+      };
+
+      beforeEach(() => {
+        documents.findMany.mockImplementation(async ({ where }: { where: Record<string, unknown> }) =>
+          'graphItemId' in where ? [] : [],
+        );
+        documents.create.mockImplementation(async (data: { graphItemId: string }) => ({
+          id: `doc-${data.graphItemId}`,
+          siteId: 'site-1',
+          graphItemId: data.graphItemId,
+        }));
+      });
+
+      it('discovers and persists a document nested one level deep in a subfolder', async () => {
+        const subfolder = realFolder('folder-1', 'Subfolder');
+        const nestedFile = realFile('item-nested', 'Nested.docx', '/drives/drive-1/root:/Subfolder');
+
+        mockedListDocuments.mockReturnValue(asyncGen([subfolder]));
+        mockedListChildren.mockReturnValue(asyncGen([nestedFile]));
+
+        await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+        expect(mockedListChildren).toHaveBeenCalledWith('entra-1', 'drive-1', 'folder-1');
+        expect(documents.create).toHaveBeenCalledWith(expect.objectContaining({ graphItemId: 'item-nested' }));
+      });
+
+      it('recurses through multiple levels of nesting, not just one extra level', async () => {
+        const level1 = realFolder('folder-1', 'Level1');
+        const level2 = realFolder('folder-2', 'Level2');
+        const deepFile = realFile('item-deep', 'Deep.docx', '/drives/drive-1/root:/Level1/Level2');
+
+        mockedListDocuments.mockReturnValue(asyncGen([level1]));
+        mockedListChildren.mockImplementation((_entraTenantId: string, _driveId: string, itemId: string) => {
+          if (itemId === 'folder-1') return asyncGen([level2]);
+          if (itemId === 'folder-2') return asyncGen([deepFile]);
+          return asyncGen([]);
+        });
+
+        await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+        expect(mockedListChildren).toHaveBeenCalledWith('entra-1', 'drive-1', 'folder-1');
+        expect(mockedListChildren).toHaveBeenCalledWith('entra-1', 'drive-1', 'folder-2');
+        expect(documents.create).toHaveBeenCalledWith(expect.objectContaining({ graphItemId: 'item-deep' }));
+      });
+
+      it('never expands a remoteItem-faceted folder — the ADR-0014 trust-boundary proof', async () => {
+        mockedListDocuments.mockReturnValue(asyncGen([remoteFolderShortcut]));
+
+        await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+        expect(mockedListChildren).not.toHaveBeenCalled();
+        expect(documents.create).not.toHaveBeenCalled();
+      });
+
+      it('never persists a remoteItem-faceted file, even though it carries a normal file facet', async () => {
+        mockedListDocuments.mockReturnValue(asyncGen([remoteFileShortcut]));
+
+        await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+        expect(documents.create).not.toHaveBeenCalled();
+      });
+
+      it('expands a folder only once even if Graph reports it twice (visited-set defense-in-depth)', async () => {
+        const duplicated = realFolder('folder-dup', 'Duplicated');
+        mockedListDocuments.mockReturnValue(asyncGen([duplicated, duplicated]));
+        mockedListChildren.mockReturnValue(asyncGen([]));
+
+        await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+        expect(mockedListChildren).toHaveBeenCalledTimes(1);
+      });
+
+      it('isolates a folder-expansion failure without aborting the rest of the traversal, and suppresses reconciliation for that site', async () => {
+        const badFolder = realFolder('folder-bad', 'Bad');
+        const goodFolder = realFolder('folder-good', 'Good');
+        const goodFile = realFile('item-good', 'Good.docx', '/drives/drive-1/root:/Good');
+        const staleDocument = { id: 'doc-stale', siteId: 'site-1', graphItemId: 'item-deleted', status: 'Active' };
+
+        mockedListDocuments.mockReturnValue(asyncGen([badFolder, goodFolder]));
+        mockedListChildren.mockImplementation((_entraTenantId: string, _driveId: string, itemId: string) => {
+          if (itemId === 'folder-bad') {
+            return (async function* (): AsyncGenerator<GraphDriveItem> {
+              throw new GraphTransientError('Graph unavailable expanding folder-bad');
+            })();
+          }
+          return asyncGen([goodFile]);
+        });
+        documents.findMany.mockImplementation(async ({ where }: { where: Record<string, unknown> }) => {
+          if ('graphItemId' in where) return [];
+          if ('siteId' in where) return [staleDocument]; // reconciliation's active-document listing, if it ran
+          return [];
+        });
+
+        await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+        // The good folder's file still gets persisted despite the bad folder's failure.
+        expect(documents.create).toHaveBeenCalledWith(expect.objectContaining({ graphItemId: 'item-good' }));
+        // Reconciliation must not run against an incomplete picture (ADR-0004, extended by ADR-0020 §4).
+        expect(documents.updateById).not.toHaveBeenCalledWith(expect.anything(), { status: 'Removed' });
+        const finalUpdate = scanJobs.updateById.mock.calls.at(-1);
+        expect(finalUpdate?.[1]).toEqual(expect.objectContaining({ documentsFailed: 1 }));
+      });
     });
   });
 
