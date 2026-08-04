@@ -3,7 +3,7 @@ import { Logger } from '@nestjs/common';
 import type { Job } from 'bullmq';
 import { SCAN_QUEUE, type ScanJobPayload } from '@sph/types';
 import { createTenantContext, type TenantContext, type Document, type DocumentOwner, type SharePointSite } from '@sph/database';
-import { listDrives, listDocuments, type GraphDriveItem, GraphClientError } from '@sph/graph-client';
+import { listDrives, listDocuments, listChildren, type GraphDriveItem, GraphClientError } from '@sph/graph-client';
 import { calculateScore, type DocumentOwnerInput, type SiblingDocumentInput } from '@sph/scoring';
 
 /**
@@ -104,7 +104,12 @@ export class DocumentCollectorProcessor extends WorkerHost {
       } catch (error) {
         documentsFailed += 1;
         const message = error instanceof GraphClientError ? error.message : String(error);
-        this.logger.error(`Site enumeration failed for "${site.displayName}" (${site.id}): ${message}`);
+        // F6: previously logged only `message`, dropping the stack — the
+        // real §5.7.2 LAT incident ("fetch failed") couldn't be root-caused
+        // beyond "a network-layer failure" from logs alone. Matches the
+        // (message, stack) shape onFailed/onError above already use.
+        const stack = error instanceof Error ? error.stack : undefined;
+        this.logger.error(`Site enumeration failed for "${site.displayName}" (${site.id}): ${message}`, stack);
         errors.push(`Site ${site.displayName}: ${message}`);
       }
 
@@ -164,9 +169,28 @@ export class DocumentCollectorProcessor extends WorkerHost {
     const seenGraphItemIds = new Set<string>();
     let itemFailures = 0;
 
+    // ADR-0020 §4: a folder-expansion failure isolates to that folder (the
+    // rest of the traversal continues) but means seenGraphItemIds can no
+    // longer be trusted as a COMPLETE picture — extends ADR-0004's existing
+    // "a partial/failed enumeration never marks anything Removed" rule to
+    // this new, finer-grained failure surface. Previously this was only
+    // ever implicitly true (a listDrives/listDocuments failure threw out of
+    // this whole method, skipping reconciliation below entirely); now that
+    // a folder failure no longer aborts the method, it must be tracked
+    // explicitly instead.
+    let enumerationComplete = true;
+
     for await (const drive of listDrives(entraTenantId, site.graphSiteId)) {
-      for await (const item of listDocuments(entraTenantId, drive.id)) {
-        if (!item.file) continue; // folders carry no `file` facet — not a document
+      for await (const item of this.walkDrive(entraTenantId, drive.id, (folderId, error) => {
+        itemFailures += 1;
+        enumerationComplete = false;
+        const message = error instanceof Error ? error.message : String(error);
+        const stack = error instanceof Error ? error.stack : undefined;
+        this.logger.error(
+          `Failed to expand folder ${folderId} in drive "${drive.name}" (${drive.id}), site "${site.displayName}": ${message}`,
+          stack,
+        );
+      })) {
         seenGraphItemIds.add(item.id);
 
         try {
@@ -175,7 +199,10 @@ export class DocumentCollectorProcessor extends WorkerHost {
         } catch (error) {
           itemFailures += 1;
           const message = error instanceof Error ? error.message : String(error);
-          this.logger.error(`Failed to persist document ${item.id} ("${item.name}") in site "${site.displayName}": ${message}`);
+          // F6: same fix as the site-enumeration catch above — full stack,
+          // not just the message string.
+          const stack = error instanceof Error ? error.stack : undefined;
+          this.logger.error(`Failed to persist document ${item.id} ("${item.name}") in site "${site.displayName}": ${message}`, stack);
         }
       }
     }
@@ -184,9 +211,84 @@ export class DocumentCollectorProcessor extends WorkerHost {
     // complete picture of what currently exists — safe to reconcile.
     // A document deleted from SharePoint since the last scan otherwise
     // stays Active (and keeps being scored) forever.
-    await this.reconcileRemovedDocuments(context, site.id, seenGraphItemIds);
+    if (enumerationComplete) {
+      await this.reconcileRemovedDocuments(context, site.id, seenGraphItemIds);
+    }
 
     return { itemFailures };
+  }
+
+  /**
+   * ADR-0020: iterative (not recursive-call) traversal of one drive's
+   * complete folder tree, starting from its root. Yields only genuine file
+   * items, streamed as they're discovered — folders are expanded
+   * internally and never yielded themselves, and nothing is materialized
+   * in full (ADR-0020 §5).
+   *
+   * ADR-0020 §3: any item carrying a `remoteItem` facet — whether shaped as
+   * a file, a folder, or both — is discarded before the file/folder
+   * branch: never yielded (so never persisted) and never enqueued (so
+   * never traversed). This is a hard trust-boundary rule (ADR-0014), not
+   * an optimization — a remoteItem points into a DIFFERENT drive,
+   * potentially a different, non-Approved site.
+   *
+   * No depth cap (ADR-0020 §4) — the complete tree is always walked. A
+   * visited-folder-id set is defense-in-depth against a Graph anomaly or
+   * future bug re-expanding the same folder (a true cycle isn't possible
+   * within one drive's own tree). A failure expanding one folder is
+   * reported via onFolderExpansionFailed and does not abort the rest of
+   * the traversal — sibling and already-queued folders are still
+   * attempted.
+   */
+  private async *walkDrive(
+    entraTenantId: string,
+    driveId: string,
+    onFolderExpansionFailed: (folderId: string, error: unknown) => void,
+  ): AsyncGenerator<GraphDriveItem> {
+    const visitedFolderIds = new Set<string>();
+    const pendingFolderIds: string[] = [];
+
+    yield* this.classifyChildren(listDocuments(entraTenantId, driveId), pendingFolderIds, visitedFolderIds);
+
+    while (pendingFolderIds.length > 0) {
+      const folderId = pendingFolderIds.shift();
+      if (folderId === undefined) break; // unreachable given the length check above; keeps types honest
+
+      try {
+        yield* this.classifyChildren(listChildren(entraTenantId, driveId, folderId), pendingFolderIds, visitedFolderIds);
+      } catch (error) {
+        onFolderExpansionFailed(folderId, error);
+      }
+    }
+  }
+
+  /**
+   * Classifies one page-following stream of children: yields file items,
+   * enqueues not-yet-visited folder items for later expansion, and
+   * discards any remoteItem-carrying item unconditionally (ADR-0020 §3).
+   */
+  private async *classifyChildren(
+    children: AsyncGenerator<GraphDriveItem>,
+    pendingFolderIds: string[],
+    visitedFolderIds: Set<string>,
+  ): AsyncGenerator<GraphDriveItem> {
+    for await (const item of children) {
+      if (item.remoteItem !== undefined) continue; // never persisted, never traversed — ADR-0020 §3
+
+      if (item.folder) {
+        if (!visitedFolderIds.has(item.id)) {
+          visitedFolderIds.add(item.id);
+          pendingFolderIds.push(item.id);
+        }
+        continue; // folders are never themselves persisted as documents
+      }
+
+      if (item.file) {
+        yield item;
+      }
+      // Neither file nor folder (e.g. a Graph "package" facet) — inert,
+      // matches the existing safe default for any non-file item.
+    }
   }
 
   private async reconcileRemovedDocuments(context: TenantContext, siteId: string, seenGraphItemIds: Set<string>): Promise<void> {

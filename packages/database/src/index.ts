@@ -13,6 +13,8 @@ export {
   resolveOrProvisionFromConsent,
 } from './onboarding';
 export type { EntraProfile, BootstrapResult, ConsentResolution } from './onboarding';
+export { ConsentVerificationError } from './consent-verifier';
+export type { ConsentVerifier } from './consent-verifier';
 export { findDueScanSchedules } from './scheduler';
 export { shouldEnqueueDiscovery, discoveryJobId } from './discovery';
 export { recoverStaleScanJobs } from './scan-recovery';

@@ -5,10 +5,16 @@ import {
   resolveOrProvisionFromConsent,
 } from './onboarding';
 import { findUserByEntraIdentity } from './identity';
+import { ConsentVerificationError, type ConsentVerifier } from './consent-verifier';
 
 function unique(label: string): string {
   return `${label}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
+
+// Fake ConsentVerifier for tests that aren't exercising the verification
+// gate itself — always resolves, so the bootstrap path behaves exactly as
+// it did before the verifier parameter was added.
+const alwaysVerifies: ConsentVerifier = { verifyTenantConsent: async () => {} };
 
 describe('Organization onboarding (ADR-0012 Acceptance Criteria)', () => {
   const createdOrgIds: string[] = [];
@@ -73,7 +79,13 @@ describe('Organization onboarding (ADR-0012 Acceptance Criteria)', () => {
       const tenantName = unique('org');
       const profile = { email: 'person@example.com', displayName: 'Person' };
 
-      const first = await resolveOrProvisionFromConsent(entraTenantId, unique('oid-admin'), tenantName, profile);
+      const first = await resolveOrProvisionFromConsent(
+        entraTenantId,
+        unique('oid-admin'),
+        tenantName,
+        profile,
+        alwaysVerifies,
+      );
       expect(first.kind).toBe('bootstrapped');
       if (first.kind !== 'bootstrapped') throw new Error('unreachable');
       createdOrgIds.push(first.organizationId);
@@ -84,6 +96,7 @@ describe('Organization onboarding (ADR-0012 Acceptance Criteria)', () => {
         unique('oid-second-person'),
         tenantName,
         profile,
+        alwaysVerifies,
       );
       const orgCountAfter = await prisma.organization.count();
 
@@ -100,12 +113,12 @@ describe('Organization onboarding (ADR-0012 Acceptance Criteria)', () => {
       const tenantName = unique('org');
       const profile = { email: 'admin@example.com', displayName: 'Admin' };
 
-      const first = await resolveOrProvisionFromConsent(entraTenantId, entraObjectId, tenantName, profile);
+      const first = await resolveOrProvisionFromConsent(entraTenantId, entraObjectId, tenantName, profile, alwaysVerifies);
       if (first.kind !== 'bootstrapped') throw new Error('unreachable');
       createdOrgIds.push(first.organizationId);
 
       const userCountBefore = await prisma.user.count();
-      const second = await resolveOrProvisionFromConsent(entraTenantId, entraObjectId, tenantName, profile);
+      const second = await resolveOrProvisionFromConsent(entraTenantId, entraObjectId, tenantName, profile, alwaysVerifies);
       const userCountAfter = await prisma.user.count();
 
       if (second.kind !== 'existing') throw new Error('unreachable');
@@ -181,6 +194,100 @@ describe('Organization onboarding (ADR-0012 Acceptance Criteria)', () => {
       expect(await prisma.organization.count()).toBe(orgCountBefore);
       expect(await prisma.microsoftTenant.count()).toBe(tenantCountBefore);
       expect(await prisma.user.count()).toBe(userCountBefore);
+    });
+  });
+
+  describe('Priority 4 security hardening: Graph consent verification gates brand-new-tenant bootstrap', () => {
+    it('rejects with graph-consent-not-verified and creates no records when the verifier reports missing consent', async () => {
+      const entraTenantId = unique('tid');
+      const tenantName = unique('org');
+      const profile = { email: 'admin@example.com', displayName: 'Admin' };
+      const rejectingVerifier: ConsentVerifier = {
+        verifyTenantConsent: async () => {
+          throw new ConsentVerificationError('tenant has not granted the required Graph permissions');
+        },
+      };
+
+      const orgCountBefore = await prisma.organization.count();
+      const tenantCountBefore = await prisma.microsoftTenant.count();
+
+      const result = await resolveOrProvisionFromConsent(
+        entraTenantId,
+        unique('oid'),
+        tenantName,
+        profile,
+        rejectingVerifier,
+      );
+
+      expect(result).toEqual({ kind: 'rejected', reason: 'graph-consent-not-verified' });
+      expect(await prisma.organization.count()).toBe(orgCountBefore);
+      expect(await prisma.microsoftTenant.count()).toBe(tenantCountBefore);
+    });
+
+    it('propagates an unexpected verifier failure (e.g. a Graph outage) instead of treating it as rejected consent, and creates no records', async () => {
+      const entraTenantId = unique('tid');
+      const tenantName = unique('org');
+      const profile = { email: 'admin@example.com', displayName: 'Admin' };
+      const outageError = new Error('Graph is unreachable');
+      const unavailableVerifier: ConsentVerifier = {
+        verifyTenantConsent: async () => {
+          throw outageError;
+        },
+      };
+
+      const orgCountBefore = await prisma.organization.count();
+      const tenantCountBefore = await prisma.microsoftTenant.count();
+
+      await expect(
+        resolveOrProvisionFromConsent(entraTenantId, unique('oid'), tenantName, profile, unavailableVerifier),
+      ).rejects.toBe(outageError);
+
+      expect(await prisma.organization.count()).toBe(orgCountBefore);
+      expect(await prisma.microsoftTenant.count()).toBe(tenantCountBefore);
+    });
+
+    it('still bootstraps normally when the verifier confirms consent, unchanged from prior behavior', async () => {
+      const entraTenantId = unique('tid');
+      const tenantName = unique('org');
+      const profile = { email: 'admin@example.com', displayName: 'Admin' };
+
+      const result = await resolveOrProvisionFromConsent(
+        entraTenantId,
+        unique('oid'),
+        tenantName,
+        profile,
+        alwaysVerifies,
+      );
+
+      expect(result.kind).toBe('bootstrapped');
+      if (result.kind !== 'bootstrapped') throw new Error('unreachable');
+      createdOrgIds.push(result.organizationId);
+    });
+
+    it('does not invoke the verifier for an already-existing user or an already-connected tenant (verification only gates brand-new bootstrap)', async () => {
+      const entraTenantId = unique('tid');
+      const entraObjectId = unique('oid');
+      const tenantName = unique('org');
+      const profile = { email: 'admin@example.com', displayName: 'Admin' };
+
+      const bootstrapped = await resolveOrProvisionFromConsent(
+        entraTenantId,
+        entraObjectId,
+        tenantName,
+        profile,
+        alwaysVerifies,
+      );
+      if (bootstrapped.kind !== 'bootstrapped') throw new Error('unreachable');
+      createdOrgIds.push(bootstrapped.organizationId);
+
+      const verifierSpy: ConsentVerifier = { verifyTenantConsent: jest.fn(async () => {}) };
+
+      // Same identity resolving again — should hit the 'existing' branch.
+      await resolveOrProvisionFromConsent(entraTenantId, entraObjectId, tenantName, profile, verifierSpy);
+      // A new person from the same, already-Consented tenant — 'provisioned-pending' branch.
+      await resolveOrProvisionFromConsent(entraTenantId, unique('oid-second-person'), tenantName, profile, verifierSpy);
+
+      expect(verifierSpy.verifyTenantConsent).not.toHaveBeenCalled();
     });
   });
 });

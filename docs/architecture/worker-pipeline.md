@@ -28,17 +28,35 @@ Given a `ScanJobPayload { organizationId, scanJobId }`:
    - Updates `ScanJob.currentSiteName` (live progress, ADR-0015 §5 — per-
      site granularity, not per-document, to keep write volume sane on a
      large tenant).
-   - Lists every drive on the site, then every file item in each drive via
-     `@sph/graph-client` (`listDrives`/`listDocuments`, paginated async
-     iterators). Folders (no `file` facet) are skipped.
+   - Lists every drive on the site, then **recursively walks its complete
+     folder tree** via `@sph/graph-client` (`listDrives`/`listDocuments`/
+     `listChildren`, ADR-0020) — not just root-level items. Traversal is
+     iterative (an explicit pending-folder queue, not recursive calls) with
+     a visited-folder-id set as defense-in-depth against a duplicate/
+     anomalous Graph response, and no maximum-depth cutoff: the complete
+     tree is always walked, relying on the existing Graph SDK retry/
+     throttling middleware and per-folder failure isolation for safety
+     instead of a depth limit (ADR-0020 §4). Any item carrying a
+     `remoteItem` facet — a shortcut into a **different** drive, whether
+     shaped as a file or a folder — is discarded unconditionally, at every
+     depth including the root: never persisted, never expanded. This is a
+     hard ADR-0014 trust-boundary rule, not an optimization — a remote
+     shortcut can point into a site nobody approved.
    - **Upserts** each document by `(siteId, graphItemId)` — this is what
      makes a rescan idempotent; a document already known is updated in
-     place, not duplicated.
+     place, not duplicated. Nested items upsert identically to root-level
+     ones — `Document.path` already stores the item's full Graph path as
+     free text, so depth requires no special handling here.
    - **Reconciliation**: after a site's enumeration completes, any
      previously-`Active` `Document` whose `graphItemId` wasn't seen this
      pass is marked `Removed`. This only runs after a *successful* full
      enumeration of that site — a document is never marked `Removed`
-     because of a partial/failed enumeration.
+     because of a partial/failed enumeration. Extended by ADR-0020: a
+     single folder failing to expand (e.g. a transient Graph error) no
+     longer aborts the rest of that site's traversal, but it does mean the
+     enumeration is no longer complete — reconciliation is skipped for that
+     site's run rather than risk marking a document `Removed` that's simply
+     unreachable this run, not actually deleted.
    - **Owner sync**: deletes then recreates only `DocumentOwner` rows with
      `source: 'GraphMetadata'` for that document, from the file's
      `createdBy` field. A `ManualAssignment`-sourced owner row (set through

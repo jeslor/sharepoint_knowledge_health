@@ -4,6 +4,7 @@ import { MeController } from './me.controller';
 import { EntraJwtGuard } from './entra-jwt.guard';
 import { TenantContextGuard } from './tenant-context.guard';
 import { RolesGuard } from './roles.guard';
+import { GraphConsentVerifierService } from './graph-consent-verifier.service';
 import { DiscoveryModule } from '../discovery/discovery.module';
 import { AuditLogModule } from '../audit-log/audit-log.module';
 
@@ -15,7 +16,7 @@ import { AuditLogModule } from '../audit-log/audit-log.module';
   // way — safe to import directly.
   imports: [DiscoveryModule, AuditLogModule],
   controllers: [ConsentCallbackController, MeController],
-  providers: [EntraJwtGuard, TenantContextGuard, RolesGuard],
+  providers: [EntraJwtGuard, TenantContextGuard, RolesGuard, GraphConsentVerifierService],
   exports: [EntraJwtGuard, TenantContextGuard, RolesGuard],
 })
 export class AuthModule {}
