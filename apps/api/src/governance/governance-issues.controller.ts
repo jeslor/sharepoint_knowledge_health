@@ -94,9 +94,16 @@ export class GovernanceIssuesController {
     return this.governanceIssuesService.createIssue(organizationId, user.id, body);
   }
 
+  // ADR-0021 §3.6 / ADR-0016 §16.2: no route-level @Roles guard here — RolesGuard
+  // can only see the route, never the resource, so it structurally cannot express
+  // "Admin/GovernanceManager, OR you are this specific issue's current assignee."
+  // That resource-scoped decision can only be made after the row is loaded, so it
+  // lives entirely inside GovernanceIssuesService.updateIssue (mirrors
+  // NotificationsService.markRead's identical "fetch first, check ownership"
+  // shape). EntraJwtGuard/TenantContextGuard/OrganizationAccessGuard (class-level,
+  // unchanged) still guarantee only an authenticated, tenant-scoped user reaches
+  // this method at all.
   @Patch('issues/:issueId')
-  @UseGuards(RolesGuard)
-  @Roles('Admin', 'GovernanceManager')
   async updateIssue(
     @Param('id') organizationId: string,
     @Param('issueId') issueId: string,
@@ -104,7 +111,7 @@ export class GovernanceIssuesController {
     @Body() body: UpdateGovernanceIssueRequest,
   ): Promise<GovernanceIssueResponse> {
     this.validateUpdateBody(body);
-    const updated = await this.governanceIssuesService.updateIssue(organizationId, issueId, user.id, body);
+    const updated = await this.governanceIssuesService.updateIssue(organizationId, issueId, user.id, user.role, body);
     if (!updated) throw new NotFoundException('Governance issue not found');
     return updated;
   }

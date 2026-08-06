@@ -16,6 +16,7 @@ export type { EntraProfile, BootstrapResult, ConsentResolution } from './onboard
 export { ConsentVerificationError } from './consent-verifier';
 export type { ConsentVerifier } from './consent-verifier';
 export { findDueScanSchedules } from './scheduler';
+export { findOrganizationIdsWithOpenGovernanceIssues } from './notification-reconciliation';
 export { shouldEnqueueDiscovery, discoveryJobId } from './discovery';
 export { recoverStaleScanJobs } from './scan-recovery';
 export { recoverStaleDiscoveries } from './discovery-recovery';
@@ -36,6 +37,7 @@ export type {
   GovernanceIssue,
   GovernanceActivity,
   AuditLog,
+  Notification,
 } from '@prisma/client';
 
 export {
@@ -56,4 +58,5 @@ export {
   DocumentReviewDateSource,
   GovernanceActivityType,
   DiscoveryStatus,
+  NotificationType,
 } from '@prisma/client';

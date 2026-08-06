@@ -15,6 +15,7 @@ describe('DocumentsService', () => {
   const healthIssues = { findMany: jest.fn() };
   const sharePointSites = { findMany: jest.fn() };
   const documentOwners = { findMany: jest.fn(), create: jest.fn(), deleteById: jest.fn() };
+  const users = { findMany: jest.fn() };
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -24,6 +25,7 @@ describe('DocumentsService', () => {
       healthIssues,
       sharePointSites,
       documentOwners,
+      users,
     } as never);
 
     // Sane defaults so each test only overrides what it cares about.
@@ -33,6 +35,7 @@ describe('DocumentsService', () => {
     healthIssues.findMany.mockResolvedValue([]);
     sharePointSites.findMany.mockResolvedValue([]);
     documentOwners.findMany.mockResolvedValue([]);
+    users.findMany.mockResolvedValue([]);
   });
 
   describe('listDocuments', () => {
@@ -224,6 +227,7 @@ describe('DocumentsService', () => {
         assignedByUserId: 'admin-1',
         assignedAt: new Date('2026-07-01T00:00:00.000Z'),
       });
+      users.findMany.mockResolvedValue([{ id: 'user-sarah', email: 'sarah@example.com', status: 'Active' }]);
 
       await service.assignOwner('org-1', 'doc-1', 'admin-1', { displayName: 'Sarah', email: 'sarah@example.com' });
 
@@ -241,7 +245,31 @@ describe('DocumentsService', () => {
         actorUserId: 'admin-1',
         activityType: 'OwnerAssigned',
         newValue: 'Sarah',
+        // ADR-0021 §3.2: resolved against a registered, Active User by
+        // email — ownerEmail matched a real user here, so this is set.
+        notifyUserId: 'user-sarah',
       });
+    });
+
+    it('does not resolve a notification recipient when the new owner email matches no registered Active user (ADR-0021)', async () => {
+      documents.findFirstById.mockResolvedValue({ id: 'doc-1' });
+      documentOwners.create.mockResolvedValue({
+        id: 'owner-new',
+        ownerType: 'AssignedOwner',
+        displayName: 'External Person',
+        email: 'external@example.com',
+        source: 'ManualAssignment',
+        assignedByUserId: 'admin-1',
+        assignedAt: new Date(),
+      });
+      users.findMany.mockResolvedValue([]); // no matching registered user
+
+      await service.assignOwner('org-1', 'doc-1', 'admin-1', { displayName: 'External Person', email: 'external@example.com' });
+
+      expect(governanceActivityService.record).toHaveBeenCalledWith(
+        'org-1',
+        expect.objectContaining({ notifyUserId: null }),
+      );
     });
 
     it('does not record activity when the document does not exist', async () => {

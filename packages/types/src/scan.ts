@@ -25,3 +25,25 @@ export interface DiscoveryJobPayload {
   organizationId: string;
   microsoftTenantId: string;
 }
+
+// ADR-0021 §3.3: per-organization notification reconciliation work — one
+// job per org, produced two ways (both converging on this one execution
+// path, matching SCAN_QUEUE's own "scheduling is a producer, never a
+// second execution path" discipline):
+//  - event-driven (primary): apps/worker's DocumentCollectorProcessor
+//    enqueues one job here immediately after a scan completes.
+//  - periodic safety net (fallback): NotificationReconciliationSweepProcessor
+//    (below) enqueues one job per organization with an Open/InProgress
+//    GovernanceIssue, on a low-frequency tick, to recover from a missed or
+//    failed event-driven enqueue.
+export const NOTIFICATION_RECONCILIATION_QUEUE = 'notification-reconciliation-queue';
+
+export interface NotificationReconciliationJobPayload {
+  organizationId: string;
+}
+
+// Internal to apps/worker, mirrors SCHEDULER_QUEUE's exact shape — a
+// low-frequency heartbeat that only ever produces onto
+// NOTIFICATION_RECONCILIATION_QUEUE above, never a second reconciliation
+// execution path of its own.
+export const NOTIFICATION_RECONCILIATION_SWEEP_QUEUE = 'notification-reconciliation-sweep-queue';

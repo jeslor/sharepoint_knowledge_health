@@ -16,16 +16,22 @@ import {
   PeopleFilled,
   BuildingRegular,
   BuildingFilled,
+  AlertRegular,
+  AlertFilled,
   ChevronDownRegular,
   type FluentIcon,
 } from '@fluentui/react-icons';
 import { useCurrentUser } from '@/lib/auth/current-user-context';
+import { useUnreadNotificationCount } from '@/lib/api/hooks/use-unread-notification-count';
 
 interface NavLink {
   href: string;
   label: string;
   icon: FluentIcon;
   activeIcon: FluentIcon;
+  // Only ever set dynamically (Notifications' unread count) — never part
+  // of the static GROUPS definition below.
+  badge?: number;
 }
 
 interface NavGroup {
@@ -44,6 +50,7 @@ const GROUPS: NavGroup[] = [
       { href: '/dashboard/documents', label: 'Documents', icon: DocumentMultipleRegular, activeIcon: DocumentMultipleFilled },
       { href: '/dashboard/scans', label: 'Scans', icon: ScanObjectRegular, activeIcon: ScanObjectFilled },
       { href: '/dashboard/governance', label: 'Governance', icon: ShieldRegular, activeIcon: ShieldFilled },
+      { href: '/dashboard/notifications', label: 'Notifications', icon: AlertRegular, activeIcon: AlertFilled },
     ],
   },
   {
@@ -118,7 +125,15 @@ function NavGroups({ groups, pathname, expanded, onToggleGroup, onNavigate }: Na
                         }`}
                       >
                         <Icon fontSize={20} />
-                        {link.label}
+                        <span className="flex-1">{link.label}</span>
+                        {Boolean(link.badge) && (
+                          <span
+                            className="min-w-[1.25rem] rounded-full bg-brand-600 px-1.5 py-0.5 text-center text-[11px] font-semibold leading-none text-white"
+                            aria-label={`${link.badge} unread`}
+                          >
+                            {link.badge && link.badge > 99 ? '99+' : link.badge}
+                          </span>
+                        )}
                       </Link>
                     </li>
                   );
@@ -144,7 +159,12 @@ export function DashboardNav({ mobileOpen, onCloseMobile }: DashboardNavProps): 
   const { user } = useCurrentUser();
   const isAdmin = user?.role === 'Admin';
   const pathname = usePathname();
-  const groups = GROUPS.filter((group) => !group.adminOnly || isAdmin);
+  const { data: unreadCount } = useUnreadNotificationCount();
+
+  const groups = GROUPS.filter((group) => !group.adminOnly || isAdmin).map((group) => ({
+    ...group,
+    links: group.links.map((link) => (link.href === '/dashboard/notifications' ? { ...link, badge: unreadCount?.count } : link)),
+  }));
 
   // Both groups start expanded; per-session only (2 groups doesn't warrant
   // persistence). Shared between the desktop sidebar and mobile drawer so

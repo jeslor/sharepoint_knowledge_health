@@ -3,9 +3,18 @@ import { BullModule } from '@nestjs/bullmq';
 import { SCAN_QUEUE } from '@sph/types';
 import { DocumentCollectorProcessor } from './document-collector.processor';
 import { StaleScanRecoveryService } from './stale-scan-recovery.service';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
+    // For the already-registered NOTIFICATION_RECONCILIATION_QUEUE —
+    // DocumentCollectorProcessor is only ever a producer onto it (ADR-0021
+    // §3.3's event-driven trigger), never a second reconciliation
+    // execution path; NotificationsModule owns the actual consumer
+    // (NotificationReconciliationProcessor). Mirrors exactly how
+    // SchedulerModule imports this same QueueModule to produce onto
+    // SCAN_QUEUE without re-registering it.
+    NotificationsModule,
     BullModule.registerQueue({
       name: SCAN_QUEUE,
       // Phase 7B: the scheduler (apps/worker/src/scheduler) becomes a

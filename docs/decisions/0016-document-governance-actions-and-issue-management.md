@@ -1,7 +1,7 @@
 # ADR-0016: Document Governance Actions and Issue Management
 
 Date: 2026-07-13
-Status: Accepted
+Status: Accepted (amended 2026-08-04 — ADR-0021: narrow worker read access to `GovernanceIssue`, and a resource-scoped assignee self-service exception — see §16)
 
 ---
 
@@ -157,15 +157,19 @@ concern" discipline every prior scan-adjacent ADR has enforced.
   anyone (most issues are low-severity and self-resolve at the next scan)
   — pure bloat with no workflow value. This mirrors how `ScanSchedule` in
   Phase 7B is also opt-in per organization, not auto-created.
-- **Reconciling with future scans**: the worker never touches
+- **Reconciling with future scans**: the worker never *writes*
   `GovernanceIssue`, in either direction — it doesn't auto-close one when
-  the condition improves, and it doesn't reopen one when it recurs. Instead,
-  whether the underlying `HealthIssue` is *still present* in the document's
-  current scan is computed at **read time** as a derived flag (a join
-  against `Document.currentHealthScore.healthIssues`), never stored. This
-  gives humans the signal they need ("still detected as of the latest
-  scan") without the worker ever writing governance state — see §4.4 for
-  why this also answers the health-score-interaction question cleanly.
+  the condition improves, and it doesn't reopen one when it recurs
+  (**amended 2026-08-04, §16**: a worker process may now *read*
+  `GovernanceIssue` state read-only, for a narrow notification-reconciliation
+  purpose — the write-side prohibition stated here is unchanged and
+  absolute). Instead, whether the underlying `HealthIssue` is *still
+  present* in the document's current scan is computed at **read time** as a
+  derived flag (a join against `Document.currentHealthScore.healthIssues`),
+  never stored. This gives humans the signal they need ("still detected as
+  of the latest scan") without the worker ever writing governance state —
+  see §4.4 for why this also answers the health-score-interaction question
+  cleanly.
 
 #### `HealthIssue` → `GovernanceIssue`: confirmed roles and relationship
 
@@ -463,7 +467,11 @@ scan scheduling, user approval) with no change. **`GovernanceManager`** is
 scoped precisely to governance: manage `GovernanceIssue`s (view, assign,
 resolve, reopen), assign document owners, manage review workflows (set/
 update `Document.nextReviewDueAt`) — nothing outside that surface.
-**`Member`** is unchanged from its existing, already-shipped behavior.
+**`Member`** is unchanged from its existing, already-shipped behavior,
+**except** for one narrow, resource-scoped exception added 2026-08-04 —
+see §16: a `Member` (or any role) who is the current `assignedUserId` on a
+specific `GovernanceIssue` may act on *that issue only*. This is not a
+change to `Member`'s organization-wide standing.
 
 "View issues" stays unrestricted by role (any `Active` user in the
 organization), matching every existing read endpoint in this API
@@ -928,6 +936,77 @@ parameterization — the summary answers "how are we doing this month," the
 analytics endpoint answers "how are we doing over whatever period you
 pick," and conflating them would have made the simpler, more common
 question (the summary) carry a query-string dependency it doesn't need.
+
+## 16. Amendment (2026-08-04 — ADR-0021: Worker Read Boundary and Assignee Self-Service)
+
+ADR-0021 (Governance Remediation-Loop Closure and Notifications) required
+two narrow amendments to decisions made in this ADR, both approved on
+review. No other part of this ADR changes — `GovernanceIssue`,
+`GovernanceActivity`, the 3-state resolution workflow, and every other
+decision recorded above stand exactly as originally accepted.
+
+### 16.1 Worker read access to `GovernanceIssue` (amends §4.1, §5)
+
+**Before**: "the worker never touches `GovernanceIssue`, in either
+direction" (§4.1, §5) — stated and intended as an absolute rule covering
+both reads and writes.
+
+**After**: the rule is narrowed to the write side only, stated precisely:
+
+- A worker process **may read** `GovernanceIssue` state, for exactly one
+  purpose — computing derived notifications (ADR-0021 §3.3). This is a new
+  capability `apps/worker` did not have before.
+- A worker process **must never mutate** `GovernanceIssue` lifecycle state
+  (`status`, `assignedUserId`, `resolutionNotes`, `resolvedAt`), under any
+  circumstance. This is the original rule's actual load-bearing guarantee
+  — it's what keeps `GovernanceIssue` a 100%-human-driven, trustworthy
+  record (§4.5) — and it is unchanged and still absolute.
+- `DocumentCollectorProcessor` (the scan pipeline, ADR-0004/0020) is
+  **not** where this read happens and is untouched by this amendment — no
+  scan-time code reads or reacts to `GovernanceIssue`.
+- The read happens only inside a new, separate processor/job dedicated to
+  notification reconciliation (ADR-0021 §3.3) — deliberately not folded
+  into any existing processor, so this new, narrower capability is
+  contained to exactly the one place that needs it and stays easy to
+  audit in isolation.
+
+The reason this narrowing is safe: reading `GovernanceIssue` to decide
+whether to write a *different*, new entity (`Notification`, which has no
+bearing on `GovernanceIssue`'s own state) doesn't touch the property the
+original rule was protecting. The original rule was about protecting
+`GovernanceIssue`'s write path from ever being reached by automated scan
+logic — that protection is fully intact.
+
+### 16.2 Resource-scoped assignee self-service (amends §4.6)
+
+**Before**: §4.6 evaluated and explicitly rejected a resource-scoped "the
+document's own owner can act on its issues" carve-out for v1 — "no
+concrete requirement in this brief needs it... a deliberate,
+separately-justified v2 addition."
+
+**After**: ADR-0021 is that concrete requirement. The permission table in
+§4.6 gains one addition, layered on top of (not replacing) the existing
+role-based table:
+
+The current `assignedUserId` on a `GovernanceIssue` may, on **that issue
+only**:
+- Move it forward one step: `Open → InProgress`, `InProgress → Resolved`.
+- Update its `resolutionNotes`.
+
+An assignee may **not**, under any circumstance:
+- Reopen (`Resolved → Open`) — stays `Admin`/`GovernanceManager`-only,
+  since reopening reverses a prior resolution decision and is judged more
+  consequential/audit-sensitive than moving forward.
+- Reassign the issue to someone else.
+- Act on any issue not currently assigned to them.
+
+This remains a **resource-scoped** exception, not a role change — it
+grants no new organization-wide capability to `Member`, only a narrow
+right over one specific row where they are already the named assignee.
+`Admin`/`GovernanceManager` retain every capability in the original §4.6
+table unchanged.
+
+See ADR-0021 for the full reasoning (§3.6) and rollout scope (§5).
 
 ## ADRs Requiring Amendment
 

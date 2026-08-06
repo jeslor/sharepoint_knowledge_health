@@ -39,6 +39,9 @@ export default function GovernanceIssueDetailPage({ params }: GovernanceIssueDet
   if (!issue) return <ErrorState error={new Error('Governance issue not found.')} />;
 
   const canManage = user?.role === 'Admin' || user?.role === 'GovernanceManager';
+  // ADR-0021 §3.6: a narrow, resource-scoped exception — never granted just
+  // for being a Member, only for being THIS issue's current assignee.
+  const canSelfService = !canManage && issue.assignedUserId === user?.id;
 
   return (
     <div className="max-w-2xl space-y-6">
@@ -91,6 +94,7 @@ export default function GovernanceIssueDetailPage({ params }: GovernanceIssueDet
               issue={issue}
               assignableUsers={assignableUsers ?? []}
               canManage={canManage}
+              canSelfService={canSelfService}
               onUpdate={update}
               saving={updating}
             />

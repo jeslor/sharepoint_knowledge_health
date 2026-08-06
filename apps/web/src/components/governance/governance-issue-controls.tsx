@@ -9,28 +9,61 @@ import { Select } from '@/components/ui/select';
 
 // ADR-0016 §4.5, confirmed on Phase 8B review: the same strict 3-edge
 // cycle the API enforces — one legal "next" status per current status.
+// Admin/GovernanceManager only — includes the Resolved -> Open (reopen)
+// edge, which the self-service exception below deliberately excludes.
 const NEXT_STATUS: Record<GovernanceIssueStatusValue, { status: GovernanceIssueStatusValue; label: string } | null> = {
   Open: { status: 'InProgress', label: 'Start progress' },
   InProgress: { status: 'Resolved', label: 'Mark resolved' },
   Resolved: { status: 'Open', label: 'Reopen' },
 };
 
+// ADR-0021 §3.6 / ADR-0016 §16.2: the assignee's self-service exception —
+// forward-only, no Resolved -> Open edge. A separate table (not a filtered
+// view of NEXT_STATUS) so the boundary stays visible on its own, matching
+// the same choice already made server-side in governance-issues.service.ts.
+const SELF_SERVICE_NEXT_STATUS: Partial<Record<GovernanceIssueStatusValue, { status: GovernanceIssueStatusValue; label: string }>> = {
+  Open: { status: 'InProgress', label: 'Start progress' },
+  InProgress: { status: 'Resolved', label: 'Mark resolved' },
+};
+
 interface GovernanceIssueControlsProps {
   issue: GovernanceIssueResponse;
   assignableUsers: { id: string; displayName: string }[];
   canManage: boolean;
+  // ADR-0021 §3.6: true only when the current user is neither Admin nor
+  // GovernanceManager but IS this issue's current assignedUserId — a
+  // narrower, resource-scoped right, never a role change. Mutually
+  // exclusive with canManage by convention (the page computes it that
+  // way), but this component doesn't rely on that — canManage always
+  // takes the full-rights branch regardless.
+  canSelfService: boolean;
   onUpdate: (request: UpdateGovernanceIssueRequest) => Promise<void>;
   saving: boolean;
 }
 
-export function GovernanceIssueControls({ issue, assignableUsers, canManage, onUpdate, saving }: GovernanceIssueControlsProps): JSX.Element {
+export function GovernanceIssueControls({
+  issue,
+  assignableUsers,
+  canManage,
+  canSelfService,
+  onUpdate,
+  saving,
+}: GovernanceIssueControlsProps): JSX.Element {
   const [notes, setNotes] = useState(issue.resolutionNotes ?? '');
 
-  if (!canManage) {
-    return <Card className="text-sm text-slate-600">Only an Admin or Governance Manager can update this issue.</Card>;
+  if (!canManage && !canSelfService) {
+    return (
+      <Card className="text-sm text-slate-600">
+        Only an Admin, a Governance Manager, or this issue&apos;s assignee can update it.
+      </Card>
+    );
   }
 
-  const next = NEXT_STATUS[issue.status];
+  // Backend enforcement is the real boundary (governance-issues.service.ts's
+  // assertUpdateAuthorized) — this only decides what the button offers, so
+  // a self-service assignee is never even shown the reopen edge or the
+  // reassignment control.
+  const next = canManage ? NEXT_STATUS[issue.status] : SELF_SERVICE_NEXT_STATUS[issue.status];
 
   return (
     <Card className="space-y-4">
@@ -41,17 +74,19 @@ export function GovernanceIssueControls({ issue, assignableUsers, canManage, onU
           </Button>
         )}
 
-        <Field label="Assigned to">
-          <Select
-            value={issue.assignedUserId ?? ''}
-            disabled={saving}
-            onChange={(newValue) => void onUpdate({ assignedUserId: newValue || null })}
-            options={[
-              { value: '', label: 'Unassigned' },
-              ...assignableUsers.map((user) => ({ value: user.id, label: user.displayName })),
-            ]}
-          />
-        </Field>
+        {canManage && (
+          <Field label="Assigned to">
+            <Select
+              value={issue.assignedUserId ?? ''}
+              disabled={saving}
+              onChange={(newValue) => void onUpdate({ assignedUserId: newValue || null })}
+              options={[
+                { value: '', label: 'Unassigned' },
+                ...assignableUsers.map((user) => ({ value: user.id, label: user.displayName })),
+              ]}
+            />
+          </Field>
+        )}
       </div>
 
       <label className="flex flex-col text-sm text-slate-600">

@@ -1,5 +1,11 @@
-import { Injectable } from '@nestjs/common';
-import { createTenantContext, type GovernanceActivity, type GovernanceActivityType, type TenantContext } from '@sph/database';
+import { Injectable, Logger } from '@nestjs/common';
+import {
+  createTenantContext,
+  type GovernanceActivity,
+  type GovernanceActivityType,
+  type NotificationType,
+  type TenantContext,
+} from '@sph/database';
 import type { GovernanceActivityListQuery, GovernanceActivityResponse, PaginatedResponse } from '@sph/types';
 
 export interface RecordActivityInput {
@@ -10,6 +16,48 @@ export interface RecordActivityInput {
   previousValue?: string | null;
   newValue?: string | null;
   metadata?: Record<string, unknown> | null;
+  // ADR-0021 §3.2: when set, record() also creates a Notification for this
+  // recipient. Deliberately supplied by the caller, already resolved and
+  // validated (an Active user in this organization) — every caller that
+  // sets this already does that validation for its own purposes (e.g.
+  // updateIssue's assignment check), so record() never re-derives a
+  // recipient from previousValue/newValue's display-only strings, and
+  // never does its own User lookup on every call, including ones that
+  // never notify.
+  notifyUserId?: string | null;
+  // Only used to enrich the notification message when notifyUserId is set
+  // and the caller already has this in scope at zero extra query cost
+  // (e.g. GovernanceIssue.issueType from the row it just updated) — never
+  // triggers a lookup of its own.
+  notifyIssueType?: string | null;
+}
+
+// ADR-0021 §3.2: the deliberately narrow V1 trigger set — StatusChanged,
+// ResolutionNoteUpdated, IssueCreated, and OwnerRemoved are intentionally
+// absent (low value / pure noise if notified on every occurrence). Any
+// activityType not in this map is silently non-notifying, regardless of
+// whether notifyUserId is set — this is the single place that decision is
+// made, so a future new activity type doesn't notify by accident.
+const NOTIFIABLE_ACTIVITY_TYPES: Partial<Record<GovernanceActivityType, NotificationType>> = {
+  IssueAssigned: 'IssueAssigned',
+  AssigneeChanged: 'IssueAssigned',
+  OwnerAssigned: 'OwnerAssigned',
+  IssueReopened: 'IssueReopened',
+};
+
+function buildNotificationMessage(activityType: GovernanceActivityType, issueType?: string | null): string {
+  const suffix = issueType ? ` (${issueType})` : '';
+  switch (activityType) {
+    case 'IssueAssigned':
+    case 'AssigneeChanged':
+      return `You were assigned a governance issue${suffix}.`;
+    case 'OwnerAssigned':
+      return 'You were assigned as the owner of a document.';
+    case 'IssueReopened':
+      return `A governance issue you're involved with was reopened${suffix}.`;
+    default:
+      return 'You have a new governance notification.';
+  }
 }
 
 /**
@@ -21,9 +69,27 @@ export interface RecordActivityInput {
  * remember. The row itself is append-only by construction:
  * GovernanceActivityRepository has no update/delete method to call even
  * if a future change wanted to.
+ *
+ * ADR-0021: also the single centralized point notifications originate
+ * from for every synchronous (human/API-driven) trigger — the same
+ * "never left to a call site to remember" discipline applied to
+ * notification-triggering, not just activity-logging.
+ *
+ * Phase D.2 review fix: GovernanceActivity is the primary, source-of-truth
+ * write — it is never wrapped in a try/catch here, and a failure there
+ * correctly still propagates to the caller. Notification creation is
+ * strictly secondary and best-effort: by the time it runs, the governance
+ * mutation this activity records has already succeeded (the caller's
+ * business logic already committed before calling record()), so a
+ * notification failure must never make that completed operation look like
+ * it failed. Matches this codebase's existing best-effort/logged pattern
+ * for non-critical side effects (e.g. apps/worker's own reconciliation
+ * enqueue after a successful scan).
  */
 @Injectable()
 export class GovernanceActivityService {
+  private readonly logger = new Logger(GovernanceActivityService.name);
+
   async record(organizationId: string, input: RecordActivityInput): Promise<void> {
     const context = createTenantContext(organizationId);
     await context.governanceActivity.create({
@@ -37,6 +103,27 @@ export class GovernanceActivityService {
       // plain Record — this cast is the standard, documented workaround.
       metadata: input.metadata === undefined || input.metadata === null ? undefined : (input.metadata as object),
     });
+
+    if (!input.notifyUserId) return;
+    const notificationType = NOTIFIABLE_ACTIVITY_TYPES[input.activityType];
+    if (!notificationType) return;
+
+    try {
+      await context.notifications.create({
+        userId: input.notifyUserId,
+        type: notificationType,
+        message: buildNotificationMessage(input.activityType, input.notifyIssueType),
+        governanceIssueId: input.governanceIssueId ?? null,
+        documentId: input.documentId,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const stack = error instanceof Error ? error.stack : undefined;
+      this.logger.error(
+        `Failed to create ${notificationType} notification for user ${input.notifyUserId} (activityType=${input.activityType}): ${message}`,
+        stack,
+      );
+    }
   }
 
   async listIssueActivity(

@@ -1,9 +1,10 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import {
   createTenantContext,
   type GovernanceIssue,
   type GovernanceIssueStatus,
   type TenantContext,
+  type UserRole,
 } from '@sph/database';
 import type {
   AssignableUserResponse,
@@ -15,6 +16,7 @@ import type {
   UpdateGovernanceIssueRequest,
 } from '@sph/types';
 import { GovernanceActivityService } from './governance-activity.service';
+import { resolveOwnerUserId } from '../common/resolve-owner-user';
 
 // ADR-0016 §4.5's StatusChanged/IssueResolved/IssueReopened activity types
 // map exactly onto this 3-edge cycle, one edge each — see the schema
@@ -36,6 +38,17 @@ const ALLOWED_TRANSITIONS: Record<GovernanceIssueStatus, GovernanceIssueStatus[]
   Open: ['InProgress'],
   InProgress: ['Resolved'],
   Resolved: ['Open'],
+};
+
+// ADR-0021 §3.6 / ADR-0016 §16.2: the assignee self-service exception is
+// strictly narrower than ALLOWED_TRANSITIONS above — forward-only, no
+// Resolved -> Open edge (reopening stays Admin/GovernanceManager-only, the
+// ADR's own "more consequential, audit-sensitive" reasoning). Kept as its
+// own constant, not a filtered view of ALLOWED_TRANSITIONS, so the
+// self-service boundary is visible and grep-able on its own.
+const SELF_SERVICE_ALLOWED_TRANSITIONS: Partial<Record<GovernanceIssueStatus, GovernanceIssueStatus[]>> = {
+  Open: ['InProgress'],
+  InProgress: ['Resolved'],
 };
 
 /**
@@ -127,10 +140,18 @@ export class GovernanceIssuesService {
       throw new NotFoundException('No currently-detected issue of this type exists on this document');
     }
 
+    // ADR-0021 §3.5: a smarter default, not a forced rule — the document's
+    // existing owner is a reasonable starting assignee, but never locks
+    // anything in. The pre-existing updateIssue PATCH path already allows
+    // reassigning (or unassigning) unconditionally at any time, exactly as
+    // if this had been assigned by a human from the start.
+    const defaultAssigneeId = await this.resolveDefaultAssignee(context, request.documentId);
+
     const created = await context.governanceIssues.create({
       documentId: request.documentId,
       issueType: request.issueType,
       severity: matchingHealthIssue.severity,
+      assignedUserId: defaultAssigneeId,
     });
 
     await this.governanceActivityService.record(organizationId, {
@@ -141,20 +162,105 @@ export class GovernanceIssuesService {
       metadata: { issueType: request.issueType, severity: matchingHealthIssue.severity },
     });
 
+    // A separate GovernanceActivity row, not folded into IssueCreated's
+    // metadata — mirrors recordUpdateActivity's own "one API call can
+    // produce more than one activity row" precedent (a single PATCH that
+    // changes both status and assignment already records two). Notifies
+    // the same way an explicit assignment would (ADR-0021 §3.2) — from the
+    // assignee's perspective, being auto-assigned is indistinguishable
+    // from being assigned by a human, and they need to know either way.
+    if (defaultAssigneeId) {
+      const assignee = await context.users.findFirstById(defaultAssigneeId);
+      await this.governanceActivityService.record(organizationId, {
+        governanceIssueId: created.id,
+        documentId: request.documentId,
+        actorUserId,
+        activityType: 'IssueAssigned',
+        previousValue: null,
+        newValue: assignee?.displayName ?? null,
+        notifyUserId: defaultAssigneeId,
+        notifyIssueType: request.issueType,
+      });
+    }
+
     const [enriched] = await this.enrichIssues(context, [created]);
     if (!enriched) throw new Error('Failed to enrich newly created GovernanceIssue');
     return enriched;
+  }
+
+  // ADR-0021 §3.6 / ADR-0016 §16.2: Admin/GovernanceManager are unrestricted
+  // here (this is a no-op for them — every existing capability unchanged).
+  // A Member who is the issue's CURRENT assignedUserId gains a narrow,
+  // resource-scoped exception — checked fresh against the just-loaded row,
+  // never a role change. Runs before ALLOWED_TRANSITIONS validation in
+  // updateIssue so an unauthorized request is rejected for that reason
+  // (403) rather than conflated with "is this even a valid transition"
+  // (409). Rejects the ENTIRE request on any privileged field, even mixed
+  // in alongside otherwise-permitted ones — nothing is partially applied,
+  // since this runs before any write.
+  private assertUpdateAuthorized(
+    existing: GovernanceIssue,
+    actorUserId: string,
+    actorRole: UserRole,
+    request: UpdateGovernanceIssueRequest,
+  ): void {
+    const isManager = actorRole === 'Admin' || actorRole === 'GovernanceManager';
+    if (isManager) return;
+
+    if (existing.assignedUserId !== actorUserId) {
+      throw new ForbiddenException('You do not have permission to update this governance issue');
+    }
+
+    // No reassignment via self-service — not even a no-op "reassign to
+    // self". The ADR's boundary is "reassigning," full stop, not
+    // "reassigning to someone else"; rejecting the field outright avoids
+    // any ambiguity.
+    if (request.assignedUserId !== undefined) {
+      throw new ForbiddenException('Only an Admin or Governance Manager can reassign a governance issue');
+    }
+
+    if (request.status !== undefined) {
+      const allowed = SELF_SERVICE_ALLOWED_TRANSITIONS[existing.status] ?? [];
+      if (!allowed.includes(request.status)) {
+        throw new ForbiddenException('Assignees can only move a governance issue forward (Open → InProgress → Resolved)');
+      }
+    }
+    // resolutionNotes: no additional check — allowed for the assignee.
+  }
+
+  // Prefers a human's explicit ManualAssignment (most recent, if somehow
+  // more than one exists) over the Graph-detected Author — a manual
+  // assignment is a stronger ownership signal. Resolves to null (no
+  // default) if there's no owner at all, or the owner's email doesn't
+  // match a registered, Active platform User — an external or
+  // unregistered owner is a normal, expected case, not an error.
+  private async resolveDefaultAssignee(context: TenantContext, documentId: string): Promise<string | null> {
+    const owners = await context.documentOwners.findMany({ where: { documentId } });
+    if (owners.length === 0) return null;
+
+    const manualOwners = owners.filter((owner) => owner.source === 'ManualAssignment');
+    const candidates = manualOwners.length > 0 ? manualOwners : owners.filter((owner) => owner.ownerType === 'Author');
+
+    const [best] = [...candidates].sort(
+      (a, b) => (b.assignedAt?.getTime() ?? 0) - (a.assignedAt?.getTime() ?? 0),
+    );
+    if (!best) return null;
+
+    return resolveOwnerUserId(context, best.email);
   }
 
   async updateIssue(
     organizationId: string,
     issueId: string,
     actorUserId: string,
+    actorRole: UserRole,
     request: UpdateGovernanceIssueRequest,
   ): Promise<GovernanceIssueResponse | null> {
     const context = createTenantContext(organizationId);
     const existing = await context.governanceIssues.findFirstById(issueId);
     if (!existing) return null;
+
+    this.assertUpdateAuthorized(existing, actorUserId, actorRole, request);
 
     const updateData: {
       status?: GovernanceIssueStatus;
@@ -220,13 +326,20 @@ export class GovernanceIssuesService {
     const documentId = updated.documentId;
 
     if (updated.status !== previous.status) {
+      const activityType = STATUS_ACTIVITY_TYPE[updated.status];
       await this.governanceActivityService.record(organizationId, {
         governanceIssueId: updated.id,
         documentId,
         actorUserId,
-        activityType: STATUS_ACTIVITY_TYPE[updated.status],
+        activityType,
         previousValue: previous.status,
         newValue: updated.status,
+        // Only the Resolved -> Open edge (IssueReopened) notifies — a
+        // human already knows they just moved something to InProgress or
+        // Resolved themselves (ADR-0021 §3.2's deliberately narrow trigger
+        // set). Inert (no-op) if the issue is unassigned.
+        notifyUserId: activityType === 'IssueReopened' ? updated.assignedUserId : null,
+        notifyIssueType: updated.issueType,
       });
     }
 
@@ -245,6 +358,11 @@ export class GovernanceIssuesService {
         activityType: previous.assignedUserId === null ? 'IssueAssigned' : 'AssigneeChanged',
         previousValue: previousAssigneeName,
         newValue: newAssigneeName ?? null,
+        // The NEW assignee is the recipient — inert (no-op in record())
+        // when this transition is an unassignment (updated.assignedUserId
+        // is null), since there's no one to tell.
+        notifyUserId: updated.assignedUserId,
+        notifyIssueType: updated.issueType,
       });
     }
 
