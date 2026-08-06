@@ -159,6 +159,26 @@ enum GovernanceActivityType {
   IssueResolved
 }
 
+/// ADR-0021 §3.2: the V1 notification trigger set only — deliberately not
+/// every GovernanceActivityType (e.g. no StatusChanged/ResolutionNoteUpdated,
+/// which would be pure noise). ResolutionSuggested is the one type with no
+/// synchronous GovernanceActivity counterpart — it's written by the
+/// asynchronous reconciliation job (ADR-0021 §3.3), not by
+/// GovernanceActivityService.
+enum NotificationType {
+  IssueAssigned
+  OwnerAssigned
+  IssueReopened
+  ResolutionSuggested
+  // Worker-driven (apps/worker's document-collector.processor.ts), when a
+  // document transitions Active -> Removed while it has an Open/InProgress
+  // GovernanceIssue — deliberately NOT a GovernanceActivity type: that
+  // model's actorUserId is required (no human performed this), and its own
+  // design principle is human/API-driven governance actions, not
+  // scan-observed facts. See ADR-0021's removed-document amendment.
+  DocumentRemoved
+}
+
 // ---------------------------------------------------------------------------
 // Models
 // ---------------------------------------------------------------------------
@@ -184,6 +204,7 @@ model Organization {
   governanceIssues   GovernanceIssue[]
   governanceActivity GovernanceActivity[]
   auditLogs          AuditLog[]
+  notifications      Notification[]
 
   @@index([status])
 }
@@ -211,6 +232,7 @@ model User {
   assignedDocumentOwners    DocumentOwner[]      @relation("DocumentOwnerAssignedBy")
   governanceActivityAsActor GovernanceActivity[] @relation("GovernanceActivityActor")
   auditLogEntries           AuditLog[]
+  notifications             Notification[]
 
   // The Entra oid claim (entraObjectId) is only unique WITHIN the Azure AD
   // tenant that issued it (ADR-0010) — Microsoft's own multi-tenant app
@@ -314,6 +336,7 @@ model Document {
   healthScores       HealthScore[]        @relation("DocumentHealthScores")
   governanceIssues   GovernanceIssue[]
   governanceActivity GovernanceActivity[]
+  notifications      Notification[]
 
   @@unique([siteId, graphItemId])
   @@index([organizationId, status])
@@ -503,10 +526,11 @@ model GovernanceIssue {
   updatedAt       DateTime              @updatedAt
   resolvedAt      DateTime?
 
-  organization Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  document     Document             @relation(fields: [documentId], references: [id], onDelete: Cascade)
-  assignedUser User?                @relation("GovernanceIssueAssignedTo", fields: [assignedUserId], references: [id], onDelete: SetNull)
-  activity     GovernanceActivity[]
+  organization  Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  document      Document             @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  assignedUser  User?                @relation("GovernanceIssueAssignedTo", fields: [assignedUserId], references: [id], onDelete: SetNull)
+  activity      GovernanceActivity[]
+  notifications Notification[]
 
   @@unique([documentId, issueType])
   @@index([organizationId, status])
@@ -556,6 +580,56 @@ model GovernanceActivity {
   @@index([organizationId, createdAt])
   @@index([governanceIssueId, createdAt])
   @@index([organizationId, activityType])
+}
+
+/// A per-user, in-app notification inbox (ADR-0021). Deliberately NOT a
+/// duplicate of GovernanceActivity: this is a personal inbox (filtered to
+/// one userId), GovernanceActivity is a shared, organization-wide audit
+/// feed — the same "two entities answering two different questions" split
+/// ADR-0016 §4.1 already established for HealthIssue vs. GovernanceIssue.
+model Notification {
+  id                String           @id @default(cuid())
+  organizationId    String
+  userId            String
+  type              NotificationType
+  // Pre-resolved, human-readable at write time — matches
+  // GovernanceActivity's own previousValue/newValue precedent ("resolve
+  // once, read cheaply"), not a raw id needing a secondary lookup to render.
+  message           String
+  governanceIssueId String?
+  documentId        String?
+  read              Boolean          @default(false)
+  createdAt         DateTime         @default(now())
+  // Phase D.2 correctness fix: an optional, caller-computed idempotency key
+  // — null for every notification type except reconciliation's
+  // ResolutionSuggested (the only one created by a path that can run
+  // concurrently for the same recipient: event-driven scan completion,
+  // the hourly sweep, and BullMQ redelivery can all trigger reconciliation
+  // for the same organization). NotificationReconciliationService builds
+  // this as `${governanceIssueId}:${issue.updatedAt.getTime()}` — unique
+  // per (issue, generation), so a reopen-and-refix cycle naturally gets a
+  // NEW key (a genuine new suggestion is never blocked), while concurrent
+  // reconciliation runs for the SAME generation collide on the SAME key.
+  // The @unique constraint below is what makes upsertByDedupeKey's
+  // create-or-no-op atomic and race-free — Postgres enforces it, not
+  // application logic. NULL values never collide with each other under a
+  // standard unique constraint, so every other notification type (which
+  // never sets this field) is completely unaffected.
+  dedupeKey         String?          @unique
+
+  organization    Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  // Cascade, not the SetNull every other <action>ByUserId field in this
+  // schema uses — this is a deliberate deviation. Every other User FK in
+  // this schema exists to preserve *who did something* even after that
+  // user is gone (an audit fact). userId here is a recipient, not an
+  // actor — a notification has no meaning once the person it was for no
+  // longer exists, so nothing is lost by letting it cascade away with them.
+  user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  governanceIssue GovernanceIssue? @relation(fields: [governanceIssueId], references: [id], onDelete: SetNull)
+  document        Document?        @relation(fields: [documentId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, userId, read])
+  @@index([organizationId, userId, createdAt])
 }
 
 /// Organization-wide administrative action history (ADR-0019) — a sibling

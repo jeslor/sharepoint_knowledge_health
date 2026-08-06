@@ -12,6 +12,7 @@ import type {
   PaginatedResponse,
 } from '@sph/types';
 import { GovernanceActivityService } from '../governance/governance-activity.service';
+import { resolveOwnerUserId } from '../common/resolve-owner-user';
 
 function toDocumentOwnerResponse(owner: {
   id: string;
@@ -164,11 +165,18 @@ export class DocumentsService {
       assignedAt: new Date(),
     });
 
+    // The new owner is only a resolvable notification recipient if their
+    // email matches a registered, Active platform User — an external or
+    // not-yet-registered owner is a normal, expected case, not an error
+    // (resolveOwnerUserId returns null rather than throwing).
+    const notifyUserId = await resolveOwnerUserId(context, owner.email);
+
     await this.governanceActivityService.record(organizationId, {
       documentId,
       actorUserId: assignedByUserId,
       activityType: 'OwnerAssigned',
       newValue: owner.displayName ?? owner.email,
+      notifyUserId,
     });
 
     return toDocumentOwnerResponse(owner);

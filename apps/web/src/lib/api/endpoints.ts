@@ -22,6 +22,8 @@ import type {
   HealthTrendResponse,
   MeResponse,
   MicrosoftTenantResponse,
+  NotificationListQuery,
+  NotificationResponse,
   OnboardingStatusResponse,
   OrganizationUserResponse,
   PaginatedResponse,
@@ -30,6 +32,7 @@ import type {
   ScanScheduleResponse,
   SharePointSiteResponse,
   TriggerScanRequest,
+  UnreadNotificationCountResponse,
   UpdateGovernanceIssueRequest,
   UpdateScanScheduleRequest,
 } from '@sph/types';
@@ -289,4 +292,25 @@ export function getGovernanceAnalytics(
 ): Promise<GovernanceAnalyticsResponse> {
   const queryString = buildQueryString(query);
   return apiRequest(`/organizations/${organizationId}/governance/analytics${queryString}`, token);
+}
+
+export function getNotifications(
+  organizationId: string,
+  token: string,
+  query: NotificationListQuery = {},
+): Promise<PaginatedResponse<NotificationResponse>> {
+  const queryString = buildQueryString(query);
+  return apiRequest(`/organizations/${organizationId}/notifications${queryString}`, token);
+}
+
+export function getUnreadNotificationCount(organizationId: string, token: string): Promise<UnreadNotificationCountResponse> {
+  return apiRequest(`/organizations/${organizationId}/notifications/unread-count`, token);
+}
+
+export function markNotificationRead(organizationId: string, notificationId: string, token: string): Promise<NotificationResponse> {
+  return apiRequest(`/organizations/${organizationId}/notifications/${notificationId}`, token, { method: 'PATCH' });
+}
+
+export function markAllNotificationsRead(organizationId: string, token: string): Promise<{ updatedCount: number }> {
+  return apiRequest(`/organizations/${organizationId}/notifications/mark-all-read`, token, { method: 'POST' });
 }

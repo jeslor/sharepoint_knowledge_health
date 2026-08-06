@@ -16,6 +16,7 @@ interface SeededOrg {
   governanceIssueId: string;
   governanceActivityId: string;
   auditLogId: string;
+  notificationId: string;
   context: TenantContext;
 }
 
@@ -168,6 +169,17 @@ async function seedOrganization(label: string): Promise<SeededOrg> {
     },
   });
 
+  const notification = await prisma.notification.create({
+    data: {
+      organizationId: organization.id,
+      userId: user.id,
+      type: 'IssueAssigned',
+      message: `Test notification ${unique}`,
+      governanceIssueId: governanceIssue.id,
+      documentId: document.id,
+    },
+  });
+
   return {
     organizationId: organization.id,
     userId: user.id,
@@ -183,6 +195,7 @@ async function seedOrganization(label: string): Promise<SeededOrg> {
     governanceIssueId: governanceIssue.id,
     governanceActivityId: governanceActivity.id,
     auditLogId: auditLog.id,
+    notificationId: notification.id,
     context: createTenantContext(organization.id),
   };
 }
@@ -321,6 +334,49 @@ describe('Cross-tenant data isolation (ADR-0001)', () => {
       const list = await orgA.context.auditLogs.findMany();
       expect(list.some((a) => a.id === orgB.auditLogId)).toBe(false);
       expect(await orgA.context.auditLogs.findFirstById(orgB.auditLogId)).toBeNull();
+    });
+
+    it('NotificationRepository never leaks across organizations', async () => {
+      const list = await orgA.context.notifications.findMany();
+      expect(list.some((n) => n.id === orgB.notificationId)).toBe(false);
+      expect(await orgA.context.notifications.findFirstById(orgB.notificationId)).toBeNull();
+    });
+  });
+
+  describe('NotificationRepository (ADR-0021)', () => {
+    it('markRead is a no-op against another organization\'s notification', async () => {
+      const result = await orgA.context.notifications.markRead(orgB.notificationId);
+      expect(result).toBeNull();
+
+      const untouched = await orgB.context.notifications.findFirstById(orgB.notificationId);
+      expect(untouched?.read).toBe(false);
+    });
+
+    it('markRead flips read to true for the owning organization', async () => {
+      const result = await orgA.context.notifications.markRead(orgA.notificationId);
+      expect(result?.read).toBe(true);
+    });
+
+    it('markAllReadForUser only affects the bound organization and the given user', async () => {
+      const count = await orgB.context.notifications.markAllReadForUser(orgB.userId);
+      expect(count).toBe(1);
+
+      const notification = await orgB.context.notifications.findFirstById(orgB.notificationId);
+      expect(notification?.read).toBe(true);
+    });
+
+    it('create always writes under the bound organizationId, regardless of caller input', async () => {
+      const created = await orgA.context.notifications.create({
+        userId: orgA.userId,
+        type: 'ResolutionSuggested',
+        message: 'extra',
+      });
+      expect(created.organizationId).toBe(orgA.organizationId);
+    });
+
+    it('has no deleteById method — no retention/pruning policy is implemented yet (ADR-0021, matching AuditLog\'s identical accepted posture)', () => {
+      const repo = orgA.context.notifications as unknown as { deleteById?: unknown };
+      expect(repo.deleteById).toBeUndefined();
     });
   });
 

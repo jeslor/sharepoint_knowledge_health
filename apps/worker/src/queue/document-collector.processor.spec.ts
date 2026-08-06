@@ -21,7 +21,8 @@ function job(payload: ScanJobPayload): Job<ScanJobPayload> {
 }
 
 describe('DocumentCollectorProcessor', () => {
-  const processor = new DocumentCollectorProcessor();
+  const reconciliationQueue = { add: jest.fn() };
+  const processor = new DocumentCollectorProcessor(reconciliationQueue as never);
 
   const scanJobs = { findFirstById: jest.fn(), updateById: jest.fn() };
   const microsoftTenants = { findFirstById: jest.fn() };
@@ -32,6 +33,8 @@ describe('DocumentCollectorProcessor', () => {
   const healthScores = { create: jest.fn() };
   const healthIssues = { create: jest.fn() };
   const healthSnapshots = { create: jest.fn() };
+  const governanceIssues = { findMany: jest.fn(), updateById: jest.fn() };
+  const notifications = { create: jest.fn() };
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -45,6 +48,8 @@ describe('DocumentCollectorProcessor', () => {
       healthScores,
       healthIssues,
       healthSnapshots,
+      governanceIssues,
+      notifications,
     } as never);
 
     // Defaults so tests only override what they care about.
@@ -54,6 +59,8 @@ describe('DocumentCollectorProcessor', () => {
     users.findMany.mockResolvedValue([]);
     healthScores.create.mockResolvedValue({ id: 'score-1' });
     healthSnapshots.create.mockResolvedValue({ id: 'snapshot-1' });
+    governanceIssues.findMany.mockResolvedValue([]);
+    reconciliationQueue.add.mockResolvedValue(undefined);
   });
 
   it('returns early without touching the tenant when the ScanJob no longer exists', async () => {
@@ -245,6 +252,142 @@ describe('DocumentCollectorProcessor', () => {
       await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
 
       expect(documents.updateById).toHaveBeenCalledWith('doc-stale', { status: 'Removed' });
+    });
+
+    describe('removed-document governance signal (ADR-0021 §3.4)', () => {
+      const staleDocument = { id: 'doc-stale', siteId: 'site-1', graphItemId: 'item-deleted', status: 'Active' };
+
+      beforeEach(() => {
+        mockedListDocuments.mockReturnValue(asyncGen([fileItem])); // only item-1 present this run
+        documents.findMany.mockImplementation(async ({ where }: { where: Record<string, unknown> }) => {
+          if ('graphItemId' in where) return [];
+          if ('siteId' in where) return [staleDocument];
+          return [];
+        });
+        documents.create.mockResolvedValue({ id: 'doc-1', siteId: 'site-1', graphItemId: 'item-1' });
+      });
+
+      it('notifies the assignee of an Open/InProgress GovernanceIssue on a document that was just removed', async () => {
+        governanceIssues.findMany.mockResolvedValue([
+          { id: 'issue-1', documentId: 'doc-stale', issueType: 'Freshness', status: 'Open', assignedUserId: 'user-1' },
+        ]);
+
+        await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+        expect(governanceIssues.findMany).toHaveBeenCalledWith({
+          where: { documentId: 'doc-stale', status: { in: ['Open', 'InProgress'] } },
+        });
+        expect(notifications.create).toHaveBeenCalledWith({
+          userId: 'user-1',
+          type: 'DocumentRemoved',
+          message: expect.stringContaining('Freshness'),
+          governanceIssueId: 'issue-1',
+          documentId: 'doc-stale',
+        });
+      });
+
+      it('skips an open issue with no assignedUserId — no resolvable recipient', async () => {
+        governanceIssues.findMany.mockResolvedValue([
+          { id: 'issue-1', documentId: 'doc-stale', issueType: 'Freshness', status: 'Open', assignedUserId: null },
+        ]);
+
+        await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+        expect(notifications.create).not.toHaveBeenCalled();
+      });
+
+      it('does not touch GovernanceIssue status — removal is never auto-resolution', async () => {
+        governanceIssues.findMany.mockResolvedValue([
+          { id: 'issue-1', documentId: 'doc-stale', issueType: 'Freshness', status: 'Open', assignedUserId: 'user-1' },
+        ]);
+
+        await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+        expect(governanceIssues.updateById).not.toHaveBeenCalled();
+      });
+
+      it('does not notify when the removed document has no Open/InProgress GovernanceIssue', async () => {
+        governanceIssues.findMany.mockResolvedValue([]);
+
+        await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+        expect(notifications.create).not.toHaveBeenCalled();
+      });
+
+      // Phase D.2 review fix (Issue 2): a notification failure must never
+      // roll back the document's Removed transition, must never stop
+      // remaining processing (other issues on the same document, or other
+      // removed documents in the same site), and must be logged.
+      describe('failure isolation', () => {
+        it('still marks the document Removed even when notifying its assignee fails', async () => {
+          governanceIssues.findMany.mockResolvedValue([
+            { id: 'issue-1', documentId: 'doc-stale', issueType: 'Freshness', status: 'Open', assignedUserId: 'user-1' },
+          ]);
+          notifications.create.mockRejectedValue(new Error('DB connection lost'));
+
+          await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+          expect(documents.updateById).toHaveBeenCalledWith('doc-stale', { status: 'Removed' });
+        });
+
+        it('still attempts a second issue on the same document after the first issue\'s notification fails', async () => {
+          governanceIssues.findMany.mockResolvedValue([
+            { id: 'issue-1', documentId: 'doc-stale', issueType: 'Freshness', status: 'Open', assignedUserId: 'user-1' },
+            { id: 'issue-2', documentId: 'doc-stale', issueType: 'Ownership', status: 'Open', assignedUserId: 'user-2' },
+          ]);
+          notifications.create.mockRejectedValueOnce(new Error('DB connection lost')).mockResolvedValueOnce({ id: 'notification-2' });
+
+          await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+          expect(notifications.create).toHaveBeenCalledTimes(2);
+          expect(notifications.create).toHaveBeenCalledWith(expect.objectContaining({ governanceIssueId: 'issue-2' }));
+        });
+
+        it('still processes a second removed document in the same site after the first one\'s notification fails', async () => {
+          const staleDocument2 = { id: 'doc-stale-2', siteId: 'site-1', graphItemId: 'item-deleted-2', status: 'Active' };
+          documents.findMany.mockImplementation(async ({ where }: { where: Record<string, unknown> }) => {
+            if ('graphItemId' in where) return [];
+            if ('siteId' in where) return [staleDocument, staleDocument2];
+            return [];
+          });
+          governanceIssues.findMany.mockImplementation(async ({ where }: { where: Record<string, unknown> }) =>
+            where.documentId === 'doc-stale'
+              ? [{ id: 'issue-1', documentId: 'doc-stale', issueType: 'Freshness', status: 'Open', assignedUserId: 'user-1' }]
+              : [{ id: 'issue-2', documentId: 'doc-stale-2', issueType: 'Freshness', status: 'Open', assignedUserId: 'user-2' }],
+          );
+          notifications.create.mockRejectedValueOnce(new Error('DB connection lost')).mockResolvedValueOnce({ id: 'notification-2' });
+
+          await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+          expect(documents.updateById).toHaveBeenCalledWith('doc-stale', { status: 'Removed' });
+          expect(documents.updateById).toHaveBeenCalledWith('doc-stale-2', { status: 'Removed' });
+          expect(notifications.create).toHaveBeenCalledWith(expect.objectContaining({ governanceIssueId: 'issue-2' }));
+        });
+
+        it('logs a notification failure via the processor logger', async () => {
+          governanceIssues.findMany.mockResolvedValue([
+            { id: 'issue-1', documentId: 'doc-stale', issueType: 'Freshness', status: 'Open', assignedUserId: 'user-1' },
+          ]);
+          notifications.create.mockRejectedValue(new Error('DB connection lost'));
+          const logSpy = jest.spyOn((processor as unknown as { logger: { error: jest.Mock } }).logger, 'error');
+
+          await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+          expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('issue-1'), expect.anything());
+        });
+
+        it('does not abort the whole scan or mark the site enumeration failed when a notification fails', async () => {
+          governanceIssues.findMany.mockResolvedValue([
+            { id: 'issue-1', documentId: 'doc-stale', issueType: 'Freshness', status: 'Open', assignedUserId: 'user-1' },
+          ]);
+          notifications.create.mockRejectedValue(new Error('DB connection lost'));
+
+          await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+          const finalUpdate = scanJobs.updateById.mock.calls.at(-1);
+          expect(finalUpdate?.[1]).toEqual(expect.objectContaining({ status: 'Completed' }));
+        });
+      });
     });
 
     it('never marks a document Removed while enumeration itself failed (incomplete picture)', async () => {
@@ -674,6 +817,43 @@ describe('DocumentCollectorProcessor', () => {
       expect(healthSnapshots.create).toHaveBeenCalledWith(
         expect.objectContaining({ totalDocumentsScanned: 0, averageHealthScore: null }),
       );
+    });
+  });
+
+  describe('notification reconciliation trigger (ADR-0021 §3.3)', () => {
+    beforeEach(() => {
+      scanJobs.findFirstById.mockResolvedValue({ id: 'scan-1', microsoftTenantId: 'tenant-1' });
+      microsoftTenants.findFirstById.mockResolvedValue({ id: 'tenant-1', entraTenantId: 'entra-1' });
+      sharePointSites.findMany.mockResolvedValue([]);
+      documents.findMany.mockResolvedValue([]);
+    });
+
+    it('enqueues a reconciliation job for the organization once the scan completes', async () => {
+      await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+      expect(reconciliationQueue.add).toHaveBeenCalledWith('reconcile-org', { organizationId: 'org-1' });
+    });
+
+    it('never enqueues a reconciliation job when the scan ends Failed', async () => {
+      mockedListDrives.mockReturnValue(
+        (async function* (): AsyncGenerator<GraphDrive> {
+          throw new GraphTransientError('boom');
+        })(),
+      );
+      sharePointSites.findMany.mockResolvedValue([{ id: 'site-1', graphSiteId: 'graph-site-1', displayName: 'Team Site' }]);
+
+      await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+      expect(reconciliationQueue.add).not.toHaveBeenCalled();
+    });
+
+    it('does not fail the scan job when the reconciliation enqueue itself fails', async () => {
+      reconciliationQueue.add.mockRejectedValue(new Error('Redis unavailable'));
+
+      await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+      const finalUpdate = scanJobs.updateById.mock.calls.at(-1);
+      expect(finalUpdate?.[1]).toEqual(expect.objectContaining({ status: 'Completed' }));
     });
   });
 

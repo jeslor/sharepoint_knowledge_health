@@ -1,7 +1,12 @@
-import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
+import { InjectQueue, OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
-import type { Job } from 'bullmq';
-import { SCAN_QUEUE, type ScanJobPayload } from '@sph/types';
+import type { Job, Queue } from 'bullmq';
+import {
+  SCAN_QUEUE,
+  NOTIFICATION_RECONCILIATION_QUEUE,
+  type ScanJobPayload,
+  type NotificationReconciliationJobPayload,
+} from '@sph/types';
 import { createTenantContext, type TenantContext, type Document, type DocumentOwner, type SharePointSite } from '@sph/database';
 import { listDrives, listDocuments, listChildren, type GraphDriveItem, GraphClientError } from '@sph/graph-client';
 import { calculateScore, type DocumentOwnerInput, type SiblingDocumentInput } from '@sph/scoring';
@@ -40,6 +45,13 @@ interface ScanAggregateSummary {
 @Processor(SCAN_QUEUE, { concurrency: Number(process.env.WORKER_CONCURRENCY) || 5 })
 export class DocumentCollectorProcessor extends WorkerHost {
   private readonly logger = new Logger(DocumentCollectorProcessor.name);
+
+  constructor(
+    @InjectQueue(NOTIFICATION_RECONCILIATION_QUEUE)
+    private readonly reconciliationQueue: Queue<NotificationReconciliationJobPayload>,
+  ) {
+    super();
+  }
 
   // BullMQ retries the job itself (see defaultJobOptions on the queue) —
   // these only make retries and terminal failures observable, since
@@ -154,6 +166,22 @@ export class DocumentCollectorProcessor extends WorkerHost {
         criticalIssuesCount: summary.criticalIssuesCount,
         warningIssuesCount: summary.warningIssuesCount,
       });
+
+      // ADR-0021 §3.3: event-driven reconciliation trigger — the primary
+      // mechanism, only meaningful after a genuinely successful scan (the
+      // same "only trust complete data" gate the HealthSnapshot above
+      // already uses). A single follow-up enqueue, not reconciliation
+      // logic itself — that lives entirely in apps/worker/src/notifications,
+      // its own separate processor. Never allowed to turn an otherwise-
+      // successful scan into a failed job: a Redis blip here is logged and
+      // left to the periodic safety-net sweep to recover, exactly like
+      // DiscoveryProducerService's own best-effort enqueue after bootstrap.
+      try {
+        await this.reconciliationQueue.add('reconcile-org', { organizationId });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.error(`Failed to enqueue notification reconciliation for org ${organizationId}: ${message}`);
+      }
     }
   }
 
@@ -296,6 +324,57 @@ export class DocumentCollectorProcessor extends WorkerHost {
     for (const document of activeDocuments) {
       if (!seenGraphItemIds.has(document.graphItemId)) {
         await context.documents.updateById(document.id, { status: 'Removed' });
+
+        // Phase D.2 review fix: the Removed transition above has already
+        // committed and must never be rolled back by a notification
+        // failure — a removed document is never reconsidered by a future
+        // scan (it no longer appears in activeDocuments), so an uncaught
+        // failure here would silently and permanently lose that
+        // assignee's notification, and would also abort the rest of this
+        // site's removed documents (this loop would never reach them).
+        // Isolating per-document, matching this file's own existing
+        // per-item isolation precedent (upsertDocument's catch below).
+        try {
+          await this.notifyRemovedDocumentAssignees(context, document.id);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          const stack = error instanceof Error ? error.stack : undefined;
+          this.logger.error(`Failed to notify assignees for removed document ${document.id}: ${message}`, stack);
+        }
+      }
+    }
+  }
+
+  // ADR-0021 §3.4: a removed document's still-open GovernanceIssues would
+  // otherwise go stale silently — the assignee would keep working toward
+  // fixing an issue on a document that no longer exists. No
+  // GovernanceActivity write here: that model requires a non-nullable
+  // actorUserId (ADR-0016), and this is a worker-detected system event, not
+  // a human/API action. No automatic status change either — removal isn't
+  // resolution; a human decides whether to resolve, reassign, or leave the
+  // issue as-is (e.g. the document reappears on a later scan).
+  private async notifyRemovedDocumentAssignees(context: TenantContext, documentId: string): Promise<void> {
+    const openIssues = await context.governanceIssues.findMany({
+      where: { documentId, status: { in: ['Open', 'InProgress'] } },
+    });
+    for (const issue of openIssues) {
+      if (!issue.assignedUserId) continue; // no resolvable recipient
+
+      // Isolated per-issue too — a document with more than one open issue
+      // must not have a later issue's notification skipped just because an
+      // earlier one on the same document failed.
+      try {
+        await context.notifications.create({
+          userId: issue.assignedUserId,
+          type: 'DocumentRemoved',
+          message: `The document for a governance issue you're assigned to (${issue.issueType}) was removed from SharePoint.`,
+          governanceIssueId: issue.id,
+          documentId,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const stack = error instanceof Error ? error.stack : undefined;
+        this.logger.error(`Failed to create DocumentRemoved notification for issue ${issue.id}: ${message}`, stack);
       }
     }
   }

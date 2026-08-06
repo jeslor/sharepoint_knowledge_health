@@ -155,3 +155,79 @@ any actual behavior today.
   lower-impact for a JSON/bearer-token API than for a cookie-authenticated,
   HTML-serving one, but still a reasonable low-cost addition later.
 - **No automated dependency vulnerability scanning** configured in CI.
+- **`GovernanceActivity`/`AuditLog` append-only enforcement is
+  application-layer only, not database-layer.** See the plan below —
+  deliberately not implemented yet, because doing so today would be
+  unverifiable in this environment (see "why not now").
+
+## Planned: database-level write immutability for GovernanceActivity/AuditLog
+
+**Current state.** `GovernanceActivityRepository` and `AuditLogRepository`
+(`packages/database/src/repositories/`) are append-only by construction —
+each class's public surface exposes only `findMany`/`findFirstById`/`count`/
+`create`; there is no `updateById`/`deleteById` method to call, by design
+(ADR-0016, ADR-0019). This is real protection against every code path that
+goes through `createTenantContext()`, which is the sanctioned way
+application code touches the database (see "Tenant isolation" above) — but
+it is enforced by TypeScript's type system and code-review discipline, not
+by Postgres itself. Anything with a raw `PrismaClient`/`$queryRaw`, or a
+future migration/admin script, could still `UPDATE`/`DELETE` these rows.
+Database-level enforcement (`REVOKE UPDATE, DELETE`) would close that gap
+as defense-in-depth, independent of the application code being correct.
+
+**Why not implemented now.** Every environment this codebase currently
+runs in — local dev (`docker-compose.yml`: `POSTGRES_USER: postgres`) and
+CI (`.github/workflows/ci.yml`: `postgresql://postgres:postgres@...`) —
+connects as the Postgres **superuser**. `REVOKE` has no effect on a
+superuser (superusers bypass all privilege checks), so a `REVOKE` migration
+written today would be a silent no-op in both places it could be tested,
+and genuinely unverifiable. Production's actual runtime connection role is
+unknown from this codebase — `DATABASE_URL` is injected from Azure Key
+Vault at deploy time (ADR-0006) and is not visible here. Writing a
+migration that assumes a specific non-superuser role name without being
+able to confirm it exists risks either a no-op (if the role doesn't
+exist/isn't used) or, if a migration step tries to `GRANT`/`ALTER` a
+role that turns out not to match production's real setup, a failed
+deploy. Per instruction, this is a plan to hand to whoever owns the
+production database provisioning, not a guess encoded into a migration.
+
+**Plan, once a non-superuser application role exists:**
+
+1. **Provision two distinct Postgres roles**, if they don't already exist
+   in the target environment:
+   - A **migration role** (e.g. `sph_migrator`) — owns the schema, runs
+     `prisma migrate deploy`, has full DDL/DML privileges. This is the
+     role CI/CD's deploy step connects as.
+   - A **runtime role** (e.g. `sph_app`) — the role `apps/api` and
+     `apps/worker` actually connect as in production. Only needs the DML
+     privileges those apps genuinely use (`SELECT`/`INSERT`/`UPDATE`/
+     `DELETE` on ordinary tables; `SELECT`/`INSERT` only on
+     `GovernanceActivity`/`AuditLog`).
+   - This mirrors a standard Postgres least-privilege pattern and is a
+     bigger change than just this one hardening fix — it also means two
+     separate connection strings need to exist in Key Vault
+     (`MIGRATION_DATABASE_URL`, `DATABASE_URL`), which is an infra/ops
+     decision, not something this codebase can self-provision.
+2. **Add a migration** (via `prisma migrate dev --create-only`, then
+   hand-edit — Prisma's schema DSL has no `REVOKE` primitive, so this has
+   to be raw SQL in the generated migration file, same as any other
+   Postgres feature Prisma doesn't model natively):
+   ```sql
+   REVOKE UPDATE, DELETE ON "GovernanceActivity" FROM sph_app;
+   REVOKE UPDATE, DELETE ON "AuditLog" FROM sph_app;
+   ```
+   (Exact role name TBD by whoever provisions it — `sph_app` above is a
+   placeholder, not a decision made here.)
+3. **Point `apps/api`/`apps/worker`'s runtime `DATABASE_URL` at the
+   restricted role**, keeping the migration role only for the deploy
+   step. Both apps already only ever call `create`/`findMany`/
+   `findFirstById`/`count` against these two tables (verified above), so
+   this change should be invisible at the application layer if done
+   correctly.
+4. **Verify in an environment where the runtime role is genuinely
+   non-superuser** — this cannot be verified in the current local dev or
+   CI setup (both are the superuser). A staging environment, or a local
+   docker-compose addition that provisions a second, restricted role via
+   Postgres's init-script mechanism, would be the place to prove
+   `UPDATE`/`DELETE` against these two tables actually fails with the
+   restricted role, while every existing repository method still works.

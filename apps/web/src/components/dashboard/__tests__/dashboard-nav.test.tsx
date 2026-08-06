@@ -4,6 +4,7 @@ import { DashboardNav } from '../dashboard-nav';
 
 let mockUser: MeResponse | undefined;
 let mockPathname = '/dashboard';
+let mockUnreadCount: number | undefined;
 
 jest.mock('@/lib/auth/current-user-context', () => ({
   useCurrentUser: () => ({ user: mockUser, loading: false, error: undefined }),
@@ -11,6 +12,16 @@ jest.mock('@/lib/auth/current-user-context', () => ({
 
 jest.mock('next/navigation', () => ({
   usePathname: () => mockPathname,
+}));
+
+jest.mock('@/lib/api/hooks/use-unread-notification-count', () => ({
+  useUnreadNotificationCount: () => ({
+    data: mockUnreadCount === undefined ? undefined : { count: mockUnreadCount },
+    loading: false,
+    error: undefined,
+    isRefetching: false,
+    refetch: jest.fn(),
+  }),
 }));
 
 function user(overrides: Partial<MeResponse> = {}): MeResponse {
@@ -41,6 +52,7 @@ describe('DashboardNav', () => {
   beforeEach(() => {
     mockUser = undefined;
     mockPathname = '/dashboard';
+    mockUnreadCount = undefined;
   });
 
   it('always shows the core product areas reachable by every role, in the desktop sidebar', () => {
@@ -52,6 +64,48 @@ describe('DashboardNav', () => {
     expect(getByRole('link', { name: /documents/i })).toBeInTheDocument();
     expect(getByRole('link', { name: /scans/i })).toBeInTheDocument();
     expect(getByRole('link', { name: /governance/i })).toBeInTheDocument();
+  });
+
+  it('shows Notifications for every role — never role-gated, unlike Administration', () => {
+    mockUser = user({ role: 'Member' });
+    render(<DashboardNav mobileOpen={false} onCloseMobile={noop} />);
+
+    expect(within(desktopSidebar()).getByRole('link', { name: /notifications/i })).toHaveAttribute(
+      'href',
+      '/dashboard/notifications',
+    );
+  });
+
+  it('renders no unread badge when the unread count is zero', () => {
+    mockUser = user({ role: 'Member' });
+    mockUnreadCount = 0;
+    render(<DashboardNav mobileOpen={false} onCloseMobile={noop} />);
+
+    expect(within(desktopSidebar()).queryByLabelText(/unread/i)).not.toBeInTheDocument();
+  });
+
+  it('renders no unread badge while the count is still loading (undefined)', () => {
+    mockUser = user({ role: 'Member' });
+    mockUnreadCount = undefined;
+    render(<DashboardNav mobileOpen={false} onCloseMobile={noop} />);
+
+    expect(within(desktopSidebar()).queryByLabelText(/unread/i)).not.toBeInTheDocument();
+  });
+
+  it('shows the unread count as a badge on the Notifications link', () => {
+    mockUser = user({ role: 'Member' });
+    mockUnreadCount = 3;
+    render(<DashboardNav mobileOpen={false} onCloseMobile={noop} />);
+
+    expect(within(desktopSidebar()).getByLabelText('3 unread')).toHaveTextContent('3');
+  });
+
+  it('caps the displayed badge at "99+" for a large unread count', () => {
+    mockUser = user({ role: 'Member' });
+    mockUnreadCount = 250;
+    render(<DashboardNav mobileOpen={false} onCloseMobile={noop} />);
+
+    expect(within(desktopSidebar()).getByLabelText('250 unread')).toHaveTextContent('99+');
   });
 
   it('hides Sites and Users links for a Member', () => {

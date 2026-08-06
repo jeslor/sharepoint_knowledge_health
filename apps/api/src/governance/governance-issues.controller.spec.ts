@@ -5,7 +5,7 @@ import type { GovernanceActivityService } from './governance-activity.service';
 import type { GovernanceAnalyticsService } from './governance-analytics.service';
 import type { GovernanceIssuesService } from './governance-issues.service';
 
-const actor = { id: 'actor-1' } as User;
+const actor = { id: 'actor-1', role: 'Admin' } as User;
 
 describe('GovernanceIssuesController', () => {
   const service = {
@@ -145,7 +145,7 @@ describe('GovernanceIssuesController', () => {
     it('delegates a valid update to the service with the current user id', async () => {
       service.updateIssue.mockResolvedValue({ id: 'issue-1', status: 'InProgress' });
       await controller.updateIssue('org-1', 'issue-1', actor, { status: 'InProgress' });
-      expect(service.updateIssue).toHaveBeenCalledWith('org-1', 'issue-1', 'actor-1', { status: 'InProgress' });
+      expect(service.updateIssue).toHaveBeenCalledWith('org-1', 'issue-1', 'actor-1', 'Admin', { status: 'InProgress' });
     });
   });
 
