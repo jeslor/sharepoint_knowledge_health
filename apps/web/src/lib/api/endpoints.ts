@@ -1,6 +1,8 @@
 import type {
   AssignableUserResponse,
   AssignDocumentOwnerRequest,
+  AuditLogListQuery,
+  AuditLogResponse,
   ConsentCallbackRequest,
   ConsentResolution,
   CreateGovernanceIssueRequest,
@@ -292,6 +294,15 @@ export function getGovernanceAnalytics(
 ): Promise<GovernanceAnalyticsResponse> {
   const queryString = buildQueryString(query);
   return apiRequest(`/organizations/${organizationId}/governance/analytics${queryString}`, token);
+}
+
+export function getAuditLog(
+  organizationId: string,
+  token: string,
+  query: AuditLogListQuery = {},
+): Promise<PaginatedResponse<AuditLogResponse>> {
+  const queryString = buildQueryString(query);
+  return apiRequest(`/organizations/${organizationId}/audit-log${queryString}`, token);
 }
 
 export function getNotifications(

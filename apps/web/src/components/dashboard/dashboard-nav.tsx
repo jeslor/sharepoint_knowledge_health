@@ -18,6 +18,8 @@ import {
   BuildingFilled,
   AlertRegular,
   AlertFilled,
+  HistoryRegular,
+  HistoryFilled,
   ChevronDownRegular,
   type FluentIcon,
 } from '@fluentui/react-icons';
@@ -50,6 +52,12 @@ const GROUPS: NavGroup[] = [
       { href: '/dashboard/documents', label: 'Documents', icon: DocumentMultipleRegular, activeIcon: DocumentMultipleFilled },
       { href: '/dashboard/scans', label: 'Scans', icon: ScanObjectRegular, activeIcon: ScanObjectFilled },
       { href: '/dashboard/governance', label: 'Governance', icon: ShieldRegular, activeIcon: ShieldFilled },
+      // ADR-0019 §4: the backend deliberately has no RolesGuard on this
+      // route — "any authenticated org member may read this," a separate
+      // concern from who can perform the audited actions. Lives in
+      // Workspace (ungated), never Administration (adminOnly below), so
+      // the nav doesn't silently contradict that backend decision.
+      { href: '/dashboard/audit-log', label: 'Audit log', icon: HistoryRegular, activeIcon: HistoryFilled },
       { href: '/dashboard/notifications', label: 'Notifications', icon: AlertRegular, activeIcon: AlertFilled },
     ],
   },
