@@ -56,6 +56,9 @@ importers:
       '@sph/graph-client':
         specifier: workspace:*
         version: link:../../packages/graph-client
+      '@sph/review-date-discovery':
+        specifier: workspace:*
+        version: link:../../packages/review-date-discovery
       '@sph/types':
         specifier: workspace:*
         version: link:../../packages/types
@@ -217,6 +220,9 @@ importers:
       '@sph/graph-client':
         specifier: workspace:*
         version: link:../../packages/graph-client
+      '@sph/review-date-discovery':
+        specifier: workspace:*
+        version: link:../../packages/review-date-discovery
       '@sph/scoring':
         specifier: workspace:*
         version: link:../../packages/scoring
@@ -325,6 +331,28 @@ importers:
       '@microsoft/microsoft-graph-client':
         specifier: ^3.0.7
         version: 3.0.7
+    devDependencies:
+      '@types/jest':
+        specifier: ^29.5.13
+        version: 29.5.14
+      '@types/node':
+        specifier: ^20.16.0
+        version: 20.19.43
+      jest:
+        specifier: ^29.7.0
+        version: 29.7.0(@types/node@20.19.43)(ts-node@10.9.2(@types/node@20.19.43)(typescript@5.9.3))
+      ts-jest:
+        specifier: ^29.2.5
+        version: 29.4.11(@babel/core@7.29.7)(@jest/transform@29.7.0)(@jest/types@29.6.3)(babel-jest@29.7.0(@babel/core@7.29.7))(jest-util@29.7.0)(jest@29.7.0(@types/node@20.19.43))(typescript@5.9.3)
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+
+  packages/review-date-discovery:
+    dependencies:
+      '@sph/graph-client':
+        specifier: workspace:*
+        version: link:../graph-client
     devDependencies:
       '@types/jest':
         specifier: ^29.5.13

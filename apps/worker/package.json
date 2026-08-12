@@ -19,6 +19,7 @@
     "@sph/config": "workspace:*",
     "@sph/database": "workspace:*",
     "@sph/graph-client": "workspace:*",
+    "@sph/review-date-discovery": "workspace:*",
     "@sph/scoring": "workspace:*",
     "@sph/types": "workspace:*",
     "bullmq": "^5.21.0",

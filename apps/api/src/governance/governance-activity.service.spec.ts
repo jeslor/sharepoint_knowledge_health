@@ -9,7 +9,7 @@ describe('GovernanceActivityService', () => {
   const service = new GovernanceActivityService();
 
   const governanceActivity = { findMany: jest.fn(), count: jest.fn(), create: jest.fn() };
-  const documents = { findMany: jest.fn() };
+  const documents = { findMany: jest.fn(), findFirstById: jest.fn() };
   const users = { findMany: jest.fn() };
   const notifications = { create: jest.fn() };
 
@@ -19,6 +19,7 @@ describe('GovernanceActivityService', () => {
     governanceActivity.findMany.mockResolvedValue([]);
     governanceActivity.count.mockResolvedValue(0);
     documents.findMany.mockResolvedValue([]);
+    documents.findFirstById.mockResolvedValue(null);
     users.findMany.mockResolvedValue([]);
   });
 
@@ -103,7 +104,45 @@ describe('GovernanceActivityService', () => {
       },
     );
 
-    it('enriches the notification message with issueType when provided, at zero extra query cost', async () => {
+    it('enriches the notification message with the human-readable issue type when provided', async () => {
+      documents.findFirstById.mockResolvedValue({ id: 'doc-1', name: 'Employee Handbook.docx' });
+
+      await service.record('org-1', {
+        governanceIssueId: 'issue-1',
+        documentId: 'doc-1',
+        actorUserId: 'actor-1',
+        activityType: 'IssueAssigned',
+        notifyUserId: 'user-recipient',
+        notifyIssueType: 'ReviewStatus',
+      });
+
+      // Human-readable ("Review Status"), not the raw enum ("ReviewStatus").
+      expect(notifications.create).toHaveBeenCalledWith(
+        expect.objectContaining({ message: expect.stringContaining('Review Status') }),
+      );
+      expect(users.findMany).not.toHaveBeenCalled();
+    });
+
+    it('enriches the notification message with the document name via one lookup on the notifying path only', async () => {
+      documents.findFirstById.mockResolvedValue({ id: 'doc-1', name: 'Employee Handbook.docx' });
+
+      await service.record('org-1', {
+        governanceIssueId: 'issue-1',
+        documentId: 'doc-1',
+        actorUserId: 'actor-1',
+        activityType: 'IssueAssigned',
+        notifyUserId: 'user-recipient',
+      });
+
+      expect(documents.findFirstById).toHaveBeenCalledWith('doc-1');
+      expect(notifications.create).toHaveBeenCalledWith(
+        expect.objectContaining({ message: expect.stringContaining('Employee Handbook.docx') }),
+      );
+    });
+
+    it('enriches the notification message with the project\'s established severity terminology (Critical/Warning, not the raw enum)', async () => {
+      documents.findFirstById.mockResolvedValue({ id: 'doc-1', name: 'Employee Handbook.docx' });
+
       await service.record('org-1', {
         governanceIssueId: 'issue-1',
         documentId: 'doc-1',
@@ -111,14 +150,87 @@ describe('GovernanceActivityService', () => {
         activityType: 'IssueAssigned',
         notifyUserId: 'user-recipient',
         notifyIssueType: 'Freshness',
+        notifyIssueSeverity: 'RequiresReview',
       });
 
       expect(notifications.create).toHaveBeenCalledWith(
-        expect.objectContaining({ message: expect.stringContaining('Freshness') }),
+        expect.objectContaining({ message: 'You were assigned a governance issue on "Employee Handbook.docx" (Freshness, Critical).' }),
       );
-      // No extra lookups beyond what record() already needed.
-      expect(documents.findMany).not.toHaveBeenCalled();
-      expect(users.findMany).not.toHaveBeenCalled();
+    });
+
+    it('does not query documents at all when no notification will be created (non-notifiable activity type)', async () => {
+      await service.record('org-1', {
+        documentId: 'doc-1',
+        actorUserId: 'actor-1',
+        activityType: 'IssueCreated',
+      });
+
+      expect(documents.findFirstById).not.toHaveBeenCalled();
+    });
+
+    it('does not query documents at all when notifyUserId is not provided', async () => {
+      await service.record('org-1', {
+        governanceIssueId: 'issue-1',
+        documentId: 'doc-1',
+        actorUserId: 'actor-1',
+        activityType: 'IssueAssigned',
+      });
+
+      expect(documents.findFirstById).not.toHaveBeenCalled();
+    });
+
+    it('gracefully degrades to the unenriched message when the document lookup returns null, without throwing', async () => {
+      documents.findFirstById.mockResolvedValue(null);
+
+      await expect(
+        service.record('org-1', {
+          governanceIssueId: 'issue-1',
+          documentId: 'doc-1',
+          actorUserId: 'actor-1',
+          activityType: 'IssueAssigned',
+          notifyUserId: 'user-recipient',
+          notifyIssueType: 'Freshness',
+          notifyIssueSeverity: 'RequiresReview',
+        }),
+      ).resolves.toBeUndefined();
+
+      expect(notifications.create).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'You were assigned a governance issue (Freshness, Critical).' }),
+      );
+    });
+
+    it('enriches the OwnerAssigned notification with the document name too', async () => {
+      documents.findFirstById.mockResolvedValue({ id: 'doc-1', name: 'Employee Handbook.docx' });
+
+      await service.record('org-1', {
+        documentId: 'doc-1',
+        actorUserId: 'actor-1',
+        activityType: 'OwnerAssigned',
+        newValue: 'Sarah',
+        notifyUserId: 'user-recipient',
+      });
+
+      expect(notifications.create).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'You were assigned as the owner of "Employee Handbook.docx".' }),
+      );
+    });
+
+    it('still targets the governance issue via governanceIssueId/documentId on the notification row, unaffected by message enrichment (preserves existing click-through behavior)', async () => {
+      documents.findFirstById.mockResolvedValue({ id: 'doc-1', name: 'Employee Handbook.docx' });
+
+      await service.record('org-1', {
+        governanceIssueId: 'issue-1',
+        documentId: 'doc-1',
+        actorUserId: 'actor-1',
+        activityType: 'IssueAssigned',
+        notifyUserId: 'user-recipient',
+        notifyIssueType: 'Freshness',
+        notifyIssueSeverity: 'RequiresReview',
+      });
+
+      expect(notifications.create).toHaveBeenCalledWith(
+        expect.objectContaining({ governanceIssueId: 'issue-1', documentId: 'doc-1' }),
+      );
     });
 
     // Phase D.2 review fix (Issue 3): notification creation is best-effort

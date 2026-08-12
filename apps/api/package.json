@@ -22,6 +22,7 @@
     "@sph/config": "workspace:*",
     "@sph/database": "workspace:*",
     "@sph/graph-client": "workspace:*",
+    "@sph/review-date-discovery": "workspace:*",
     "@sph/types": "workspace:*",
     "bullmq": "^5.21.0",
     "jose": "^5.9.6",

@@ -10,6 +10,7 @@ import {
 import { createTenantContext, type TenantContext, type Document, type DocumentOwner, type SharePointSite } from '@sph/database';
 import { listDrives, listDocuments, listChildren, type GraphDriveItem, GraphClientError } from '@sph/graph-client';
 import { calculateScore, type DocumentOwnerInput, type SiblingDocumentInput } from '@sph/scoring';
+import { syncConfirmedReviewDateMapping } from '../sharepoint-metadata/review-date-sync';
 
 /**
  * ADR-0015 §3 — the exact aggregate a HealthSnapshot needs, computed once
@@ -222,7 +223,7 @@ export class DocumentCollectorProcessor extends WorkerHost {
         seenGraphItemIds.add(item.id);
 
         try {
-          await this.upsertDocument(context, site.id, item);
+          await this.upsertDocument(context, site.id, item, drive.list?.id);
           onDocumentPersisted(1);
         } catch (error) {
           itemFailures += 1;
@@ -231,6 +232,25 @@ export class DocumentCollectorProcessor extends WorkerHost {
           // not just the message string.
           const stack = error instanceof Error ? error.stack : undefined;
           this.logger.error(`Failed to persist document ${item.id} ("${item.name}") in site "${site.displayName}": ${message}`, stack);
+        }
+      }
+
+      // SharePoint metadata integration, Phase 1b: a no-op for any library
+      // without a confirmed mapping (checked first thing inside, before any
+      // Graph call — see review-date-sync.ts). Isolated per drive, same
+      // failure-containment precedent as every other per-item/per-folder
+      // try/catch in this method — a metadata sync failure must never
+      // abort document collection or scoring for the rest of this site.
+      if (drive.list?.id) {
+        try {
+          await syncConfirmedReviewDateMapping(context, entraTenantId, site, drive.list.id, this.logger);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          const stack = error instanceof Error ? error.stack : undefined;
+          this.logger.error(
+            `Review-date mapping sync failed for drive "${drive.name}" (${drive.id}), site "${site.displayName}": ${message}`,
+            stack,
+          );
         }
       }
     }
@@ -379,7 +399,12 @@ export class DocumentCollectorProcessor extends WorkerHost {
     }
   }
 
-  private async upsertDocument(context: TenantContext, siteId: string, item: GraphDriveItem): Promise<Document> {
+  private async upsertDocument(
+    context: TenantContext,
+    siteId: string,
+    item: GraphDriveItem,
+    graphListId: string | undefined,
+  ): Promise<Document> {
     const [existing] = await context.documents.findMany({ where: { siteId, graphItemId: item.id }, take: 1 });
 
     const data = {
@@ -388,9 +413,17 @@ export class DocumentCollectorProcessor extends WorkerHost {
       name: item.name,
       path: item.parentReference.path,
       fileType: item.file?.mimeType ?? 'unknown',
+      webUrl: item.webUrl,
       sizeBytes: BigInt(item.size),
       sourceCreatedAt: new Date(item.createdDateTime),
       sourceModifiedAt: new Date(item.lastModifiedDateTime),
+      // SharePoint metadata integration, Phase 1a: undefined (not null)
+      // when this scan's drive had no resolvable list — leaves a
+      // previously-persisted value untouched on update (Prisma omits
+      // undefined keys) rather than flapping it, since a drive's list
+      // association is a structural property, not expected to appear and
+      // disappear between scans.
+      ...(graphListId !== undefined ? { graphListId } : {}),
     };
 
     const document = existing

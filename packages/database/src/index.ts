@@ -38,6 +38,7 @@ export type {
   GovernanceActivity,
   AuditLog,
   Notification,
+  SharePointReviewDateMapping,
 } from '@prisma/client';
 
 export {
@@ -59,4 +60,5 @@ export {
   GovernanceActivityType,
   DiscoveryStatus,
   NotificationType,
+  SharePointReviewDateMappingStatus,
 } from '@prisma/client';

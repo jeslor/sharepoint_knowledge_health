@@ -12,6 +12,7 @@ import type {
   DocumentHealthResponse,
   DocumentOwnerResponse,
   DocumentResponse,
+  DocumentReviewResponse,
   DocumentScoreHistoryResponse,
   GovernanceActivityListQuery,
   GovernanceActivityResponse,
@@ -19,6 +20,7 @@ import type {
   GovernanceAnalyticsResponse,
   GovernanceIssueListQuery,
   GovernanceIssueResponse,
+  GovernanceIssueTypeCountsResponse,
   GovernanceSummaryResponse,
   HealthSummaryResponse,
   HealthTrendResponse,
@@ -29,9 +31,14 @@ import type {
   OnboardingStatusResponse,
   OrganizationUserResponse,
   PaginatedResponse,
+  ConfirmReviewDateMappingRequest,
+  ReviewDateEligibilityResponse,
+  ReviewDateLibraryResponse,
+  ReviewDateMappingResponse,
   ScanComparisonResponse,
   ScanResponse,
   ScanScheduleResponse,
+  SetDocumentReviewDateRequest,
   SharePointSiteResponse,
   TriggerScanRequest,
   UnreadNotificationCountResponse,
@@ -96,6 +103,43 @@ export function approveSharePointSite(organizationId: string, siteId: string, to
 
 export function revokeSharePointSite(organizationId: string, siteId: string, token: string): Promise<SharePointSiteResponse> {
   return apiRequest(`/organizations/${organizationId}/sharepoint-sites/${siteId}/revoke`, token, { method: 'PATCH' });
+}
+
+// Phase 2: enumerates a site's document libraries with whatever mapping
+// state already exists — the prerequisite the Review Date settings page
+// needs that nothing else exposes (eligibility/confirm both require a
+// graphListId as input, neither can discover one).
+export function listReviewDateLibraries(
+  organizationId: string,
+  siteId: string,
+  token: string,
+): Promise<ReviewDateLibraryResponse[]> {
+  return apiRequest(`/organizations/${organizationId}/sharepoint-sites/${siteId}/review-date-libraries`, token);
+}
+
+// Read-only — lazy, on-demand per library, never prefetched for an entire
+// site's libraries at once (see the backend's own doc comment on
+// listReviewDateLibraries for why).
+export function checkReviewDateEligibility(
+  organizationId: string,
+  siteId: string,
+  graphListId: string,
+  token: string,
+): Promise<ReviewDateEligibilityResponse> {
+  const queryString = buildQueryString({ graphListId });
+  return apiRequest(`/organizations/${organizationId}/sharepoint-sites/${siteId}/review-date-mapping/eligibility${queryString}`, token);
+}
+
+export function confirmReviewDateMapping(
+  organizationId: string,
+  siteId: string,
+  body: ConfirmReviewDateMappingRequest,
+  token: string,
+): Promise<ReviewDateMappingResponse> {
+  return apiRequest(`/organizations/${organizationId}/sharepoint-sites/${siteId}/review-date-mapping/confirm`, token, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
 }
 
 function buildQueryString(query: object): string {
@@ -203,6 +247,18 @@ export function getGovernanceIssue(organizationId: string, issueId: string, toke
   return apiRequest(`/organizations/${organizationId}/governance/issues/${issueId}`, token);
 }
 
+// Phase 1 work-queue summary strip — accepts the same query shape as
+// getGovernanceIssues so the counts and the list can be driven by the
+// identical filter state.
+export function getGovernanceIssueTypeCounts(
+  organizationId: string,
+  token: string,
+  query: GovernanceIssueListQuery = {},
+): Promise<GovernanceIssueTypeCountsResponse> {
+  const queryString = buildQueryString(query);
+  return apiRequest(`/organizations/${organizationId}/governance/issues/type-counts${queryString}`, token);
+}
+
 export function createGovernanceIssue(
   organizationId: string,
   token: string,
@@ -253,6 +309,18 @@ export function assignDocumentOwner(
 export function removeDocumentOwner(organizationId: string, documentId: string, ownerId: string, token: string): Promise<void> {
   return apiRequest(`/organizations/${organizationId}/documents/${documentId}/owners/${ownerId}`, token, {
     method: 'DELETE',
+  });
+}
+
+export function setDocumentReviewDate(
+  organizationId: string,
+  documentId: string,
+  token: string,
+  body: SetDocumentReviewDateRequest,
+): Promise<DocumentReviewResponse> {
+  return apiRequest(`/organizations/${organizationId}/documents/${documentId}/review`, token, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
   });
 }
 

@@ -60,6 +60,25 @@ describe('NotificationList', () => {
     expect(onOpen).toHaveBeenCalledWith('notification-7');
   });
 
+  it('reserves the same layout space for the unread dot on read and unread rows (fixes read/unread message text misalignment)', () => {
+    const { container: unreadContainer } = render(
+      <NotificationList notifications={[notification({ id: 'unread-1', read: false })]} onOpen={jest.fn()} />,
+    );
+    const { container: readContainer } = render(
+      <NotificationList notifications={[notification({ id: 'read-1', read: true })]} onOpen={jest.fn()} />,
+    );
+
+    const unreadDot = unreadContainer.querySelector('[aria-hidden="true"]');
+    const readDot = readContainer.querySelector('[aria-hidden="true"]');
+
+    // Both rows render the same dot element (same layout slot reserved) —
+    // only its visibility differs, never its presence in the DOM.
+    expect(unreadDot).not.toBeNull();
+    expect(readDot).not.toBeNull();
+    expect(unreadDot).not.toHaveClass('invisible');
+    expect(readDot).toHaveClass('invisible');
+  });
+
   it('renders multiple notifications, most recent first as provided by the caller (no re-sorting)', () => {
     render(
       <NotificationList

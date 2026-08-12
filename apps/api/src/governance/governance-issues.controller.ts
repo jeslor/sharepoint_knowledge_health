@@ -11,6 +11,7 @@ import type {
   GovernanceIssueListQuery,
   GovernanceIssueResponse,
   GovernanceIssueStatusValue,
+  GovernanceIssueTypeCountsResponse,
   GovernanceIssueTypeValue,
   GovernanceSummaryResponse,
   IssueSeverityFilter,
@@ -38,7 +39,7 @@ const ISSUE_TYPE_VALUES: GovernanceIssueTypeValue[] = [
   'Duplication',
   'Age',
 ];
-const SORT_BY_VALUES: Array<'createdAt' | 'updatedAt'> = ['createdAt', 'updatedAt'];
+const SORT_BY_VALUES: Array<'createdAt' | 'updatedAt' | 'severity'> = ['createdAt', 'updatedAt', 'severity'];
 const SORT_DIR_VALUES: SortDirection[] = ['asc', 'desc'];
 const ACTIVITY_TYPE_VALUES: GovernanceActivityTypeValue[] = [
   'IssueCreated',
@@ -67,6 +68,19 @@ export class GovernanceIssuesController {
     @Query() query: Record<string, string>,
   ): Promise<PaginatedResponse<GovernanceIssueResponse>> {
     return this.governanceIssuesService.listIssues(organizationId, this.parseListQuery(query));
+  }
+
+  // Phase 1 work-queue summary strip — accepts the exact same filters as
+  // GET issues (parseListQuery), so the counts always reflect the same
+  // effective scope as whatever list view is currently showing. Declared
+  // before GET issues/:issueId so NestJS's route matching doesn't treat
+  // "type-counts" as an :issueId value.
+  @Get('issues/type-counts')
+  async getIssueTypeCounts(
+    @Param('id') organizationId: string,
+    @Query() query: Record<string, string>,
+  ): Promise<GovernanceIssueTypeCountsResponse> {
+    return this.governanceIssuesService.getIssueTypeCounts(organizationId, this.parseListQuery(query));
   }
 
   @Get('issues/:issueId')
@@ -230,11 +244,14 @@ export class GovernanceIssuesController {
     if (query.issueType !== undefined && !ISSUE_TYPE_VALUES.includes(query.issueType as GovernanceIssueTypeValue)) {
       throw new BadRequestException(`issueType must be one of: ${ISSUE_TYPE_VALUES.join(', ')}`);
     }
-    if (query.sortBy !== undefined && !SORT_BY_VALUES.includes(query.sortBy as 'createdAt' | 'updatedAt')) {
+    if (query.sortBy !== undefined && !SORT_BY_VALUES.includes(query.sortBy as 'createdAt' | 'updatedAt' | 'severity')) {
       throw new BadRequestException(`sortBy must be one of: ${SORT_BY_VALUES.join(', ')}`);
     }
     if (query.sortDir !== undefined && !SORT_DIR_VALUES.includes(query.sortDir as SortDirection)) {
       throw new BadRequestException(`sortDir must be one of: ${SORT_DIR_VALUES.join(', ')}`);
+    }
+    if (query.excludeResolved !== undefined && query.excludeResolved !== 'true' && query.excludeResolved !== 'false') {
+      throw new BadRequestException('excludeResolved must be "true" or "false"');
     }
 
     return {
@@ -245,7 +262,8 @@ export class GovernanceIssuesController {
       assignedUserId: query.assignedUserId,
       issueType: query.issueType as GovernanceIssueTypeValue | undefined,
       documentId: query.documentId,
-      sortBy: query.sortBy as 'createdAt' | 'updatedAt' | undefined,
+      excludeResolved: query.excludeResolved !== undefined ? query.excludeResolved === 'true' : undefined,
+      sortBy: query.sortBy as 'createdAt' | 'updatedAt' | 'severity' | undefined,
       sortDir: query.sortDir as SortDirection | undefined,
     };
   }

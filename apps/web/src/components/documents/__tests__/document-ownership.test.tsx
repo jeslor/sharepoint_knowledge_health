@@ -64,6 +64,23 @@ describe('DocumentOwnership', () => {
     expect(screen.queryByRole('button', { name: /assign owner/i })).not.toBeInTheDocument();
   });
 
+  it('shows the explanatory permission message instead when canManage is false — closes the self-service dead end', () => {
+    render(<DocumentOwnership owners={[]} canManage={false} onAssign={jest.fn()} onRemove={jest.fn()} saving={false} />);
+    expect(
+      screen.getByText('Setting the owner requires Admin or Governance Manager permissions. Please contact your administrator.'),
+    ).toBeInTheDocument();
+  });
+
+  it('does not show the explanatory permission message when canManage is true', () => {
+    render(<DocumentOwnership owners={[]} canManage onAssign={jest.fn()} onRemove={jest.fn()} saving={false} />);
+    expect(screen.queryByText(/requires admin or governance manager permissions/i)).not.toBeInTheDocument();
+  });
+
+  it('keeps read-only ownership information visible even when canManage is false', () => {
+    render(<DocumentOwnership owners={[owner()]} canManage={false} onAssign={jest.fn()} onRemove={jest.fn()} saving={false} />);
+    expect(screen.getByText('Alice')).toBeInTheDocument();
+  });
+
   it('calls onAssign with displayName and email when the assignment form is submitted', () => {
     const onAssign = jest.fn();
     render(<DocumentOwnership owners={[]} canManage onAssign={onAssign} onRemove={jest.fn()} saving={false} />);

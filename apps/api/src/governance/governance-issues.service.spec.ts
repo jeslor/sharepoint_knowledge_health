@@ -11,7 +11,14 @@ describe('GovernanceIssuesService', () => {
   const governanceActivityService = { record: jest.fn() };
   const service = new GovernanceIssuesService(governanceActivityService as unknown as GovernanceActivityService);
 
-  const governanceIssues = { findMany: jest.fn(), findFirstById: jest.fn(), count: jest.fn(), create: jest.fn(), updateById: jest.fn() };
+  const governanceIssues = {
+    findMany: jest.fn(),
+    findFirstById: jest.fn(),
+    count: jest.fn(),
+    create: jest.fn(),
+    updateById: jest.fn(),
+    groupByIssueType: jest.fn(),
+  };
   const documents = { findFirstById: jest.fn(), findMany: jest.fn() };
   const healthIssues = { findMany: jest.fn() };
   const sharePointSites = { findMany: jest.fn() };
@@ -30,6 +37,7 @@ describe('GovernanceIssuesService', () => {
     } as never);
     governanceIssues.findMany.mockResolvedValue([]);
     governanceIssues.count.mockResolvedValue(0);
+    governanceIssues.groupByIssueType.mockResolvedValue([]);
     documents.findMany.mockResolvedValue([]);
     healthIssues.findMany.mockResolvedValue([]);
     sharePointSites.findMany.mockResolvedValue([]);
@@ -64,6 +72,77 @@ describe('GovernanceIssuesService', () => {
           },
         }),
       );
+    });
+
+    describe('excludeResolved (Phase 1 work-queue default)', () => {
+      it('adds status: { not: "Resolved" } to the where clause when excludeResolved is true and no explicit status is set', async () => {
+        await service.listIssues('org-1', { assignedUserId: 'user-1', excludeResolved: true });
+
+        expect(governanceIssues.findMany).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: { assignedUserId: 'user-1', status: { not: 'Resolved' } },
+          }),
+        );
+        expect(governanceIssues.count).toHaveBeenCalledWith({
+          where: { assignedUserId: 'user-1', status: { not: 'Resolved' } },
+        });
+      });
+
+      it('lets an explicit status win over excludeResolved — an explicit choice is never silently overridden', async () => {
+        await service.listIssues('org-1', { status: 'Resolved', excludeResolved: true });
+
+        expect(governanceIssues.findMany).toHaveBeenCalledWith(
+          expect.objectContaining({ where: { status: 'Resolved' } }),
+        );
+      });
+
+      it('has no effect on the where clause when excludeResolved is false or omitted', async () => {
+        await service.listIssues('org-1', { assignedUserId: 'user-1', excludeResolved: false });
+
+        expect(governanceIssues.findMany).toHaveBeenCalledWith(
+          expect.objectContaining({ where: { assignedUserId: 'user-1' } }),
+        );
+      });
+    });
+
+    describe('severity sorting (Phase 1 work-queue)', () => {
+      it('orders by severity descending (RequiresReview/urgent first) then createdAt ascending, at the database level', async () => {
+        await service.listIssues('org-1', { sortBy: 'severity' });
+
+        expect(governanceIssues.findMany).toHaveBeenCalledWith(
+          expect.objectContaining({ orderBy: [{ severity: 'desc' }, { createdAt: 'asc' }] }),
+        );
+      });
+
+      it('ignores an incoming sortDir when sortBy is severity — urgent-first is a fixed invariant, not toggled', async () => {
+        await service.listIssues('org-1', { sortBy: 'severity', sortDir: 'asc' });
+
+        expect(governanceIssues.findMany).toHaveBeenCalledWith(
+          expect.objectContaining({ orderBy: [{ severity: 'desc' }, { createdAt: 'asc' }] }),
+        );
+      });
+
+      it('preserves existing createdAt/updatedAt single-key sorting when sortBy is not severity', async () => {
+        await service.listIssues('org-1', { sortBy: 'updatedAt', sortDir: 'asc' });
+
+        expect(governanceIssues.findMany).toHaveBeenCalledWith(
+          expect.objectContaining({ orderBy: { updatedAt: 'asc' } }),
+        );
+      });
+
+      it('defaults to createdAt descending when sortBy is omitted, unchanged from existing behavior', async () => {
+        await service.listIssues('org-1', {});
+
+        expect(governanceIssues.findMany).toHaveBeenCalledWith(
+          expect.objectContaining({ orderBy: { createdAt: 'desc' } }),
+        );
+      });
+
+      it('preserves pagination (skip/take) alongside severity sorting', async () => {
+        await service.listIssues('org-1', { sortBy: 'severity', page: 3, pageSize: 10 });
+
+        expect(governanceIssues.findMany).toHaveBeenCalledWith(expect.objectContaining({ skip: 20, take: 10 }));
+      });
     });
 
     it('enriches each issue with documentName, siteName, assignedUserName, and the derived stillDetected flag', async () => {
@@ -120,6 +199,143 @@ describe('GovernanceIssuesService', () => {
       const result = await service.listIssues('org-1', {});
       expect(result.data[0]?.stillDetected).toBe(false);
     });
+
+    it('keeps the snapshotted message visible even after the underlying HealthIssue disappears (stillDetected: false)', async () => {
+      governanceIssues.findMany.mockResolvedValue([
+        {
+          id: 'issue-1',
+          documentId: 'doc-1',
+          issueType: 'Freshness',
+          severity: 'RequiresReview',
+          status: 'Open',
+          assignedUserId: null,
+          resolutionNotes: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          resolvedAt: null,
+          message: 'Document has not been modified in 480 days.',
+        },
+      ]);
+      // Document has since been rescanned and no longer reports Freshness.
+      documents.findMany.mockResolvedValue([{ id: 'doc-1', name: 'Handbook.docx', siteId: 'site-1', currentHealthScoreId: 'score-2' }]);
+      healthIssues.findMany.mockResolvedValue([]);
+
+      const result = await service.listIssues('org-1', {});
+
+      expect(result.data[0]?.stillDetected).toBe(false);
+      expect(result.data[0]?.message).toBe('Document has not been modified in 480 days.');
+    });
+
+    it('returns message: null for a pre-migration issue with no snapshotted message', async () => {
+      governanceIssues.findMany.mockResolvedValue([
+        {
+          id: 'issue-1',
+          documentId: 'doc-1',
+          issueType: 'Freshness',
+          severity: 'RequiresReview',
+          status: 'Open',
+          assignedUserId: null,
+          resolutionNotes: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          resolvedAt: null,
+          message: null,
+        },
+      ]);
+      documents.findMany.mockResolvedValue([{ id: 'doc-1', name: 'Handbook.docx', siteId: 'site-1', currentHealthScoreId: 'score-1' }]);
+
+      const result = await service.listIssues('org-1', {});
+
+      expect(result.data[0]?.message).toBeNull();
+    });
+
+    it('derives documentWebUrl live from the current Document.webUrl', async () => {
+      governanceIssues.findMany.mockResolvedValue([
+        {
+          id: 'issue-1',
+          documentId: 'doc-1',
+          issueType: 'Freshness',
+          severity: 'RequiresReview',
+          status: 'Open',
+          assignedUserId: null,
+          resolutionNotes: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          resolvedAt: null,
+          message: null,
+        },
+      ]);
+      documents.findMany.mockResolvedValue([
+        { id: 'doc-1', name: 'Handbook.docx', siteId: 'site-1', currentHealthScoreId: 'score-1', webUrl: 'https://contoso.sharepoint.com/sites/finance/Handbook.docx' },
+      ]);
+
+      const result = await service.listIssues('org-1', {});
+
+      expect(result.data[0]?.documentWebUrl).toBe('https://contoso.sharepoint.com/sites/finance/Handbook.docx');
+    });
+
+    it('returns documentWebUrl: null when the document has not been rescanned since this field was added', async () => {
+      governanceIssues.findMany.mockResolvedValue([
+        {
+          id: 'issue-1',
+          documentId: 'doc-1',
+          issueType: 'Freshness',
+          severity: 'RequiresReview',
+          status: 'Open',
+          assignedUserId: null,
+          resolutionNotes: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          resolvedAt: null,
+          message: null,
+        },
+      ]);
+      documents.findMany.mockResolvedValue([{ id: 'doc-1', name: 'Handbook.docx', siteId: 'site-1', currentHealthScoreId: 'score-1', webUrl: null }]);
+
+      const result = await service.listIssues('org-1', {});
+
+      expect(result.data[0]?.documentWebUrl).toBeNull();
+    });
+  });
+
+  describe('getIssueTypeCounts', () => {
+    it('returns counts grouped by issueType via a single SQL-level GROUP BY, not by fetching issues into memory', async () => {
+      governanceIssues.groupByIssueType.mockResolvedValue([
+        { issueType: 'Freshness', count: 12 },
+        { issueType: 'ReviewStatus', count: 8 },
+      ]);
+
+      const result = await service.getIssueTypeCounts('org-1', {});
+
+      expect(result).toEqual({ byType: { Freshness: 12, ReviewStatus: 8 } });
+      // The anti-pattern this must avoid: no unbounded findMany() fetch.
+      expect(governanceIssues.findMany).not.toHaveBeenCalled();
+    });
+
+    it('scopes the aggregation to the exact same effective filters as listIssues (assignedUserId + excludeResolved)', async () => {
+      await service.getIssueTypeCounts('org-1', { assignedUserId: 'user-1', excludeResolved: true });
+
+      expect(governanceIssues.groupByIssueType).toHaveBeenCalledWith({
+        assignedUserId: 'user-1',
+        status: { not: 'Resolved' },
+      });
+    });
+
+    it('respects an explicit issueType filter, naturally yielding a single-entry result', async () => {
+      governanceIssues.groupByIssueType.mockResolvedValue([{ issueType: 'Freshness', count: 5 }]);
+
+      await service.getIssueTypeCounts('org-1', { issueType: 'Freshness' });
+
+      expect(governanceIssues.groupByIssueType).toHaveBeenCalledWith({ issueType: 'Freshness' });
+    });
+
+    it('returns an empty byType record when nothing matches, rather than throwing', async () => {
+      governanceIssues.groupByIssueType.mockResolvedValue([]);
+
+      const result = await service.getIssueTypeCounts('org-1', { assignedUserId: 'user-nobody' });
+
+      expect(result).toEqual({ byType: {} });
+    });
   });
 
   describe('getIssue', () => {
@@ -169,7 +385,9 @@ describe('GovernanceIssuesService', () => {
     it('creates a GovernanceIssue with severity snapshotted from the matching HealthIssue, and records IssueCreated activity', async () => {
       documents.findFirstById.mockResolvedValue({ id: 'doc-1', name: 'Handbook.docx', siteId: 'site-1', currentHealthScoreId: 'score-1' });
       healthIssues.findMany.mockImplementation(async ({ where }: { where: { criterion?: string } }) =>
-        where.criterion === 'Freshness' ? [{ healthScoreId: 'score-1', criterion: 'Freshness', severity: 'RequiresReview' }] : [],
+        where.criterion === 'Freshness'
+          ? [{ healthScoreId: 'score-1', criterion: 'Freshness', severity: 'RequiresReview', message: 'Document has not been modified in 480 days.' }]
+          : [],
       );
       governanceIssues.create.mockResolvedValue({
         id: 'issue-1',
@@ -182,6 +400,7 @@ describe('GovernanceIssuesService', () => {
         createdAt: new Date(),
         updatedAt: new Date(),
         resolvedAt: null,
+        message: 'Document has not been modified in 480 days.',
       });
       documents.findMany.mockResolvedValue([{ id: 'doc-1', name: 'Handbook.docx', siteId: 'site-1', currentHealthScoreId: 'score-1' }]);
 
@@ -192,8 +411,13 @@ describe('GovernanceIssuesService', () => {
         issueType: 'Freshness',
         severity: 'RequiresReview',
         assignedUserId: null,
+        message: 'Document has not been modified in 480 days.',
       });
       expect(result.severity).toBe('RequiresReview');
+      // Message is snapshotted from the matching HealthIssue at creation —
+      // this is the diagnostic text the assignee sees, not just the raw
+      // issueType enum.
+      expect(result.message).toBe('Document has not been modified in 480 days.');
       expect(governanceActivityService.record).toHaveBeenCalledWith('org-1', {
         governanceIssueId: 'issue-1',
         documentId: 'doc-1',
@@ -208,7 +432,9 @@ describe('GovernanceIssuesService', () => {
     it('defaults assignedUserId to the document\'s resolvable owner and records a separate IssueAssigned activity', async () => {
       documents.findFirstById.mockResolvedValue({ id: 'doc-1', name: 'Handbook.docx', siteId: 'site-1', currentHealthScoreId: 'score-1' });
       healthIssues.findMany.mockImplementation(async ({ where }: { where: { criterion?: string } }) =>
-        where.criterion === 'Freshness' ? [{ healthScoreId: 'score-1', criterion: 'Freshness', severity: 'RequiresReview' }] : [],
+        where.criterion === 'Freshness'
+          ? [{ healthScoreId: 'score-1', criterion: 'Freshness', severity: 'RequiresReview', message: 'Document has not been modified in 480 days.' }]
+          : [],
       );
       documentOwners.findMany.mockResolvedValue([
         { id: 'owner-1', ownerType: 'Author', source: 'GraphMetadata', email: 'alice@example.com', assignedAt: null },
@@ -226,6 +452,7 @@ describe('GovernanceIssuesService', () => {
         createdAt: new Date(),
         updatedAt: new Date(),
         resolvedAt: null,
+        message: 'Document has not been modified in 480 days.',
       });
 
       await service.createIssue('org-1', 'actor-1', { documentId: 'doc-1', issueType: 'Freshness' });
@@ -235,6 +462,7 @@ describe('GovernanceIssuesService', () => {
         issueType: 'Freshness',
         severity: 'RequiresReview',
         assignedUserId: 'user-1',
+        message: 'Document has not been modified in 480 days.',
       });
       expect(governanceActivityService.record).toHaveBeenCalledWith('org-1', {
         governanceIssueId: 'issue-1',
@@ -245,6 +473,7 @@ describe('GovernanceIssuesService', () => {
         newValue: 'Alice',
         notifyUserId: 'user-1',
         notifyIssueType: 'Freshness',
+        notifyIssueSeverity: 'RequiresReview',
       });
     });
 
@@ -375,6 +604,7 @@ describe('GovernanceIssuesService', () => {
         // IssueReopened here; a dedicated test below covers the assigned case.
         notifyUserId: null,
         notifyIssueType: 'Freshness',
+        notifyIssueSeverity: 'RequiresReview',
       });
     });
 
@@ -439,6 +669,7 @@ describe('GovernanceIssuesService', () => {
         // The new assignee is the notification recipient (ADR-0021 §3.2).
         notifyUserId: 'user-1',
         notifyIssueType: 'Freshness',
+        notifyIssueSeverity: 'RequiresReview',
       });
     });
 
@@ -461,6 +692,7 @@ describe('GovernanceIssuesService', () => {
         newValue: 'John',
         notifyUserId: 'user-2',
         notifyIssueType: 'Freshness',
+        notifyIssueSeverity: 'RequiresReview',
       });
     });
 
@@ -485,6 +717,7 @@ describe('GovernanceIssuesService', () => {
         // governance-activity.service.spec.ts.
         notifyUserId: null,
         notifyIssueType: 'Freshness',
+        notifyIssueSeverity: 'RequiresReview',
       });
     });
 
@@ -647,54 +880,95 @@ describe('GovernanceIssuesService', () => {
     });
   });
 
-  describe('getSummary', () => {
+  describe('getSummary (scale-hardening: bounded COUNT/GROUP BY queries, not findMany + in-memory filtering)', () => {
     const fixedNow = new Date('2026-07-15T12:00:00.000Z');
 
     beforeEach(() => {
       jest.useFakeTimers().setSystemTime(fixedNow);
+      // Sane defaults so each test only overrides what it cares about —
+      // every getSummary() call now issues 9 parallel, independent queries.
+      governanceIssues.count.mockResolvedValue(0);
+      governanceIssues.groupByIssueType.mockResolvedValue([]);
+      governanceIssues.findMany.mockResolvedValue([]);
     });
 
     afterEach(() => {
       jest.useRealTimers();
     });
 
-    it('counts open/inProgress/resolved/critical/assigned and groups open+inProgress by issueType', async () => {
-      governanceIssues.findMany.mockResolvedValue([
-        { status: 'Open', severity: 'RequiresReview', assignedUserId: 'user-1', issueType: 'Freshness', createdAt: new Date('2026-06-01T00:00:00.000Z'), resolvedAt: null },
-        { status: 'Open', severity: 'NeedsAttention', assignedUserId: null, issueType: 'Ownership', createdAt: new Date('2026-06-01T00:00:00.000Z'), resolvedAt: null },
-        { status: 'InProgress', severity: 'RequiresReview', assignedUserId: 'user-2', issueType: 'Freshness', createdAt: new Date('2026-06-01T00:00:00.000Z'), resolvedAt: null },
-        { status: 'Resolved', severity: 'RequiresReview', assignedUserId: 'user-1', issueType: 'Freshness', createdAt: new Date('2026-06-01T00:00:00.000Z'), resolvedAt: new Date('2026-06-05T00:00:00.000Z') },
+    it('never fetches the full issue set — only bounded counts and a GROUP BY', async () => {
+      await service.getSummary('org-1');
+
+      // The historical anti-pattern this hardening removes: an
+      // unconditional findMany() with no where clause at all.
+      expect(governanceIssues.findMany).not.toHaveBeenCalledWith(undefined);
+      expect(governanceIssues.findMany).not.toHaveBeenCalledWith({});
+      // The one legitimate findMany is scoped to Resolved+dated issues only.
+      expect(governanceIssues.findMany).toHaveBeenCalledWith({
+        where: { status: 'Resolved', resolvedAt: { not: null } },
+      });
+      expect(governanceIssues.groupByIssueType).toHaveBeenCalledWith({ status: { not: 'Resolved' } });
+    });
+
+    it('counts open/inProgress/resolved via independently-scoped COUNT queries, organization isolation preserved by the repository layer', async () => {
+      governanceIssues.count.mockImplementation(async ({ where }: { where: Record<string, unknown> }) => {
+        if (where.status === 'Open') return 2;
+        if (where.status === 'InProgress') return 1;
+        if (where.status === 'Resolved' && !('resolvedAt' in where)) return 1;
+        return 0;
+      });
+
+      const result = await service.getSummary('org-1');
+
+      expect(governanceIssues.count).toHaveBeenCalledWith({ where: { status: 'Open' } });
+      expect(governanceIssues.count).toHaveBeenCalledWith({ where: { status: 'InProgress' } });
+      expect(governanceIssues.count).toHaveBeenCalledWith({ where: { status: 'Resolved' } });
+      // totalCount is derived from the three closed-enum status counts, not a fourth query.
+      expect(result.openCount).toBe(2);
+      expect(result.inProgressCount).toBe(1);
+      expect(result.resolvedCount).toBe(1);
+      expect(result.totalCount).toBe(4);
+      expect(result.completionRate).toBe(25);
+    });
+
+    it('counts criticalCount as non-Resolved + RequiresReview severity, excluding Resolved issues', async () => {
+      await service.getSummary('org-1');
+
+      expect(governanceIssues.count).toHaveBeenCalledWith({
+        where: { status: { not: 'Resolved' }, severity: 'RequiresReview' },
+      });
+    });
+
+    it('counts assignedCount as non-Resolved + assigned, excluding Resolved issues', async () => {
+      await service.getSummary('org-1');
+
+      expect(governanceIssues.count).toHaveBeenCalledWith({
+        where: { status: { not: 'Resolved' }, assignedUserId: { not: null } },
+      });
+    });
+
+    it('derives byType from groupByIssueType, scoped to non-Resolved issues, matching the existing getIssueTypeCounts() shape exactly', async () => {
+      governanceIssues.groupByIssueType.mockResolvedValue([
+        { issueType: 'Freshness', count: 2 },
+        { issueType: 'Ownership', count: 1 },
       ]);
 
       const result = await service.getSummary('org-1');
 
-      expect(result).toEqual(
-        expect.objectContaining({
-          openCount: 2,
-          inProgressCount: 1,
-          resolvedCount: 1,
-          criticalCount: 2, // Open+RequiresReview, InProgress+RequiresReview — Resolved excluded
-          assignedCount: 2, // Open+assigned, InProgress+assigned — Resolved excluded
-          byType: { Freshness: 2, Ownership: 1 }, // Resolved excluded from byType
-          totalCount: 4,
-          completionRate: 25,
-        }),
-      );
+      expect(result.byType).toEqual({ Freshness: 2, Ownership: 1 });
     });
 
     it('returns totalCount 0 and completionRate 0 when the organization has no governance issues', async () => {
-      governanceIssues.findMany.mockResolvedValue([]);
       const result = await service.getSummary('org-1');
       expect(result.totalCount).toBe(0);
       expect(result.completionRate).toBe(0);
       expect(result.averageResolutionTimeHours).toBeNull();
     });
 
-    it('computes averageResolutionTimeHours across currently Resolved issues only', async () => {
+    it('computes averageResolutionTimeHours from the Resolved+dated subset returned by the narrow findMany', async () => {
       governanceIssues.findMany.mockResolvedValue([
-        { status: 'Resolved', severity: 'NeedsAttention', assignedUserId: null, issueType: 'Freshness', createdAt: new Date('2026-06-01T00:00:00.000Z'), resolvedAt: new Date('2026-06-02T00:00:00.000Z') }, // 24h
-        { status: 'Resolved', severity: 'NeedsAttention', assignedUserId: null, issueType: 'Freshness', createdAt: new Date('2026-06-01T00:00:00.000Z'), resolvedAt: new Date('2026-06-04T00:00:00.000Z') }, // 72h
-        { status: 'Open', severity: 'NeedsAttention', assignedUserId: null, issueType: 'Freshness', createdAt: new Date('2026-06-01T00:00:00.000Z'), resolvedAt: null }, // excluded — not Resolved
+        { status: 'Resolved', createdAt: new Date('2026-06-01T00:00:00.000Z'), resolvedAt: new Date('2026-06-02T00:00:00.000Z') }, // 24h
+        { status: 'Resolved', createdAt: new Date('2026-06-01T00:00:00.000Z'), resolvedAt: new Date('2026-06-04T00:00:00.000Z') }, // 72h
       ]);
 
       const result = await service.getSummary('org-1');
@@ -702,16 +976,20 @@ describe('GovernanceIssuesService', () => {
       expect(result.averageResolutionTimeHours).toBe(48);
     });
 
-    it('counts createdThisMonth and resolvedThisMonth against the current UTC calendar month only', async () => {
-      governanceIssues.findMany.mockResolvedValue([
-        { status: 'Open', severity: 'NeedsAttention', assignedUserId: null, issueType: 'Freshness', createdAt: new Date('2026-07-10T00:00:00.000Z'), resolvedAt: null }, // this month
-        { status: 'Open', severity: 'NeedsAttention', assignedUserId: null, issueType: 'Freshness', createdAt: new Date('2026-06-20T00:00:00.000Z'), resolvedAt: null }, // last month — excluded
-        { status: 'Resolved', severity: 'NeedsAttention', assignedUserId: null, issueType: 'Freshness', createdAt: new Date('2026-06-25T00:00:00.000Z'), resolvedAt: new Date('2026-07-05T00:00:00.000Z') }, // resolved this month
-        { status: 'Resolved', severity: 'NeedsAttention', assignedUserId: null, issueType: 'Freshness', createdAt: new Date('2026-06-01T00:00:00.000Z'), resolvedAt: new Date('2026-06-10T00:00:00.000Z') }, // resolved last month — excluded
-      ]);
+    it('counts createdThisMonth and resolvedThisMonth against the current UTC calendar month via scoped COUNT queries', async () => {
+      governanceIssues.count.mockImplementation(async ({ where }: { where: Record<string, unknown> }) => {
+        if ('createdAt' in where && !('status' in where)) return 1; // createdThisMonth
+        if (where.status === 'Resolved' && 'resolvedAt' in where) return 1; // resolvedThisMonth
+        return 0;
+      });
 
       const result = await service.getSummary('org-1');
 
+      const startOfMonth = new Date(Date.UTC(2026, 6, 1));
+      expect(governanceIssues.count).toHaveBeenCalledWith({ where: { createdAt: { gte: startOfMonth } } });
+      expect(governanceIssues.count).toHaveBeenCalledWith({
+        where: { status: 'Resolved', resolvedAt: { gte: startOfMonth } },
+      });
       expect(result.createdThisMonth).toBe(1);
       expect(result.resolvedThisMonth).toBe(1);
     });

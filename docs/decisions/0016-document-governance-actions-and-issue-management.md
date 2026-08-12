@@ -1038,3 +1038,120 @@ reaffirmation of the 3-state resolution workflow with no `VERIFIED` state;
 a simplified, purely role-based permission model with no document-level
 exception; and the four-phase sequencing above). Phase 8A implementation
 begins next.
+
+## 17. Amendment (2026-08-10 — SharePoint Review-Date Metadata Integration, Phase 1)
+
+Phase 1 of the SharePoint metadata integration (a separate, read-only
+architecture investigation, then a scoped implementation) requires the
+Graph List Items API `packages/graph-client` didn't expose in 2026-07-13 —
+that gap is now closed (`listColumns`, `listContentTypes`,
+`listItemFields`, `listItemDriveItemIds`), and §4.3's explicitly-deferred
+open question needs an answer.
+
+### 17.1 Review-date source precedence (resolves §4.3's open question)
+
+**Before**: *"Whether a Graph-sourced value should ever overwrite a Manual
+one is an open question explicitly left to that future ADR — not decided
+here."*
+
+**After**: resolved. Final decision, stated exactly:
+
+> Once an administrator explicitly confirms a SharePoint review-date
+> mapping for a library, that mapping becomes authoritative and may
+> supersede previously manually assigned review dates. Before explicit
+> confirmation, SharePoint metadata cannot modify the existing review-date
+> value.
+
+Expanded: an administrator explicitly activating a SharePoint review-date
+mapping for a document library is a deliberate, per-library opt-in action
+— never automatic. Once confirmed, the mapped SharePoint column becomes
+authoritative for `nextReviewDueAt` on documents in that library, and
+**may replace an existing Manual value**. Precisely:
+
+- **No confirmed mapping** → Manual remains authoritative. Graph metadata
+  has no path to alter a Manual value in this state, under any
+  circumstance — including when a candidate column has been detected but
+  not confirmed, and when multiple candidate columns exist (mapping stays
+  inert; an admin decision is required, never a guess).
+- **Confirmed mapping + a valid Graph value on a scan** → `GraphMetadata`
+  becomes authoritative; `nextReviewDueAt`/`reviewDateSource` are updated,
+  superseding whatever was there before, Manual included.
+- **Confirmed mapping + a temporary Graph failure** (timeout, throttling,
+  permission blip) → the last known value is preserved unchanged; a
+  sync failure is never treated as "no value."
+- **Mapping becomes stale** (the mapped column is deleted or no longer
+  resolves) → the last known value is preserved unchanged; the mapping is
+  flagged `Stale`, not silently discarded, and no document is altered
+  while in this state.
+
+The single governing rule: *SharePoint value (only via a confirmed,
+per-library mapping) → Manual value → no value.* A confirmed mapping is
+required for SharePoint to ever govern; absent one, this ADR's original
+Manual-only behavior is completely unchanged for every customer who
+hasn't opted in. Implemented in `apps/worker/src/sharepoint-metadata/
+review-date-sync.ts`; the precedence branch and its "no confirmed mapping
+never alters Manual" guarantee are covered directly by
+`review-date-sync.spec.ts`.
+
+No other part of this ADR changes — `Document.nextReviewDueAt` and
+`reviewDateSource: Manual | GraphMetadata` (§4.3's original schema) are
+reused exactly as designed, not replaced. Mapping identity/scope
+(per-library, keyed on `columnDefinition.id`) and the discovery/failure
+mechanics are documented in the Phase 1 implementation itself, not
+repeated here.
+
+### 17.2 Candidate discovery correction and extraction (Phase 1.1)
+
+Live validation against a real tenant found §17.1's candidate filter —
+"carries the `dateTime` facet" — can never converge on exactly one
+candidate in production: Graph's system columns `Created`/`Modified` are
+always present on every SharePoint document library and always
+`dateTime`-faceted, so the confirm action's single-candidate success path
+was unreachable. Two corrections:
+
+- **A second filter layer, not a redesign.** Beyond the `dateTime` facet,
+  a candidate is now also excluded if `columnDefinition.isDeletable ===
+  false` (a column the customer cannot delete via SharePoint's own UI is
+  platform infrastructure, not something they authored), with a small
+  fallback exclusion of the two internal names (`Created`, `Modified`)
+  confirmed live to need it regardless. This is a structural exclusion,
+  not a name-guessing heuristic — the same category of rule the `dateTime`
+  facet filter itself already is, not the kind of "which column means
+  review date" guess this ADR has always refused to make.
+- **Extracted to a new shared package, `@sph/review-date-discovery`.**
+  Previously duplicated between `apps/api` and `apps/worker` (mirroring
+  the `ScanAggregateSummary` precedent), which was reasonable for a 5-line
+  calculation but risked drift once a second filter layer and confidence
+  scoring were added. ADR-0009 prohibits `apps/worker` and `apps/api`
+  importing **each other** directly — it does not prohibit a third,
+  shared `packages/*` dependency, which both apps already depend on
+  routinely (`@sph/graph-client`, `@sph/database`, `@sph/types`). The new
+  package is modeled on `packages/scoring`: pure functions, no NestJS, no
+  BullMQ, no Prisma, enforced by the same `no-restricted-imports` boundary
+  rule scoring already uses.
+
+A companion, purely additive **confidence signal**
+(`scoreReviewDateCandidateConfidence`, also in the new package) ranks
+candidates by name/displayName ("review" → high, "expiry"/"renewal"/
+"due"/"deadline" → medium, otherwise low) for a future admin selection UI.
+It is never consulted by `resolveReviewDateCandidates` or the
+confirm/activation path, and is never persisted — a "high" confidence
+single candidate still requires the exact same explicit admin
+confirmation as any other, and a "high" confidence candidate among
+several eligible ones does not make activation any less ambiguous.
+
+A new read-only endpoint, `GET .../review-date-mapping/eligibility`,
+exposes the same 0/1/many discovery result as `confirmReviewDateMapping`
+without mutating anything — letting a caller inspect a library's state
+without attempting (and handling exceptions from) a confirm call. No
+`@Roles()` restriction, since nothing is written. No schema change.
+
+### 17.3 Production hardening — observability (Phase 1.2)
+
+No new architectural decision — an operational hardening pass adding
+structured success/failure logging and Graph-call correlation IDs to the
+sync and confirm paths, documented in full in
+`docs/features/review-date-sync-operations.md` rather than repeated here.
+Deliberately deferred (each requires its own separate design): delta
+queries, sync-state persistence, parallel drive processing, and caching
+for the eligibility endpoint.

@@ -2,10 +2,14 @@
 
 import { use, useState } from 'react';
 import Link from 'next/link';
+import { GOVERNANCE_ISSUE_TYPE_LABELS } from '@sph/types';
 import { SeverityBadge } from '@/components/documents/severity-badge';
 import { ActivityList } from '@/components/governance/activity-list';
 import { GovernanceIssueControls } from '@/components/governance/governance-issue-controls';
 import { GovernanceStatusBadge } from '@/components/governance/governance-status-badge';
+import { IssueDiagnosticMessage } from '@/components/governance/issue-diagnostic-message';
+import { IssueRemediation } from '@/components/governance/issue-remediation';
+import { VerificationGuidance } from '@/components/governance/verification-guidance';
 import { ErrorState, LoadingState } from '@/components/ui/query-state';
 import { Tabs } from '@/components/ui/tabs';
 import { useAssignableUsers } from '@/lib/api/hooks/use-assignable-users';
@@ -67,7 +71,7 @@ export default function GovernanceIssueDetailPage({ params }: GovernanceIssueDet
             <dt className="font-medium text-slate-500">Site</dt>
             <dd>{issue.siteName}</dd>
             <dt className="font-medium text-slate-500">Issue type</dt>
-            <dd>{issue.issueType}</dd>
+            <dd>{GOVERNANCE_ISSUE_TYPE_LABELS[issue.issueType] ?? issue.issueType}</dd>
             <dt className="font-medium text-slate-500">Severity</dt>
             <dd>
               <SeverityBadge severity={issue.severity} />
@@ -85,6 +89,12 @@ export default function GovernanceIssueDetailPage({ params }: GovernanceIssueDet
               </>
             )}
           </dl>
+
+          <IssueDiagnosticMessage message={issue.message} />
+
+          <IssueRemediation documentId={issue.documentId} issueType={issue.issueType} documentWebUrl={issue.documentWebUrl} />
+          <VerificationGuidance />
+
           {issue.resolutionNotes && (
             <p className="mt-2 rounded-lg bg-slate-50 p-3 text-sm text-slate-700">{issue.resolutionNotes}</p>
           )}

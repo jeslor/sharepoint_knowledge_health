@@ -58,7 +58,7 @@ export function DocumentOwnership({ owners, canManage, onAssign, onRemove, savin
         </ul>
       )}
 
-      {canManage && (
+      {canManage ? (
         <CommandBar>
           <Field label="Name">
             <Input type="text" value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
@@ -70,6 +70,15 @@ export function DocumentOwnership({ owners, canManage, onAssign, onRemove, savin
             {saving ? 'Saving…' : 'Assign owner'}
           </Button>
         </CommandBar>
+      ) : (
+        // Closes the self-service dead end: a Member arriving here via an
+        // Ownership issue's remediation guidance previously found the
+        // control simply absent, with no explanation. Read-only
+        // information above stays visible either way — this doesn't gate
+        // anything, it only explains the existing, unchanged boundary.
+        <p className="text-sm text-slate-500">
+          Setting the owner requires Admin or Governance Manager permissions. Please contact your administrator.
+        </p>
       )}
     </div>
   );

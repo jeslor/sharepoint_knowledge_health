@@ -19,6 +19,22 @@ const DURATION_BUCKETS = ['<1 day', '1-3 days', '3-7 days', '7-30 days', '30+ da
  *   issueAging come from GovernanceIssue's current-state fields — a
  *   point-in-time snapshot, which is exactly what those four views are
  *   asking for ("what does my backlog look like right now").
+ *
+ * Scale-hardening pass: issuesByType, statusDistribution, and
+ * recentActivityByType are now real SQL GROUP BY queries (bounded to a
+ * handful of rows regardless of table size) instead of fetching every
+ * matching row into Node to bucket in memory. resolutionTimeDistribution
+ * and issueAging remain in-memory: both require bucketing a *computed*
+ * duration (resolvedAt - createdAt, or now - createdAt) into 5 fixed
+ * histogram buckets, which Prisma's typed groupBy cannot express as a
+ * group key without raw SQL — deliberately not introduced here (this
+ * codebase uses $queryRaw in exactly one place today, a liveness probe;
+ * a duration-histogram aggregate is a materially different, riskier use
+ * of raw SQL than this conservative pass is scoped for). Both remaining
+ * in-memory fetches are still narrowly filtered, not full-table: the
+ * resolution-time fetch is scoped to Resolved+dated rows within the
+ * cohort window (a subset, not the full cohort), and issueAging was
+ * already scoped to non-Resolved issues only, unchanged.
  */
 @Injectable()
 export class GovernanceAnalyticsService {
@@ -34,41 +50,49 @@ export class GovernanceAnalyticsService {
       ...(query.issueType !== undefined ? { issueType: query.issueType } : {}),
       ...(query.assignedUserId !== undefined ? { assignedUserId: query.assignedUserId } : {}),
     };
+    const cohortWhere = { ...filterWhere, createdAt: { gte: since, lte: until } };
 
-    // The "cohort": issues opened within [since, until], matching the
-    // other filters — drives the three distribution views below. Not the
-    // same query as issueAging (see that comment).
-    const cohortIssues = await context.governanceIssues.findMany({
-      where: { ...filterWhere, createdAt: { gte: since, lte: until } },
-    });
+    const [issuesByTypeCounts, statusDistributionCounts, resolvedCohortIssues, outstandingIssues, recentActivityCounts, trendActivities] =
+      await Promise.all([
+        context.governanceIssues.groupByIssueType(cohortWhere),
+        context.governanceIssues.groupByStatus(cohortWhere),
+        // Narrower than the old full-cohort fetch — only the Resolved,
+        // dated subset this one metric actually needs.
+        context.governanceIssues.findMany({ where: { ...cohortWhere, status: 'Resolved', resolvedAt: { not: null } } }),
+        // Aging deliberately ignores the since/until window — its entire
+        // purpose is surfacing old outstanding work, which a recent-date
+        // filter would otherwise hide. Still respects the other filters.
+        // Unchanged from before this pass: already scoped to non-Resolved
+        // issues only, not the full table.
+        context.governanceIssues.findMany({ where: { ...filterWhere, status: { not: 'Resolved' } } }),
+        // GovernanceActivity has no status/severity/issueType/assignedUserId
+        // of its own to filter by (it records who did what, not the issue's
+        // current attributes) — respects only the date window, not the
+        // GovernanceIssue-shaped filters. Documented limitation, not an
+        // oversight.
+        context.governanceActivity.groupByActivityType({ createdAt: { gte: since, lte: until } }),
+        // Narrowed to exactly the two activity types issueTrends actually
+        // reads — bucketTrendsByDay used to discard every other type after
+        // fetching it; now it's never fetched at all.
+        context.governanceActivity.findMany({
+          where: { createdAt: { gte: since, lte: until }, activityType: { in: ['IssueCreated', 'IssueResolved'] } },
+        }),
+      ]);
 
-    const issuesByType = this.bucketCounts(cohortIssues, (issue) => issue.issueType);
-    const statusDistribution = this.bucketCounts(cohortIssues, (issue) => issue.status);
+    const issuesByType: AnalyticsBucket[] = issuesByTypeCounts.map(({ issueType, count }) => ({ label: issueType, count }));
+    const statusDistribution: AnalyticsBucket[] = statusDistributionCounts.map(({ status, count }) => ({ label: status, count }));
     const resolutionTimeDistribution = this.bucketByDuration(
-      cohortIssues
-        .filter((issue) => issue.status === 'Resolved' && issue.resolvedAt !== null)
-        .map((issue) => issue.resolvedAt!.getTime() - issue.createdAt.getTime()),
+      resolvedCohortIssues.map((issue) => issue.resolvedAt!.getTime() - issue.createdAt.getTime()),
     );
 
-    // Aging deliberately ignores the since/until window — its entire
-    // purpose is surfacing old outstanding work, which a recent-date
-    // filter would otherwise hide. Still respects the other filters.
-    const outstandingIssues = await context.governanceIssues.findMany({
-      where: { ...filterWhere, status: { not: 'Resolved' } },
-    });
     const now = Date.now();
     const issueAging = this.bucketByDuration(outstandingIssues.map((issue) => now - issue.createdAt.getTime()));
 
-    // GovernanceActivity has no status/severity/issueType/assignedUserId
-    // of its own to filter by (it records who did what, not the issue's
-    // current attributes) — these two views respect only the date window,
-    // not the GovernanceIssue-shaped filters. Documented limitation, not
-    // an oversight.
-    const activities = await context.governanceActivity.findMany({
-      where: { createdAt: { gte: since, lte: until } },
-    });
-    const issueTrends = this.bucketTrendsByDay(activities, since, until);
-    const recentActivityByType = this.bucketCounts(activities, (activity) => activity.activityType);
+    const recentActivityByType: AnalyticsBucket[] = recentActivityCounts.map(({ activityType, count }) => ({
+      label: activityType,
+      count,
+    }));
+    const issueTrends = this.bucketTrendsByDay(trendActivities, since, until);
 
     return {
       since: since.toISOString(),
@@ -80,15 +104,6 @@ export class GovernanceAnalyticsService {
       issueAging,
       recentActivityByType,
     };
-  }
-
-  private bucketCounts<T>(items: T[], keyFn: (item: T) => string): AnalyticsBucket[] {
-    const counts = new Map<string, number>();
-    for (const item of items) {
-      const key = keyFn(item);
-      counts.set(key, (counts.get(key) ?? 0) + 1);
-    }
-    return [...counts.entries()].map(([label, count]) => ({ label, count }));
   }
 
   private bucketByDuration(durationsMs: number[]): AnalyticsBucket[] {

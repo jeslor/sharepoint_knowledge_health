@@ -56,6 +56,15 @@ export interface DocumentDetailResponse {
   band: string | null;
   calculatedAt: string | null;
   issues: DocumentHealthIssueResponse[];
+  nextReviewDueAt: string | null;
+  reviewDateSource: string | null;
+  // Phase 2: the confirmed SharePoint column's display name, when
+  // reviewDateSource is GraphMetadata and one can be resolved — null for
+  // a Manual date, or when no mapping can be resolved for this document's
+  // library. Lets the UI show "Source: SharePoint · Review Date" instead
+  // of just "SharePoint".
+  reviewDateColumnDisplayName: string | null;
+  webUrl: string | null;
 }
 
 export interface PaginationMeta {

@@ -10,6 +10,29 @@ export type GovernanceIssueStatusValue = 'Open' | 'InProgress' | 'Resolved';
 // than imported, same rationale as IssueSeverityFilter in documents.ts.
 export type GovernanceIssueTypeValue = 'Freshness' | 'Ownership' | 'ReviewStatus' | 'Metadata' | 'Duplication' | 'Age';
 
+// Shared display labels — the single source of truth for "human-readable
+// issue type," consumed by both the backend (notification message text)
+// and the frontend (work-queue summary strip), so the two never drift.
+// Only ReviewStatus needs a space inserted; the rest are already
+// readable words as-is.
+export const GOVERNANCE_ISSUE_TYPE_LABELS: Record<GovernanceIssueTypeValue, string> = {
+  Freshness: 'Freshness',
+  Ownership: 'Ownership',
+  ReviewStatus: 'Review Status',
+  Metadata: 'Metadata',
+  Duplication: 'Duplication',
+  Age: 'Age',
+};
+
+// Matches the terminology already established and shipped in
+// apps/web/src/components/documents/severity-badge.tsx — deliberately the
+// same two labels, not the raw enum names, so a notification and the
+// severity badge on the issue it links to never say different things.
+export const GOVERNANCE_ISSUE_SEVERITY_LABELS: Record<IssueSeverityFilter, string> = {
+  RequiresReview: 'Critical',
+  NeedsAttention: 'Warning',
+};
+
 export interface GovernanceIssueResponse {
   id: string;
   documentId: string;
@@ -27,6 +50,14 @@ export interface GovernanceIssueResponse {
   // ADR-0016 §4.1/§5: derived at read time from the document's current
   // HealthIssues — never stored on GovernanceIssue itself.
   stillDetected: boolean;
+  // Snapshot of the matching HealthIssue.message at creation time —
+  // historical diagnostic evidence, not re-derived on read. null for
+  // issues created before this field existed.
+  message: string | null;
+  // Derived live from the document's CURRENT Document.webUrl (unlike
+  // message, this isn't historical — a file's location isn't evidence of
+  // what was wrong). null until the document's next scan populates it.
+  documentWebUrl: string | null;
 }
 
 export interface GovernanceIssueListQuery {
@@ -37,8 +68,27 @@ export interface GovernanceIssueListQuery {
   assignedUserId?: string;
   issueType?: GovernanceIssueTypeValue;
   documentId?: string;
-  sortBy?: 'createdAt' | 'updatedAt';
+  // Phase 1 work-queue: when true and `status` is NOT also set, excludes
+  // Resolved issues (status: { not: 'Resolved' }) — mirrors the exact
+  // filter shape GovernanceAnalyticsService's issueAging view already
+  // uses. An explicit `status` always wins over this — it never silently
+  // overrides an explicit choice.
+  excludeResolved?: boolean;
+  // 'severity' sorts urgent-first (RequiresReview before NeedsAttention),
+  // with createdAt ascending as a fixed, deterministic secondary order —
+  // not toggled by sortDir, which has no effect when sortBy is 'severity'.
+  sortBy?: 'createdAt' | 'updatedAt' | 'severity';
   sortDir?: SortDirection;
+}
+
+// Phase 1 work-queue summary strip: counts of non-Resolved-by-default
+// issues grouped by issueType, scoped to the SAME filters as the list
+// query it's paired with. Deliberately reuses GovernanceSummaryResponse's
+// established `byType: Record<string, number>` shape (and the IssuesByType
+// component that already renders it) rather than introducing a new
+// response shape or component for what's structurally the same data.
+export interface GovernanceIssueTypeCountsResponse {
+  byType: Record<string, number>;
 }
 
 export interface CreateGovernanceIssueRequest {
