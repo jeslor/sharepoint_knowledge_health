@@ -140,6 +140,16 @@ enum DocumentReviewDateSource {
   GraphMetadata
 }
 
+// Active: the mapped column currently resolves in Graph and governs
+// nextReviewDueAt on sync. Stale: the column no longer resolves (deleted,
+// or the list itself is inaccessible) — the worker stops applying
+// GraphMetadata values from this mapping until it recovers, but never
+// clears a document's existing value when this happens.
+enum SharePointReviewDateMappingStatus {
+  Active
+  Stale
+}
+
 // Phase 8C: one row per recorded governance action. PascalCase to match
 // this schema's existing enum convention (every other enum here already
 // does this — not a departure, just consistency with e.g.
@@ -191,20 +201,21 @@ model Organization {
   createdAt DateTime           @default(now())
   updatedAt DateTime           @updatedAt
 
-  users              User[]
-  microsoftTenants   MicrosoftTenant[]
-  sharePointSites    SharePointSite[]
-  documents          Document[]
-  documentOwners     DocumentOwner[]
-  scanJobs           ScanJob[]
-  scanSchedule       ScanSchedule?
-  healthScores       HealthScore[]
-  healthIssues       HealthIssue[]
-  healthSnapshots    HealthSnapshot[]
-  governanceIssues   GovernanceIssue[]
-  governanceActivity GovernanceActivity[]
-  auditLogs          AuditLog[]
-  notifications      Notification[]
+  users                        User[]
+  microsoftTenants             MicrosoftTenant[]
+  sharePointSites              SharePointSite[]
+  documents                    Document[]
+  documentOwners               DocumentOwner[]
+  scanJobs                     ScanJob[]
+  scanSchedule                 ScanSchedule?
+  healthScores                 HealthScore[]
+  healthIssues                 HealthIssue[]
+  healthSnapshots              HealthSnapshot[]
+  governanceIssues             GovernanceIssue[]
+  governanceActivity           GovernanceActivity[]
+  auditLogs                    AuditLog[]
+  notifications                Notification[]
+  sharePointReviewDateMappings SharePointReviewDateMapping[]
 
   @@index([status])
 }
@@ -225,14 +236,15 @@ model User {
   organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   microsoftTenant MicrosoftTenant @relation("UserHomeMicrosoftTenant", fields: [microsoftTenantId], references: [id], onDelete: Restrict)
 
-  consentedMicrosoftTenants MicrosoftTenant[]    @relation("MicrosoftTenantConsentedBy")
-  triggeredScanJobs         ScanJob[]            @relation("ScanJobTriggeredBy")
-  approvedSharePointSites   SharePointSite[]     @relation("SharePointSiteApprovedBy")
-  assignedGovernanceIssues  GovernanceIssue[]    @relation("GovernanceIssueAssignedTo")
-  assignedDocumentOwners    DocumentOwner[]      @relation("DocumentOwnerAssignedBy")
-  governanceActivityAsActor GovernanceActivity[] @relation("GovernanceActivityActor")
-  auditLogEntries           AuditLog[]
-  notifications             Notification[]
+  consentedMicrosoftTenants   MicrosoftTenant[]             @relation("MicrosoftTenantConsentedBy")
+  triggeredScanJobs           ScanJob[]                     @relation("ScanJobTriggeredBy")
+  approvedSharePointSites     SharePointSite[]              @relation("SharePointSiteApprovedBy")
+  assignedGovernanceIssues    GovernanceIssue[]             @relation("GovernanceIssueAssignedTo")
+  assignedDocumentOwners      DocumentOwner[]               @relation("DocumentOwnerAssignedBy")
+  governanceActivityAsActor   GovernanceActivity[]          @relation("GovernanceActivityActor")
+  auditLogEntries             AuditLog[]
+  notifications               Notification[]
+  confirmedReviewDateMappings SharePointReviewDateMapping[] @relation("SharePointReviewDateMappingConfirmedBy")
 
   // The Entra oid claim (entraObjectId) is only unique WITHIN the Azure AD
   // tenant that issued it (ADR-0010) — Microsoft's own multi-tenant app
@@ -298,7 +310,8 @@ model SharePointSite {
   microsoftTenant MicrosoftTenant @relation(fields: [microsoftTenantId], references: [id], onDelete: Cascade)
   approvedByUser  User?           @relation("SharePointSiteApprovedBy", fields: [approvedByUserId], references: [id], onDelete: SetNull)
 
-  documents Document[]
+  documents          Document[]
+  reviewDateMappings SharePointReviewDateMapping[]
 
   @@unique([microsoftTenantId, graphSiteId])
   @@index([organizationId])
@@ -314,6 +327,12 @@ model Document {
   name                 String
   path                 String
   fileType             String
+  // Graph driveItem.webUrl — the user-facing "open in browser" link for
+  // this file. Nullable: only populated going forward by the worker's
+  // normal ingestion upsert (no backfill), same rollout shape as
+  // nextReviewDueAt below. No new Graph call/permission — already part of
+  // the default driveItem representation apps/worker already fetches.
+  webUrl               String?
   sizeBytes            BigInt
   sourceCreatedAt      DateTime
   sourceModifiedAt     DateTime
@@ -327,6 +346,14 @@ model Document {
   // the worker until the separate ADR-0002 amendment is accepted).
   nextReviewDueAt  DateTime?
   reviewDateSource DocumentReviewDateSource @default(Manual)
+
+  // SharePoint metadata integration, Phase 1a: the Graph list id backing
+  // this document's drive (drive.list, resolved via the same listDrives
+  // request via $expand — no extra Graph call). Nullable, forward-only
+  // population — same rollout shape as webUrl/nextReviewDueAt above.
+  // Column definitions and list items are scoped per-list in Graph, so
+  // this is the identifier SharePointReviewDateMapping below is keyed on.
+  graphListId String?
 
   organization       Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   site               SharePointSite @relation(fields: [siteId], references: [id], onDelete: Cascade)
@@ -342,6 +369,52 @@ model Document {
   @@index([organizationId, status])
   @@index([siteId, status])
   @@index([organizationId, nextReviewDueAt])
+}
+
+/// SharePoint metadata integration, Phase 1b: one confirmed, active
+/// review-date column mapping per SharePoint document library. Deliberately
+/// minimal — no history/audit log, no per-org/site suggestion templates
+/// (those are explicitly out of scope for Phase 1). columnDefinitionId is
+/// the stable Graph identifier a mapping is keyed on (never name/
+/// displayName, which can change on a rename) — the worker re-resolves the
+/// column's current internal name from this id on every sync, which is
+/// what makes a rename transparent (no schema/data change needed) while a
+/// deletion is detected (the id no longer resolves) and flips status to
+/// Stale rather than silently clearing any document's review date.
+/// Library-scoped (siteId + graphListId), not org/site-wide: column
+/// definitions themselves are scoped per-list in Graph, so a coarser scope
+/// would assume a consistency Graph doesn't guarantee.
+model SharePointReviewDateMapping {
+  id             String @id @default(cuid())
+  organizationId String
+  siteId         String
+  graphListId    String
+
+  columnDefinitionId              String
+  // Snapshot at confirmation time — display-only (e.g. future admin UX),
+  // never used to re-resolve the column; the worker always re-reads the
+  // live displayName from Graph for that purpose.
+  columnDisplayNameAtConfirmation String
+
+  status          SharePointReviewDateMappingStatus @default(Active)
+  staleDetectedAt DateTime?
+
+  confirmedByUserId String
+  confirmedAt       DateTime @default(now())
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  organization    Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  site            SharePointSite @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  // Restrict, matching GovernanceActivity.actorUserId's precedent — who
+  // confirmed a mapping is provenance, never silently lost to a user
+  // deletion.
+  confirmedByUser User           @relation("SharePointReviewDateMappingConfirmedBy", fields: [confirmedByUserId], references: [id], onDelete: Restrict)
+
+  // One active mapping per library — re-confirming replaces this row's
+  // columnDefinitionId/status rather than creating a second one.
+  @@unique([siteId, graphListId])
+  @@index([organizationId])
 }
 
 /// Ownership signal(s) for a document (author / assigned owner / unknown).
@@ -519,6 +592,14 @@ model GovernanceIssue {
   documentId      String
   issueType       HealthIssueCriterion
   severity        HealthIssueSeverity
+  // Snapshot of the matching HealthIssue.message at creation time — the
+  // same "captured once, never auto-updated" treatment already given to
+  // `severity` above. Deliberately NOT re-derived from the current
+  // HealthIssue on read: it's historical evidence of what was detected,
+  // and must stay visible even after remediation makes the underlying
+  // HealthIssue disappear. Nullable: issues created before this column
+  // existed have no message and are not backfilled.
+  message         String?
   status          GovernanceIssueStatus @default(Open)
   assignedUserId  String?
   resolutionNotes String?
@@ -647,18 +728,18 @@ model AuditLog {
   // Nullable — reserved for a future system-driven event (e.g. an eventual
   // tenant-revocation health check, ADR-0012's amendment, not yet built).
   // Every action this phase actually writes has a real human actor.
-  actorUserId String?
-  action      String // e.g. "sharepoint_site.approved"
-  targetType  String // e.g. "SharePointSite", "User", "ScanSchedule"
-  targetId    String
-  metadata    Json?
-  createdAt   DateTime @default(now())
+  actorUserId    String?
+  action         String // e.g. "sharepoint_site.approved"
+  targetType     String // e.g. "SharePointSite", "User", "ScanSchedule"
+  targetId       String
+  metadata       Json?
+  createdAt      DateTime @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   // SetNull (not Restrict, unlike GovernanceActivity.actorUser): a deleted
   // User row must never cascade away audit history, and must never be
   // blocked by audit history either (ADR-0019 §1).
-  actorUser User? @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+  actorUser    User?        @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
 
   @@index([organizationId, createdAt])
 }

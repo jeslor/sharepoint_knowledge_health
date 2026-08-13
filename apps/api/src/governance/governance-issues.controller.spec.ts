@@ -10,6 +10,7 @@ const actor = { id: 'actor-1', role: 'Admin' } as User;
 describe('GovernanceIssuesController', () => {
   const service = {
     listIssues: jest.fn(),
+    getIssueTypeCounts: jest.fn(),
     getIssue: jest.fn(),
     createIssue: jest.fn(),
     updateIssue: jest.fn(),
@@ -45,6 +46,7 @@ describe('GovernanceIssuesController', () => {
         assignedUserId: undefined,
         issueType: undefined,
         documentId: undefined,
+        excludeResolved: undefined,
         sortBy: undefined,
         sortDir: undefined,
       });
@@ -61,6 +63,7 @@ describe('GovernanceIssuesController', () => {
         assignedUserId: 'user-1',
         issueType: 'Freshness',
         documentId: 'doc-1',
+        excludeResolved: 'true',
         sortBy: 'updatedAt',
         sortDir: 'asc',
       });
@@ -73,9 +76,26 @@ describe('GovernanceIssuesController', () => {
         assignedUserId: 'user-1',
         issueType: 'Freshness',
         documentId: 'doc-1',
+        excludeResolved: true,
         sortBy: 'updatedAt',
         sortDir: 'asc',
       });
+    });
+
+    it('parses sortBy=severity through (Phase 1 work-queue ordering)', async () => {
+      service.listIssues.mockResolvedValue({ data: [], pagination: { page: 1, pageSize: 25, total: 0, totalPages: 1 } });
+
+      await controller.listIssues('org-1', { sortBy: 'severity' });
+
+      expect(service.listIssues).toHaveBeenCalledWith('org-1', expect.objectContaining({ sortBy: 'severity' }));
+    });
+
+    it('parses excludeResolved=false through as a real boolean, not a truthy string', async () => {
+      service.listIssues.mockResolvedValue({ data: [], pagination: { page: 1, pageSize: 25, total: 0, totalPages: 1 } });
+
+      await controller.listIssues('org-1', { excludeResolved: 'false' });
+
+      expect(service.listIssues).toHaveBeenCalledWith('org-1', expect.objectContaining({ excludeResolved: false }));
     });
 
     it.each([
@@ -86,8 +106,46 @@ describe('GovernanceIssuesController', () => {
       ['issueType', { issueType: 'Bogus' }],
       ['sortBy', { sortBy: 'bogus' }],
       ['sortDir', { sortDir: 'bogus' }],
+      ['excludeResolved', { excludeResolved: 'yes' }],
     ])('rejects an invalid %s value with 400', async (_label, badQuery) => {
       await expect(controller.listIssues('org-1', badQuery)).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  describe('getIssueTypeCounts', () => {
+    it('delegates organizationId with the same default-parsed query shape as listIssues', async () => {
+      service.getIssueTypeCounts.mockResolvedValue({ byType: {} });
+
+      await controller.getIssueTypeCounts('org-1', {});
+
+      expect(service.getIssueTypeCounts).toHaveBeenCalledWith('org-1', {
+        page: undefined,
+        pageSize: undefined,
+        status: undefined,
+        severity: undefined,
+        assignedUserId: undefined,
+        issueType: undefined,
+        documentId: undefined,
+        excludeResolved: undefined,
+        sortBy: undefined,
+        sortDir: undefined,
+      });
+    });
+
+    it('parses assignedUserId/excludeResolved filters through, matching the list view they summarize', async () => {
+      service.getIssueTypeCounts.mockResolvedValue({ byType: { Freshness: 12 } });
+
+      const result = await controller.getIssueTypeCounts('org-1', { assignedUserId: 'user-1', excludeResolved: 'true' });
+
+      expect(service.getIssueTypeCounts).toHaveBeenCalledWith(
+        'org-1',
+        expect.objectContaining({ assignedUserId: 'user-1', excludeResolved: true }),
+      );
+      expect(result).toEqual({ byType: { Freshness: 12 } });
+    });
+
+    it('rejects an invalid filter value with 400, same validation as listIssues', async () => {
+      await expect(controller.getIssueTypeCounts('org-1', { severity: 'HIGH' })).rejects.toThrow(BadRequestException);
     });
   });
 

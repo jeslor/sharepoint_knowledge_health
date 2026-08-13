@@ -18,6 +18,8 @@ function issue(overrides: Partial<GovernanceIssueResponse> = {}): GovernanceIssu
     updatedAt: '2026-07-01T00:00:00.000Z',
     resolvedAt: null,
     stillDetected: true,
+    message: null,
+    documentWebUrl: null,
     ...overrides,
   };
 }

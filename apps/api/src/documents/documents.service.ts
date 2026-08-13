@@ -103,7 +103,27 @@ export class DocumentsService {
       band: score?.healthBand ?? null,
       calculatedAt: score?.calculatedAt.toISOString() ?? null,
       issues: issues.map((issue) => ({ type: issue.criterion, severity: issue.severity, message: issue.message })),
+      nextReviewDueAt: document.nextReviewDueAt?.toISOString() ?? null,
+      reviewDateSource: document.reviewDateSource,
+      reviewDateColumnDisplayName: await this.resolveReviewDateColumnDisplayName(context, document),
+      webUrl: document.webUrl,
     };
+  }
+
+  // Phase 2: lets the document detail page show which SharePoint column a
+  // GraphMetadata-sourced review date came from ("Source: SharePoint ·
+  // Review Date") rather than just the bare word "SharePoint". Reuses the
+  // existing findByLibrary lookup and the graphListId already persisted on
+  // Document since Phase 1a — no new repository method, no schema change.
+  // Returns null for a Manual date, a document never scanned since
+  // graphListId was introduced, or a library with no mapping at all.
+  private async resolveReviewDateColumnDisplayName(
+    context: ReturnType<typeof createTenantContext>,
+    document: { siteId: string; graphListId: string | null; reviewDateSource: string },
+  ): Promise<string | null> {
+    if (document.reviewDateSource !== 'GraphMetadata' || !document.graphListId) return null;
+    const mapping = await context.sharePointReviewDateMappings.findByLibrary(document.siteId, document.graphListId);
+    return mapping?.columnDisplayNameAtConfirmation ?? null;
   }
 
   // ADR-0015 §4: HealthScore already accumulates one row per document per

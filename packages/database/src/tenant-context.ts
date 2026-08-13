@@ -14,6 +14,7 @@ import { GovernanceIssueRepository } from './repositories/governance-issue-repos
 import { GovernanceActivityRepository } from './repositories/governance-activity-repository';
 import { AuditLogRepository } from './repositories/audit-log-repository';
 import { NotificationRepository } from './repositories/notification-repository';
+import { SharePointReviewDateMappingRepository } from './repositories/sharepoint-review-date-mapping-repository';
 
 export interface TenantContext {
   readonly organizationId: string;
@@ -32,6 +33,7 @@ export interface TenantContext {
   readonly governanceActivity: GovernanceActivityRepository;
   readonly auditLogs: AuditLogRepository;
   readonly notifications: NotificationRepository;
+  readonly sharePointReviewDateMappings: SharePointReviewDateMappingRepository;
 }
 
 /**
@@ -58,5 +60,6 @@ export function createTenantContext(organizationId: string): TenantContext {
     governanceActivity: new GovernanceActivityRepository(organizationId, prisma),
     auditLogs: new AuditLogRepository(organizationId, prisma),
     notifications: new NotificationRepository(organizationId, prisma),
+    sharePointReviewDateMappings: new SharePointReviewDateMappingRepository(organizationId, prisma),
   };
 }

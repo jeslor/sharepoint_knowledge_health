@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import type { GovernanceIssueResponse } from '@sph/types';
+import { GOVERNANCE_ISSUE_TYPE_LABELS, type GovernanceIssueResponse } from '@sph/types';
 import { EmptyState } from '@/components/ui/query-state';
 import { SeverityBadge } from '@/components/documents/severity-badge';
 import { GovernanceStatusBadge } from './governance-status-badge';
@@ -32,7 +32,7 @@ export function GovernanceIssueList({ issues }: { issues: GovernanceIssueRespons
               </Link>
               <p className="text-xs text-slate-500">{issue.siteName}</p>
             </td>
-            <td className="py-3 pr-4 text-slate-600">{issue.issueType}</td>
+            <td className="py-3 pr-4 text-slate-600">{GOVERNANCE_ISSUE_TYPE_LABELS[issue.issueType] ?? issue.issueType}</td>
             <td className="py-3 pr-4">
               <SeverityBadge severity={issue.severity} />
             </td>

@@ -27,6 +27,7 @@ export function useGovernanceIssues(
       query.assignedUserId,
       query.issueType,
       query.documentId,
+      query.excludeResolved,
       query.sortBy,
       query.sortDir,
     ],

@@ -11,6 +11,7 @@ import type {
   CreateGovernanceIssueRequest,
   GovernanceIssueListQuery,
   GovernanceIssueResponse,
+  GovernanceIssueTypeCountsResponse,
   GovernanceSummaryResponse,
   PaginatedResponse,
   UpdateGovernanceIssueRequest,
@@ -74,18 +75,13 @@ export class GovernanceIssuesService {
     const sortBy = query.sortBy ?? 'createdAt';
     const sortDir = query.sortDir ?? 'desc';
 
-    const where = {
-      ...(query.status !== undefined ? { status: query.status } : {}),
-      ...(query.severity !== undefined ? { severity: query.severity } : {}),
-      ...(query.assignedUserId !== undefined ? { assignedUserId: query.assignedUserId } : {}),
-      ...(query.issueType !== undefined ? { issueType: query.issueType } : {}),
-      ...(query.documentId !== undefined ? { documentId: query.documentId } : {}),
-    };
+    const where = this.buildListWhere(query);
+    const orderBy = this.buildListOrderBy(sortBy, sortDir);
 
     const [issues, total] = await Promise.all([
       context.governanceIssues.findMany({
         where,
-        orderBy: { [sortBy]: sortDir },
+        orderBy,
         skip: (page - 1) * pageSize,
         take: pageSize,
       }),
@@ -94,6 +90,66 @@ export class GovernanceIssuesService {
 
     const data = await this.enrichIssues(context, issues);
     return { data, pagination: { page, pageSize, total, totalPages: Math.max(1, Math.ceil(total / pageSize)) } };
+  }
+
+  // Phase 1 work-queue summary strip. Deliberately a single SQL-level
+  // GROUP BY (GovernanceIssueRepository.groupByIssueType) — bounded to at
+  // most 6 rows regardless of how many GovernanceIssue rows match, never
+  // a findMany() + in-memory count. Reuses buildListWhere() so the counts
+  // are always scoped identically to listIssues() for the same query —
+  // including issueType itself, so an already-narrowed view naturally
+  // yields a single-entry result rather than a second, different notion
+  // of "current scope." Zero-count issue types are simply absent from the
+  // result (GROUP BY never synthesizes empty groups) — matches the
+  // existing convention already established by getSummary()'s own sparse
+  // `byType` record and the IssuesByType component that renders it.
+  async getIssueTypeCounts(organizationId: string, query: GovernanceIssueListQuery): Promise<GovernanceIssueTypeCountsResponse> {
+    const context = createTenantContext(organizationId);
+    const where = this.buildListWhere(query);
+    const counts = await context.governanceIssues.groupByIssueType(where);
+
+    const byType: Record<string, number> = {};
+    for (const { issueType, count } of counts) {
+      byType[issueType] = count;
+    }
+    return { byType };
+  }
+
+  // Shared with getIssueTypeCounts() so the work-queue summary strip's
+  // counts always reflect the exact same effective filter scope as the
+  // list it's paired with — one definition of "current view," not two
+  // that could drift.
+  private buildListWhere(query: GovernanceIssueListQuery) {
+    return {
+      ...(query.status !== undefined
+        ? { status: query.status }
+        : // Phase 1 work-queue default ("My Issues, not Resolved") — an
+          // explicit `status` filter always wins; this never overrides one.
+          // Mirrors the exact `status: { not: 'Resolved' }` shape
+          // GovernanceAnalyticsService's issueAging view already uses.
+          query.excludeResolved
+          ? { status: { not: 'Resolved' as const } }
+          : {}),
+      ...(query.severity !== undefined ? { severity: query.severity } : {}),
+      ...(query.assignedUserId !== undefined ? { assignedUserId: query.assignedUserId } : {}),
+      ...(query.issueType !== undefined ? { issueType: query.issueType } : {}),
+      ...(query.documentId !== undefined ? { documentId: query.documentId } : {}),
+    };
+  }
+
+  // 'severity' is a fixed, deterministic ordering, not toggled by sortDir:
+  // Postgres orders the native HealthIssueSeverity enum by declaration
+  // order (NeedsAttention, RequiresReview — prisma/migrations/
+  // 20260711185029_init_domain_model/migration.sql), so `desc` puts
+  // RequiresReview (the more urgent value) first. createdAt ascending
+  // (oldest first) is a fixed secondary key, matching the requirement that
+  // same-severity issues are ordered deterministically, not left to
+  // insertion order.
+  private buildListOrderBy(sortBy: 'createdAt' | 'updatedAt' | 'severity', sortDir: 'asc' | 'desc') {
+    if (sortBy === 'severity') {
+      return [{ severity: 'desc' as const }, { createdAt: 'asc' as const }];
+    }
+    return { [sortBy]: sortDir };
   }
 
   async getIssue(organizationId: string, issueId: string): Promise<GovernanceIssueResponse | null> {
@@ -152,6 +208,10 @@ export class GovernanceIssuesService {
       issueType: request.issueType,
       severity: matchingHealthIssue.severity,
       assignedUserId: defaultAssigneeId,
+      // Snapshotted once, same as severity above — never re-derived from a
+      // later scan's HealthIssue (see the `message` field's own schema
+      // comment for why).
+      message: matchingHealthIssue.message,
     });
 
     await this.governanceActivityService.record(organizationId, {
@@ -180,6 +240,7 @@ export class GovernanceIssuesService {
         newValue: assignee?.displayName ?? null,
         notifyUserId: defaultAssigneeId,
         notifyIssueType: request.issueType,
+        notifyIssueSeverity: matchingHealthIssue.severity,
       });
     }
 
@@ -340,6 +401,7 @@ export class GovernanceIssuesService {
         // set). Inert (no-op) if the issue is unassigned.
         notifyUserId: activityType === 'IssueReopened' ? updated.assignedUserId : null,
         notifyIssueType: updated.issueType,
+        notifyIssueSeverity: updated.severity,
       });
     }
 
@@ -363,6 +425,7 @@ export class GovernanceIssuesService {
         // is null), since there's no one to tell.
         notifyUserId: updated.assignedUserId,
         notifyIssueType: updated.issueType,
+        notifyIssueSeverity: updated.severity,
       });
     }
 
@@ -387,24 +450,24 @@ export class GovernanceIssuesService {
     return users.map((user) => ({ id: user.id, displayName: user.displayName, email: user.email }));
   }
 
+  // Scale-hardening pass: previously a single unbounded findMany() fetched
+  // every GovernanceIssue in the organization (every column, every status)
+  // just to filter/count/group it in Node — the exact anti-pattern
+  // getIssueTypeCounts() was already built to avoid. Every metric below is
+  // now either a bounded COUNT (cheap regardless of table size, scoped by
+  // the existing @@index([organizationId, status]) index) or the existing
+  // groupByIssueType() GROUP BY (already proven, reused as-is). Only
+  // averageResolutionTimeHours still fetches rows into memory — Prisma has
+  // no typed way to average a computed (resolvedAt - createdAt) expression
+  // without raw SQL, so this one metric fetches ONLY the already-Resolved,
+  // already-dated subset (a small, naturally-bounded set — an org's total
+  // resolution history — not the full issue table) rather than forcing a
+  // single narrow aggregate into raw SQL for this one field. Response
+  // shape is byte-for-byte unchanged; totalCount is derived by summing the
+  // three status counts (the enum is closed to exactly these three values,
+  // per ALLOWED_TRANSITIONS) rather than a fourth query.
   async getSummary(organizationId: string): Promise<GovernanceSummaryResponse> {
     const context = createTenantContext(organizationId);
-    const issues = await context.governanceIssues.findMany();
-
-    const openCount = issues.filter((issue) => issue.status === 'Open').length;
-    const inProgressCount = issues.filter((issue) => issue.status === 'InProgress').length;
-    const resolvedCount = issues.filter((issue) => issue.status === 'Resolved').length;
-    const criticalCount = issues.filter((issue) => issue.status !== 'Resolved' && issue.severity === 'RequiresReview').length;
-    const assignedCount = issues.filter((issue) => issue.status !== 'Resolved' && issue.assignedUserId !== null).length;
-
-    const byType: Record<string, number> = {};
-    for (const issue of issues) {
-      if (issue.status === 'Resolved') continue;
-      byType[issue.issueType] = (byType[issue.issueType] ?? 0) + 1;
-    }
-
-    const totalCount = issues.length;
-    const completionRate = totalCount > 0 ? Math.round((resolvedCount / totalCount) * 100) : 0;
 
     // Calendar-month-to-date, UTC — a fixed snapshot window, deliberately
     // not the same as the analytics endpoint's queryable since/until
@@ -412,17 +475,42 @@ export class GovernanceIssuesService {
     // "over a window you pick").
     const now = new Date();
     const startOfMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-    const createdThisMonth = issues.filter((issue) => issue.createdAt >= startOfMonth).length;
-    const resolvedThisMonth = issues.filter(
-      (issue) => issue.status === 'Resolved' && issue.resolvedAt !== null && issue.resolvedAt >= startOfMonth,
-    ).length;
 
-    // Mean(resolvedAt - createdAt) across currently Resolved issues. Since
-    // resolvedAt is cleared on reopen (§4.5), this reflects each issue's
-    // latest resolution cycle only, not the sum of every cycle if it was
-    // reopened and resolved more than once — a deliberate simplification,
-    // not a GovernanceIssue redesign; see ADR-0016 implementation notes.
-    const resolvedWithTimestamps = issues.filter((issue) => issue.status === 'Resolved' && issue.resolvedAt !== null);
+    const [
+      openCount,
+      inProgressCount,
+      resolvedCount,
+      criticalCount,
+      assignedCount,
+      byTypeCounts,
+      resolvedWithTimestamps,
+      createdThisMonth,
+      resolvedThisMonth,
+    ] = await Promise.all([
+      context.governanceIssues.count({ where: { status: 'Open' } }),
+      context.governanceIssues.count({ where: { status: 'InProgress' } }),
+      context.governanceIssues.count({ where: { status: 'Resolved' } }),
+      context.governanceIssues.count({ where: { status: { not: 'Resolved' }, severity: 'RequiresReview' } }),
+      context.governanceIssues.count({ where: { status: { not: 'Resolved' }, assignedUserId: { not: null } } }),
+      context.governanceIssues.groupByIssueType({ status: { not: 'Resolved' } }),
+      // Mean(resolvedAt - createdAt) across currently Resolved issues. Since
+      // resolvedAt is cleared on reopen (§4.5), this reflects each issue's
+      // latest resolution cycle only, not the sum of every cycle if it was
+      // reopened and resolved more than once — a deliberate simplification,
+      // not a GovernanceIssue redesign; see ADR-0016 implementation notes.
+      context.governanceIssues.findMany({ where: { status: 'Resolved', resolvedAt: { not: null } } }),
+      context.governanceIssues.count({ where: { createdAt: { gte: startOfMonth } } }),
+      context.governanceIssues.count({ where: { status: 'Resolved', resolvedAt: { gte: startOfMonth } } }),
+    ]);
+
+    const totalCount = openCount + inProgressCount + resolvedCount;
+    const completionRate = totalCount > 0 ? Math.round((resolvedCount / totalCount) * 100) : 0;
+
+    const byType: Record<string, number> = {};
+    for (const { issueType, count } of byTypeCounts) {
+      byType[issueType] = count;
+    }
+
     const averageResolutionTimeHours =
       resolvedWithTimestamps.length > 0
         ? resolvedWithTimestamps.reduce(
@@ -500,6 +588,8 @@ export class GovernanceIssuesService {
         updatedAt: issue.updatedAt.toISOString(),
         resolvedAt: issue.resolvedAt?.toISOString() ?? null,
         stillDetected,
+        message: issue.message,
+        documentWebUrl: document?.webUrl ?? null,
       };
     });
   }

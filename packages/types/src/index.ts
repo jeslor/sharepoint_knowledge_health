@@ -14,3 +14,4 @@ export * from './api/onboarding-status';
 export * from './api/microsoft-tenant';
 export * from './api/audit-log';
 export * from './api/notifications';
+export * from './api/sharepoint-metadata';

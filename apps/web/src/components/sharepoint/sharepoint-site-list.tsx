@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import type { SharePointSiteResponse, SharePointSiteStatusValue } from '@sph/types';
 import { EmptyState } from '@/components/ui/query-state';
 import { Button, type ButtonVariant } from '@/components/ui/button';
@@ -75,6 +76,7 @@ export function SharePointSiteList({
           <th className="py-2.5">Site</th>
           <th className="py-2.5">Status</th>
           <th className="py-2.5">Last scanned</th>
+          <th className="py-2.5">Review dates</th>
           {canManage && <th className="py-2.5">Actions</th>}
         </tr>
       </thead>
@@ -102,6 +104,15 @@ export function SharePointSiteList({
               </td>
               <td className="py-3 text-slate-600">
                 {site.lastScannedAt ? new Date(site.lastScannedAt).toLocaleString() : 'Never'}
+              </td>
+              <td className="py-3">
+                {site.status === 'Approved' ? (
+                  <Link href={`/dashboard/sharepoint/${site.id}/review-dates`} className="text-slate-600 hover:text-slate-900 hover:underline">
+                    Manage review dates
+                  </Link>
+                ) : (
+                  <span className="text-slate-400">—</span>
+                )}
               </td>
               {canManage && (
                 <td className="py-3">

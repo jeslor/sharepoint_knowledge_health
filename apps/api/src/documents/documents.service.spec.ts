@@ -16,6 +16,7 @@ describe('DocumentsService', () => {
   const sharePointSites = { findMany: jest.fn() };
   const documentOwners = { findMany: jest.fn(), create: jest.fn(), deleteById: jest.fn() };
   const users = { findMany: jest.fn() };
+  const sharePointReviewDateMappings = { findByLibrary: jest.fn() };
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -26,6 +27,7 @@ describe('DocumentsService', () => {
       sharePointSites,
       documentOwners,
       users,
+      sharePointReviewDateMappings,
     } as never);
 
     // Sane defaults so each test only overrides what it cares about.
@@ -36,6 +38,7 @@ describe('DocumentsService', () => {
     sharePointSites.findMany.mockResolvedValue([]);
     documentOwners.findMany.mockResolvedValue([]);
     users.findMany.mockResolvedValue([]);
+    sharePointReviewDateMappings.findByLibrary.mockResolvedValue(null);
   });
 
   describe('listDocuments', () => {
@@ -79,6 +82,9 @@ describe('DocumentsService', () => {
       sourceCreatedAt: new Date('2026-01-01T00:00:00.000Z'),
       sourceModifiedAt: new Date('2026-06-01T00:00:00.000Z'),
       currentHealthScoreId: 'score-1',
+      nextReviewDueAt: null,
+      reviewDateSource: 'Manual',
+      webUrl: null,
     };
 
     it('returns null when the document does not exist for this organization (org isolation)', async () => {
@@ -119,6 +125,102 @@ describe('DocumentsService', () => {
         band: 'RequiresReview',
         calculatedAt: '2026-07-01T00:00:00.000Z',
         issues: [{ type: 'ReviewStatus', severity: 'RequiresReview', message: 'Missing review date' }],
+        nextReviewDueAt: null,
+        reviewDateSource: 'Manual',
+        reviewDateColumnDisplayName: null,
+        webUrl: null,
+      });
+    });
+
+    it('exposes nextReviewDueAt, reviewDateSource, and webUrl straight off the already-fetched Document row (no extra query)', async () => {
+      documents.findFirstById.mockResolvedValue({
+        ...baseDocument,
+        currentHealthScoreId: null,
+        nextReviewDueAt: new Date('2026-12-01T00:00:00.000Z'),
+        reviewDateSource: 'Manual',
+        webUrl: 'https://contoso.sharepoint.com/sites/finance/Handbook.docx',
+      });
+      sharePointSites.findMany.mockResolvedValue([{ id: 'site-1', displayName: 'Team Site' }]);
+
+      const result = await service.getDocument('org-1', 'doc-1');
+
+      expect(result?.nextReviewDueAt).toBe('2026-12-01T00:00:00.000Z');
+      expect(result?.reviewDateSource).toBe('Manual');
+      expect(result?.webUrl).toBe('https://contoso.sharepoint.com/sites/finance/Handbook.docx');
+    });
+
+    it('returns nextReviewDueAt: null and webUrl: null for a document that has not received either field yet', async () => {
+      documents.findFirstById.mockResolvedValue({ ...baseDocument, currentHealthScoreId: null });
+      sharePointSites.findMany.mockResolvedValue([{ id: 'site-1', displayName: 'Team Site' }]);
+
+      const result = await service.getDocument('org-1', 'doc-1');
+
+      expect(result?.nextReviewDueAt).toBeNull();
+      expect(result?.webUrl).toBeNull();
+    });
+
+    describe('reviewDateColumnDisplayName (Phase 2 — Manual vs SharePoint source indicator)', () => {
+      it('resolves the confirmed column display name when the source is GraphMetadata and a mapping exists', async () => {
+        documents.findFirstById.mockResolvedValue({
+          ...baseDocument,
+          currentHealthScoreId: null,
+          graphListId: 'list-1',
+          reviewDateSource: 'GraphMetadata',
+        });
+        sharePointSites.findMany.mockResolvedValue([{ id: 'site-1', displayName: 'Team Site' }]);
+        sharePointReviewDateMappings.findByLibrary.mockResolvedValue({
+          columnDisplayNameAtConfirmation: 'Review Date',
+        });
+
+        const result = await service.getDocument('org-1', 'doc-1');
+
+        expect(result?.reviewDateColumnDisplayName).toBe('Review Date');
+        expect(sharePointReviewDateMappings.findByLibrary).toHaveBeenCalledWith('site-1', 'list-1');
+      });
+
+      it('returns null when the source is Manual — never looks up a mapping', async () => {
+        documents.findFirstById.mockResolvedValue({
+          ...baseDocument,
+          currentHealthScoreId: null,
+          graphListId: 'list-1',
+          reviewDateSource: 'Manual',
+        });
+        sharePointSites.findMany.mockResolvedValue([{ id: 'site-1', displayName: 'Team Site' }]);
+
+        const result = await service.getDocument('org-1', 'doc-1');
+
+        expect(result?.reviewDateColumnDisplayName).toBeNull();
+        expect(sharePointReviewDateMappings.findByLibrary).not.toHaveBeenCalled();
+      });
+
+      it('returns null when the source is GraphMetadata but the document has no graphListId (never rescanned since Phase 1a)', async () => {
+        documents.findFirstById.mockResolvedValue({
+          ...baseDocument,
+          currentHealthScoreId: null,
+          graphListId: null,
+          reviewDateSource: 'GraphMetadata',
+        });
+        sharePointSites.findMany.mockResolvedValue([{ id: 'site-1', displayName: 'Team Site' }]);
+
+        const result = await service.getDocument('org-1', 'doc-1');
+
+        expect(result?.reviewDateColumnDisplayName).toBeNull();
+        expect(sharePointReviewDateMappings.findByLibrary).not.toHaveBeenCalled();
+      });
+
+      it('returns null when the source is GraphMetadata but no mapping resolves for the library', async () => {
+        documents.findFirstById.mockResolvedValue({
+          ...baseDocument,
+          currentHealthScoreId: null,
+          graphListId: 'list-1',
+          reviewDateSource: 'GraphMetadata',
+        });
+        sharePointSites.findMany.mockResolvedValue([{ id: 'site-1', displayName: 'Team Site' }]);
+        sharePointReviewDateMappings.findByLibrary.mockResolvedValue(null);
+
+        const result = await service.getDocument('org-1', 'doc-1');
+
+        expect(result?.reviewDateColumnDisplayName).toBeNull();
       });
     });
 

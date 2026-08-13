@@ -6,7 +6,15 @@ import {
   type NotificationType,
   type TenantContext,
 } from '@sph/database';
-import type { GovernanceActivityListQuery, GovernanceActivityResponse, PaginatedResponse } from '@sph/types';
+import {
+  GOVERNANCE_ISSUE_SEVERITY_LABELS,
+  GOVERNANCE_ISSUE_TYPE_LABELS,
+  type GovernanceActivityListQuery,
+  type GovernanceActivityResponse,
+  type GovernanceIssueTypeValue,
+  type IssueSeverityFilter,
+  type PaginatedResponse,
+} from '@sph/types';
 
 export interface RecordActivityInput {
   governanceIssueId?: string | null;
@@ -30,6 +38,11 @@ export interface RecordActivityInput {
   // (e.g. GovernanceIssue.issueType from the row it just updated) — never
   // triggers a lookup of its own.
   notifyIssueType?: string | null;
+  // Same rationale as notifyIssueType — GovernanceIssue.severity is
+  // already a column on the row every notifying caller already has in
+  // hand (snapshotted at creation, never re-derived), so this is zero
+  // extra cost for the caller.
+  notifyIssueSeverity?: string | null;
 }
 
 // ADR-0021 §3.2: the deliberately narrow V1 trigger set — StatusChanged,
@@ -45,16 +58,33 @@ const NOTIFIABLE_ACTIVITY_TYPES: Partial<Record<GovernanceActivityType, Notifica
   IssueReopened: 'IssueReopened',
 };
 
-function buildNotificationMessage(activityType: GovernanceActivityType, issueType?: string | null): string {
-  const suffix = issueType ? ` (${issueType})` : '';
+// Enriches the pre-resolved, human-readable notification message with the
+// document name, issue type, and severity — so a recipient can triage from
+// the notification list alone, without opening every row. Every input is
+// optional and gracefully omitted (never "undefined" in the rendered
+// string) — a missing document name or severity degrades the message,
+// never breaks it; with everything missing, this produces exactly the
+// original, pre-enrichment message text.
+function buildNotificationMessage(
+  activityType: GovernanceActivityType,
+  documentName: string | null,
+  issueType?: string | null,
+  severity?: string | null,
+): string {
+  const documentClause = documentName ? ` on "${documentName}"` : '';
+  const typeLabel = issueType ? (GOVERNANCE_ISSUE_TYPE_LABELS[issueType as GovernanceIssueTypeValue] ?? issueType) : null;
+  const severityLabel = severity ? (GOVERNANCE_ISSUE_SEVERITY_LABELS[severity as IssueSeverityFilter] ?? severity) : null;
+  const details = [typeLabel, severityLabel].filter((part): part is string => part !== null);
+  const detailSuffix = details.length > 0 ? ` (${details.join(', ')})` : '';
+
   switch (activityType) {
     case 'IssueAssigned':
     case 'AssigneeChanged':
-      return `You were assigned a governance issue${suffix}.`;
+      return `You were assigned a governance issue${documentClause}${detailSuffix}.`;
     case 'OwnerAssigned':
-      return 'You were assigned as the owner of a document.';
+      return documentName ? `You were assigned as the owner of "${documentName}".` : 'You were assigned as the owner of a document.';
     case 'IssueReopened':
-      return `A governance issue you're involved with was reopened${suffix}.`;
+      return `A governance issue you're involved with was reopened${documentClause}${detailSuffix}.`;
     default:
       return 'You have a new governance notification.';
   }
@@ -109,10 +139,19 @@ export class GovernanceActivityService {
     if (!notificationType) return;
 
     try {
+      // Only reached on the already-narrow notifying path (notifyUserId
+      // set AND this activity type is notifiable) — one extra, indexed
+      // primary-key lookup per notification actually created, not per
+      // activity write. Safe even in theory: GovernanceIssue.document is
+      // onDelete: Cascade (schema.prisma), so the Document row is
+      // guaranteed to exist for as long as the issue/activity referencing
+      // it does. A null result (never expected, but handled rather than
+      // assumed away) degrades the message gracefully instead of breaking it.
+      const document = await context.documents.findFirstById(input.documentId);
       await context.notifications.create({
         userId: input.notifyUserId,
         type: notificationType,
-        message: buildNotificationMessage(input.activityType, input.notifyIssueType),
+        message: buildNotificationMessage(input.activityType, document?.name ?? null, input.notifyIssueType, input.notifyIssueSeverity),
         governanceIssueId: input.governanceIssueId ?? null,
         documentId: input.documentId,
       });

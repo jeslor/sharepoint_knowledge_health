@@ -18,6 +18,8 @@ function issue(overrides: Partial<GovernanceIssueResponse> = {}): GovernanceIssu
     updatedAt: '2026-07-01T00:00:00.000Z',
     resolvedAt: null,
     stillDetected: true,
+    message: null,
+    documentWebUrl: null,
     ...overrides,
   };
 }
@@ -50,5 +52,17 @@ describe('GovernanceIssueList', () => {
       'href',
       '/dashboard/governance/issues/issue-42',
     );
+  });
+
+  it('renders the human-readable issue type label, not the raw enum (e.g. "Review Status", not "ReviewStatus")', () => {
+    render(<GovernanceIssueList issues={[issue({ issueType: 'ReviewStatus' })]} />);
+
+    expect(screen.getByText('Review Status')).toBeInTheDocument();
+    expect(screen.queryByText('ReviewStatus')).not.toBeInTheDocument();
+  });
+
+  it('falls back to the raw value if an unknown issueType somehow reaches the UI', () => {
+    render(<GovernanceIssueList issues={[issue({ issueType: 'SomethingNew' as GovernanceIssueResponse['issueType'] })]} />);
+    expect(screen.getByText('SomethingNew')).toBeInTheDocument();
   });
 });

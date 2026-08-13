@@ -1,5 +1,5 @@
 import { createTenantContext } from '@sph/database';
-import { NotificationReconciliationService } from './notification-reconciliation.service';
+import { NotificationReconciliationService, RECONCILIATION_BATCH_SIZE } from './notification-reconciliation.service';
 
 jest.mock('@sph/database');
 
@@ -43,7 +43,11 @@ describe('NotificationReconciliationService', () => {
   it('does nothing when there are no Open/InProgress GovernanceIssues', async () => {
     await service.reconcileForOrganization('org-1');
 
-    expect(governanceIssues.findMany).toHaveBeenCalledWith({ where: { status: { in: ['Open', 'InProgress'] } } });
+    expect(governanceIssues.findMany).toHaveBeenCalledWith({
+      where: { status: { in: ['Open', 'InProgress'] } },
+      orderBy: { id: 'asc' },
+      take: 500,
+    });
     expect(notifications.upsertByDedupeKey).not.toHaveBeenCalled();
   });
 
@@ -137,5 +141,137 @@ describe('NotificationReconciliationService', () => {
     await service.reconcileForOrganization('org-1');
 
     expect(governanceIssues.updateById).not.toHaveBeenCalled();
+  });
+
+  // Scale-hardening: bounded, cursor-paginated reconciliation instead of a
+  // single unbounded findMany() for the whole organization's open backlog.
+  describe('batching (scale-hardening)', () => {
+    // documents/healthIssues respond generically to whatever ids a given
+    // batch requests, so each test only needs to shape governanceIssues —
+    // currentHealthScoreId: null makes every issue a stillDetected: false
+    // candidate (the "no currentHealthScoreId" rule, already covered
+    // above), keeping the candidate-count math simple across batches.
+    //
+    // jest.clearAllMocks() (outer beforeEach) resets call history but does
+    // NOT clear a mock's queued mockResolvedValueOnce values — a test that
+    // queues more once-values than the loop actually consumes (e.g. the
+    // trailing [] "just in case" terminator, unneeded when a page comes
+    // back under RECONCILIATION_BATCH_SIZE and short-circuits) leaves a
+    // stale queued value that would otherwise leak into the NEXT test's
+    // first call. mockReset() here guarantees each test starts with a
+    // fully empty queue, not just empty call history.
+    beforeEach(() => {
+      governanceIssues.findMany.mockReset();
+      documents.findMany.mockImplementation(async ({ where }: { where: { id: { in: string[] } } }) =>
+        where.id.in.map((id) => ({ id, currentHealthScoreId: null })),
+      );
+    });
+
+    it('paginates via a cursor on id (ascending, strictly-greater-than), not skip/take', async () => {
+      const firstBatch = Array.from({ length: RECONCILIATION_BATCH_SIZE }, (_, i) =>
+        issue({ id: `issue-${i}`, documentId: `doc-${i}` }),
+      );
+      governanceIssues.findMany.mockResolvedValueOnce(firstBatch).mockResolvedValueOnce([]);
+
+      await service.reconcileForOrganization('org-1');
+
+      expect(governanceIssues.findMany).toHaveBeenNthCalledWith(1, {
+        where: { status: { in: ['Open', 'InProgress'] } },
+        orderBy: { id: 'asc' },
+        take: RECONCILIATION_BATCH_SIZE,
+      });
+      expect(governanceIssues.findMany).toHaveBeenNthCalledWith(2, {
+        where: { status: { in: ['Open', 'InProgress'] }, id: { gt: `issue-${RECONCILIATION_BATCH_SIZE - 1}` } },
+        orderBy: { id: 'asc' },
+        take: RECONCILIATION_BATCH_SIZE,
+      });
+    });
+
+    it('processes every issue across multiple pages — no issue is skipped between batches', async () => {
+      const firstBatch = Array.from({ length: RECONCILIATION_BATCH_SIZE }, (_, i) =>
+        issue({ id: `issue-${i}`, documentId: `doc-${i}` }),
+      );
+      const secondBatch = [issue({ id: `issue-${RECONCILIATION_BATCH_SIZE}`, documentId: 'doc-last' })];
+      governanceIssues.findMany.mockResolvedValueOnce(firstBatch).mockResolvedValueOnce(secondBatch);
+
+      await service.reconcileForOrganization('org-1');
+
+      // One candidate per issue across both pages — none skipped, none duplicated.
+      expect(notifications.upsertByDedupeKey).toHaveBeenCalledTimes(RECONCILIATION_BATCH_SIZE + 1);
+      // Full page (forces a next fetch) + a second page under batch size
+      // (short-circuits, no further empty-page round-trip needed).
+      expect(governanceIssues.findMany).toHaveBeenCalledTimes(2);
+    });
+
+    it('never processes the same issue twice across batches — no duplication, even though the cursor overlaps no rows', async () => {
+      // A page exactly at the size limit forces a second fetch (the
+      // implementation cannot assume it was the last page) — this is the
+      // one scenario that genuinely exercises two real batches.
+      const firstBatch = Array.from({ length: RECONCILIATION_BATCH_SIZE }, (_, i) =>
+        issue({ id: `issue-${i}`, documentId: `doc-${i}` }),
+      );
+      const secondBatch = [issue({ id: `issue-${RECONCILIATION_BATCH_SIZE}`, documentId: 'doc-last' })];
+      governanceIssues.findMany.mockResolvedValueOnce(firstBatch).mockResolvedValueOnce(secondBatch);
+
+      await service.reconcileForOrganization('org-1');
+
+      const dedupeKeys = notifications.upsertByDedupeKey.mock.calls.map(
+        ([args]: [{ dedupeKey: string }]) => args.dedupeKey,
+      );
+      expect(new Set(dedupeKeys).size).toBe(dedupeKeys.length); // every key unique — nothing processed twice
+      expect(dedupeKeys).toHaveLength(RECONCILIATION_BATCH_SIZE + 1);
+    });
+
+    it('boundary: stops after a page exactly equal to batch size returns, without an extra unnecessary round-trip once the next page is confirmed empty', async () => {
+      const fullBatch = Array.from({ length: RECONCILIATION_BATCH_SIZE }, (_, i) => issue({ id: `issue-${i}`, documentId: `doc-${i}` }));
+      governanceIssues.findMany.mockResolvedValueOnce(fullBatch).mockResolvedValueOnce([]);
+
+      await service.reconcileForOrganization('org-1');
+
+      // A batch exactly at the size limit cannot be assumed to be the last
+      // page — the implementation correctly fetches once more and only
+      // stops once that next page comes back empty.
+      expect(governanceIssues.findMany).toHaveBeenCalledTimes(2);
+    });
+
+    it('boundary: a single page under batch size stops after one fetch (no unnecessary empty-page round-trip)', async () => {
+      governanceIssues.findMany.mockResolvedValueOnce([issue({ id: 'issue-1', documentId: 'doc-1' })]);
+
+      await service.reconcileForOrganization('org-1');
+
+      expect(governanceIssues.findMany).toHaveBeenCalledTimes(1);
+    });
+
+    it('repeated reconciliation across multiple pages remains idempotent — same dedupeKeys every run, safe to re-run', async () => {
+      const fixedUpdatedAt = new Date('2026-07-01T00:00:00.000Z');
+      const buildBatches = (): [Array<ReturnType<typeof issue>>, Array<ReturnType<typeof issue>>] => [
+        Array.from({ length: RECONCILIATION_BATCH_SIZE }, (_, i) =>
+          issue({ id: `issue-${i}`, documentId: `doc-${i}`, updatedAt: fixedUpdatedAt }),
+        ),
+        [issue({ id: `issue-${RECONCILIATION_BATCH_SIZE}`, documentId: 'doc-last', updatedAt: fixedUpdatedAt })],
+      ];
+
+      for (let run = 0; run < 2; run++) {
+        const [firstBatch, secondBatch] = buildBatches();
+        // Exactly 2 queued values per run — the second page (1 item, under
+        // batch size) short-circuits without a 3rd confirming-empty fetch,
+        // so a 3rd queued value would go unconsumed and leak into the next
+        // run's first call.
+        governanceIssues.findMany.mockResolvedValueOnce(firstBatch).mockResolvedValueOnce(secondBatch);
+        await service.reconcileForOrganization('org-1');
+      }
+
+      const dedupeKeys = notifications.upsertByDedupeKey.mock.calls.map(
+        ([args]: [{ dedupeKey: string }]) => args.dedupeKey,
+      );
+      // (BATCH_SIZE + 1) issues x 2 runs worth of calls, but only
+      // (BATCH_SIZE + 1) distinct dedupeKeys — the database-level unique
+      // constraint (not this service) is what actually collapses the
+      // second run's calls to no-ops; this proves the service computes
+      // the SAME key every time for the SAME issue generation, across
+      // batch boundaries too, which is its share of that guarantee.
+      expect(dedupeKeys).toHaveLength(2 * (RECONCILIATION_BATCH_SIZE + 1));
+      expect(new Set(dedupeKeys).size).toBe(RECONCILIATION_BATCH_SIZE + 1);
+    });
   });
 });

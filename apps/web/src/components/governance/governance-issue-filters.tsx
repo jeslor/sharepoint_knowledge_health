@@ -1,4 +1,4 @@
-import type { GovernanceIssueStatusValue, GovernanceIssueTypeValue, IssueSeverityFilter } from '@sph/types';
+import { GOVERNANCE_ISSUE_TYPE_LABELS, type GovernanceIssueStatusValue, type GovernanceIssueTypeValue, type IssueSeverityFilter } from '@sph/types';
 import { CommandBar } from '@/components/ui/command-bar';
 import { Field } from '@/components/ui/field';
 import { Select } from '@/components/ui/select';
@@ -50,7 +50,7 @@ export function GovernanceIssueFilters({ values, assignableUsers, onChange }: Go
         <Select
           value={values.issueType ?? ''}
           onChange={(newValue) => onChange({ ...values, issueType: (newValue || undefined) as GovernanceIssueTypeValue | undefined })}
-          options={[{ value: '', label: 'All' }, ...ISSUE_TYPES.map((type) => ({ value: type, label: type }))]}
+          options={[{ value: '', label: 'All' }, ...ISSUE_TYPES.map((type) => ({ value: type, label: GOVERNANCE_ISSUE_TYPE_LABELS[type] }))]}
         />
       </Field>
 

@@ -3,14 +3,19 @@ import { listDrives, listDocuments, listChildren, GraphTransientError, type Grap
 import type { Job } from 'bullmq';
 import type { ScanJobPayload } from '@sph/types';
 import { DocumentCollectorProcessor } from './document-collector.processor';
+import { syncConfirmedReviewDateMapping } from '../sharepoint-metadata/review-date-sync';
 
 jest.mock('@sph/database');
 jest.mock('@sph/graph-client');
+jest.mock('../sharepoint-metadata/review-date-sync');
 
 const mockedCreateContext = createTenantContext as jest.MockedFunction<typeof createTenantContext>;
 const mockedListDrives = listDrives as jest.MockedFunction<typeof listDrives>;
 const mockedListDocuments = listDocuments as jest.MockedFunction<typeof listDocuments>;
 const mockedListChildren = listChildren as jest.MockedFunction<typeof listChildren>;
+const mockedSyncConfirmedReviewDateMapping = syncConfirmedReviewDateMapping as jest.MockedFunction<
+  typeof syncConfirmedReviewDateMapping
+>;
 
 async function* asyncGen<T>(items: T[]): AsyncGenerator<T> {
   for (const item of items) yield item;
@@ -61,6 +66,7 @@ describe('DocumentCollectorProcessor', () => {
     healthSnapshots.create.mockResolvedValue({ id: 'snapshot-1' });
     governanceIssues.findMany.mockResolvedValue([]);
     reconciliationQueue.add.mockResolvedValue(undefined);
+    mockedSyncConfirmedReviewDateMapping.mockResolvedValue(undefined);
   });
 
   it('returns early without touching the tenant when the ScanJob no longer exists', async () => {
@@ -141,6 +147,70 @@ describe('DocumentCollectorProcessor', () => {
       expect(documents.create).toHaveBeenCalledWith(
         expect.objectContaining({ graphItemId: 'item-1', name: 'Employee Handbook.docx', sizeBytes: BigInt(2048) }),
       );
+    });
+
+    it('persists Graph driveItem.webUrl on document creation', async () => {
+      mockedListDocuments.mockReturnValue(asyncGen([fileItem]));
+      documents.findMany.mockResolvedValue([]);
+      documents.create.mockResolvedValue({ id: 'doc-1', siteId: 'site-1', graphItemId: 'item-1' });
+
+      await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+      expect(documents.create).toHaveBeenCalledWith(
+        expect.objectContaining({ webUrl: 'https://x/Employee Handbook.docx' }),
+      );
+    });
+
+    it('updates webUrl on a subsequent ingestion of an already-known document', async () => {
+      mockedListDocuments.mockReturnValue(asyncGen([fileItem]));
+      const existing = { id: 'doc-1', siteId: 'site-1', graphItemId: 'item-1', webUrl: 'https://x/old-url' };
+      documents.findMany.mockImplementation(async ({ where }: { where: Record<string, unknown> }) =>
+        'graphItemId' in where ? [existing] : [],
+      );
+      documents.updateById.mockResolvedValue({ ...existing, webUrl: 'https://x/Employee Handbook.docx' });
+
+      await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+      expect(documents.updateById).toHaveBeenCalledWith(
+        'doc-1',
+        expect.objectContaining({ webUrl: 'https://x/Employee Handbook.docx' }),
+      );
+    });
+
+    it('persists Document.graphListId from the enriched listDrives response (drive.list.id) — no separate Graph call', async () => {
+      mockedListDrives.mockReturnValue(asyncGen([{ ...drive, list: { id: 'list-1' } }]));
+      mockedListDocuments.mockReturnValue(asyncGen([fileItem]));
+      documents.findMany.mockResolvedValue([]);
+      documents.create.mockResolvedValue({ id: 'doc-1', siteId: 'site-1', graphItemId: 'item-1' });
+
+      await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+      expect(documents.create).toHaveBeenCalledWith(expect.objectContaining({ graphListId: 'list-1' }));
+    });
+
+    it('omits graphListId on create when the drive has no associated list (leaves it null, not a special case)', async () => {
+      mockedListDocuments.mockReturnValue(asyncGen([fileItem])); // drive (no `list`) set in outer beforeEach
+      documents.findMany.mockResolvedValue([]);
+      documents.create.mockResolvedValue({ id: 'doc-1', siteId: 'site-1', graphItemId: 'item-1' });
+
+      await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+      const createCall = documents.create.mock.calls[0]?.[0];
+      expect(createCall).not.toHaveProperty('graphListId');
+    });
+
+    it('does not overwrite a previously-persisted graphListId when a later scan has no list info for that drive', async () => {
+      mockedListDocuments.mockReturnValue(asyncGen([fileItem])); // outer drive has no `list`
+      const existing = { id: 'doc-1', siteId: 'site-1', graphItemId: 'item-1', graphListId: 'list-1' };
+      documents.findMany.mockImplementation(async ({ where }: { where: Record<string, unknown> }) =>
+        'graphItemId' in where ? [existing] : [],
+      );
+      documents.updateById.mockResolvedValue(existing);
+
+      await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+      const updateCall = documents.updateById.mock.calls[0]?.[1];
+      expect(updateCall).not.toHaveProperty('graphListId');
     });
 
     it('creates an Author DocumentOwner from Graph createdBy metadata', async () => {
@@ -553,6 +623,74 @@ describe('DocumentCollectorProcessor', () => {
         const finalUpdate = scanJobs.updateById.mock.calls.at(-1);
         expect(finalUpdate?.[1]).toEqual(expect.objectContaining({ documentsFailed: 1 }));
       });
+    });
+  });
+
+  describe('SharePoint review-date mapping sync (Phase 1b wiring)', () => {
+    const drive: GraphDrive = { id: 'drive-1', name: 'Documents', webUrl: 'https://x/drive', driveType: 'documentLibrary' };
+
+    beforeEach(() => {
+      scanJobs.findFirstById.mockResolvedValue({ id: 'scan-1', microsoftTenantId: 'tenant-1' });
+      microsoftTenants.findFirstById.mockResolvedValue({ id: 'tenant-1', entraTenantId: 'entra-1' });
+      sharePointSites.findMany.mockResolvedValue([
+        { id: 'site-1', graphSiteId: 'graph-site-1', displayName: 'Team Site' },
+      ]);
+      mockedListDocuments.mockReturnValue(asyncGen([]));
+    });
+
+    it('calls syncConfirmedReviewDateMapping once per drive that has a resolvable list', async () => {
+      mockedListDrives.mockReturnValue(asyncGen([{ ...drive, list: { id: 'list-1' } }]));
+
+      await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+      expect(mockedSyncConfirmedReviewDateMapping).toHaveBeenCalledTimes(1);
+      expect(mockedSyncConfirmedReviewDateMapping).toHaveBeenCalledWith(
+        expect.anything(),
+        'entra-1',
+        expect.objectContaining({ id: 'site-1' }),
+        'list-1',
+        expect.anything(),
+      );
+    });
+
+    it('never calls syncConfirmedReviewDateMapping for a drive with no associated list', async () => {
+      mockedListDrives.mockReturnValue(asyncGen([drive])); // no `list`
+
+      await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+      expect(mockedSyncConfirmedReviewDateMapping).not.toHaveBeenCalled();
+    });
+
+    it('isolates a sync failure — does not abort the scan or mark it Failed', async () => {
+      mockedListDrives.mockReturnValue(asyncGen([{ ...drive, list: { id: 'list-1' } }]));
+      mockedSyncConfirmedReviewDateMapping.mockRejectedValue(new Error('boom'));
+
+      await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+      const statusUpdates = scanJobs.updateById.mock.calls.filter((call) => call[1]?.status !== undefined);
+      expect(statusUpdates.at(-1)?.[1]).toEqual(expect.objectContaining({ status: 'Completed' }));
+    });
+
+    it('still persists documents for the drive even when its metadata sync fails', async () => {
+      mockedListDrives.mockReturnValue(asyncGen([{ ...drive, list: { id: 'list-1' } }]));
+      mockedSyncConfirmedReviewDateMapping.mockRejectedValue(new Error('boom'));
+      const fileItem: GraphDriveItem = {
+        id: 'item-1',
+        name: 'Doc.docx',
+        webUrl: 'https://x/Doc.docx',
+        size: 100,
+        createdDateTime: '2026-01-01T00:00:00.000Z',
+        lastModifiedDateTime: '2026-01-01T00:00:00.000Z',
+        file: { mimeType: 'application/msword' },
+        parentReference: { driveId: 'drive-1', path: '/drives/drive-1/root:' },
+      };
+      mockedListDocuments.mockReturnValue(asyncGen([fileItem]));
+      documents.findMany.mockResolvedValue([]);
+      documents.create.mockResolvedValue({ id: 'doc-1', siteId: 'site-1', graphItemId: 'item-1' });
+
+      await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+      expect(documents.create).toHaveBeenCalledWith(expect.objectContaining({ graphItemId: 'item-1' }));
     });
   });
 

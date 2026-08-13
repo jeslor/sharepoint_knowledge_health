@@ -76,6 +76,27 @@ describe('DashboardNav', () => {
     );
   });
 
+  // ADR-0019 §4: the backend has no RolesGuard on GET .../audit-log —
+  // "any authenticated org member may read this" is a deliberate design
+  // decision, so the nav item must never live under the Admin-only
+  // Administration group.
+  it('shows Audit log for every role, in the Workspace group', () => {
+    mockUser = user({ role: 'Member' });
+    render(<DashboardNav mobileOpen={false} onCloseMobile={noop} />);
+
+    expect(within(desktopSidebar()).getByRole('link', { name: /audit log/i })).toHaveAttribute(
+      'href',
+      '/dashboard/audit-log',
+    );
+  });
+
+  it('does not hide Audit log behind admin-only navigation for a GovernanceManager', () => {
+    mockUser = user({ role: 'GovernanceManager' });
+    render(<DashboardNav mobileOpen={false} onCloseMobile={noop} />);
+
+    expect(within(desktopSidebar()).getByRole('link', { name: /audit log/i })).toBeInTheDocument();
+  });
+
   it('renders no unread badge when the unread count is zero', () => {
     mockUser = user({ role: 'Member' });
     mockUnreadCount = 0;

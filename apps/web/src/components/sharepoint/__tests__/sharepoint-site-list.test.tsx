@@ -69,6 +69,24 @@ describe('SharePointSiteList', () => {
     expect(screen.getByText('Never')).toBeInTheDocument();
   });
 
+  it('links to the review-dates page for an Approved site', () => {
+    render(<SharePointSiteList sites={[site({ status: 'Approved' })]} canManage onApprove={jest.fn()} onRevoke={jest.fn()} mutatingSiteId={null} />);
+
+    expect(screen.getByRole('link', { name: 'Manage review dates' })).toHaveAttribute('href', '/dashboard/sharepoint/site-1/review-dates');
+  });
+
+  it('does not link to review dates for a site that is not yet Approved', () => {
+    render(<SharePointSiteList sites={[site({ status: 'Discovered' })]} canManage onApprove={jest.fn()} onRevoke={jest.fn()} mutatingSiteId={null} />);
+
+    expect(screen.queryByRole('link', { name: 'Manage review dates' })).not.toBeInTheDocument();
+  });
+
+  it('still shows the review-dates link for an Approved site when canManage is false', () => {
+    render(<SharePointSiteList sites={[site({ status: 'Approved' })]} canManage={false} onApprove={jest.fn()} onRevoke={jest.fn()} mutatingSiteId={null} />);
+
+    expect(screen.getByRole('link', { name: 'Manage review dates' })).toBeInTheDocument();
+  });
+
   // Root cause regression test (2026-07-25): the action button used to be
   // three mutually-exclusive JSX branches, so a status change unmounted one
   // Button and mounted a different one — a hard swap CSS transitions can't

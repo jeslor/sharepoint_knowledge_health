@@ -35,4 +35,17 @@ export class GovernanceActivityRepository {
   async create(data: GovernanceActivityCreateData): Promise<GovernanceActivity> {
     return this.prisma.governanceActivity.create({ data: { ...data, organizationId: this.organizationId } });
   }
+
+  // Scale-hardening: a single SQL-level GROUP BY, bounded to at most one
+  // row per GovernanceActivityType value (9 today) regardless of how many
+  // activity rows match — mirrors GovernanceIssueRepository.groupByIssueType
+  // exactly, same rationale (see that method's own comment).
+  async groupByActivityType(where: Prisma.GovernanceActivityWhereInput): Promise<{ activityType: string; count: number }[]> {
+    const results = await this.prisma.governanceActivity.groupBy({
+      by: ['activityType'],
+      where: { ...where, organizationId: this.organizationId },
+      _count: { _all: true },
+    });
+    return results.map((result) => ({ activityType: result.activityType, count: result._count._all }));
+  }
 }

@@ -35,8 +35,18 @@ export function NotificationList({ notifications, onOpen }: NotificationListProp
           <>
             <span className="flex items-start gap-2">
               {/* Unread indicator — a small dot, not a full badge, so it
-                  doesn't compete visually with the message text. */}
-              {!notification.read && <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-brand-600" aria-hidden="true" />}
+                  doesn't compete visually with the message text. Always
+                  rendered (never conditionally omitted) so its gap-2 slot
+                  is reserved either way — otherwise a read row's message
+                  text starts flush left while an unread row's text is
+                  pushed right by the dot, leaving read/unread rows
+                  misaligned with each other in the same list. `invisible`
+                  keeps the exact same layout size while hiding it visually
+                  and from screen readers (aria-hidden stays). */}
+              <span
+                className={`mt-1.5 h-2 w-2 shrink-0 rounded-full bg-brand-600 ${notification.read ? 'invisible' : ''}`}
+                aria-hidden="true"
+              />
               <span className={notification.read ? 'text-slate-600' : 'text-body-strong text-slate-900'}>{notification.message}</span>
             </span>
             <span className="shrink-0 text-caption text-slate-400">{formatRelativeDay(notification.createdAt)}</span>
