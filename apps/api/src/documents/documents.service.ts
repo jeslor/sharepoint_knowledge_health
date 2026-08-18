@@ -86,6 +86,9 @@ export class DocumentsService {
       }
     }
 
+    const reviewDateMapping = await this.resolveReviewDateMapping(context, document);
+    const sharePointManaged = reviewDateMapping?.status === 'Active';
+
     return {
       documentId: document.id,
       documentName: document.name,
@@ -105,25 +108,32 @@ export class DocumentsService {
       issues: issues.map((issue) => ({ type: issue.criterion, severity: issue.severity, message: issue.message })),
       nextReviewDueAt: document.nextReviewDueAt?.toISOString() ?? null,
       reviewDateSource: document.reviewDateSource,
-      reviewDateColumnDisplayName: await this.resolveReviewDateColumnDisplayName(context, document),
+      // Phase 2: only reflects this document's own last-synced state —
+      // unchanged by Phase 3A-1, still null unless reviewDateSource is
+      // already GraphMetadata. See sharePointManaged below for the
+      // library-level signal that's populated even before a first sync.
+      reviewDateColumnDisplayName:
+        document.reviewDateSource === 'GraphMetadata' ? (reviewDateMapping?.columnDisplayNameAtConfirmation ?? null) : null,
+      sharePointManaged,
+      sharePointManagedColumnDisplayName: sharePointManaged ? (reviewDateMapping?.columnDisplayNameAtConfirmation ?? null) : null,
       webUrl: document.webUrl,
     };
   }
 
-  // Phase 2: lets the document detail page show which SharePoint column a
-  // GraphMetadata-sourced review date came from ("Source: SharePoint ·
-  // Review Date") rather than just the bare word "SharePoint". Reuses the
-  // existing findByLibrary lookup and the graphListId already persisted on
-  // Document since Phase 1a — no new repository method, no schema change.
-  // Returns null for a Manual date, a document never scanned since
-  // graphListId was introduced, or a library with no mapping at all.
-  private async resolveReviewDateColumnDisplayName(
+  // Phase 2 (extended Phase 3A-1): the one lookup backing both
+  // reviewDateColumnDisplayName (gated on reviewDateSource, unchanged
+  // contract) and the new sharePointManaged/sharePointManagedColumnDisplayName
+  // fields (independent of reviewDateSource — a library can be Active-mapped
+  // before this document's own row has ever synced). One findByLibrary call
+  // serves both, avoiding a redundant second lookup. Returns null when the
+  // document has no graphListId (never scanned since Phase 1a) or the
+  // library has no mapping at all.
+  private async resolveReviewDateMapping(
     context: ReturnType<typeof createTenantContext>,
-    document: { siteId: string; graphListId: string | null; reviewDateSource: string },
-  ): Promise<string | null> {
-    if (document.reviewDateSource !== 'GraphMetadata' || !document.graphListId) return null;
-    const mapping = await context.sharePointReviewDateMappings.findByLibrary(document.siteId, document.graphListId);
-    return mapping?.columnDisplayNameAtConfirmation ?? null;
+    document: { siteId: string; graphListId: string | null },
+  ): Promise<{ status: string; columnDisplayNameAtConfirmation: string } | null> {
+    if (!document.graphListId) return null;
+    return context.sharePointReviewDateMappings.findByLibrary(document.siteId, document.graphListId);
   }
 
   // ADR-0015 §4: HealthScore already accumulates one row per document per
@@ -222,12 +232,14 @@ export class DocumentsService {
     });
   }
 
-  // ADR-0002 amendment / ADR-0016 §4.3, §7: the only write path for
-  // Document.nextReviewDueAt — the real signal apps/worker's scoring pass
-  // now reads for the ReviewStatus criterion, in place of the previous
-  // hardcoded-false constant. Always stamps reviewDateSource: Manual, the
-  // only source that exists until a future Graph List Items API
-  // integration (ADR-0016 §9); passing null clears a previously-set date.
+  // ADR-0002 amendment / ADR-0016 §4.3, §7, §17.4: the write path for a
+  // manually-set Document.nextReviewDueAt. Always stamps reviewDateSource:
+  // Manual; passing null clears a previously-set date. Rejects (409) when
+  // the document's library has an Active SharePointReviewDateMapping —
+  // ADR-0016 §17.1 already makes SharePoint authoritative in that state at
+  // sync time; this guard closes the gap where a manual edit could
+  // otherwise appear to succeed here and then be silently overwritten by
+  // the next scan with no explanation ever surfaced to the user.
   async setReviewDate(
     organizationId: string,
     documentId: string,
@@ -236,6 +248,13 @@ export class DocumentsService {
     const context = createTenantContext(organizationId);
     const document = await context.documents.findFirstById(documentId);
     if (!document) return null;
+
+    const reviewDateMapping = await this.resolveReviewDateMapping(context, document);
+    if (reviewDateMapping?.status === 'Active') {
+      throw new ConflictException(
+        `Review dates for this library are managed by SharePoint (column: "${reviewDateMapping.columnDisplayNameAtConfirmation}"). Update the value in SharePoint, or remove the mapping in Knowledge Health before setting a manual review date.`,
+      );
+    }
 
     const updated = await context.documents.updateById(documentId, {
       nextReviewDueAt: nextReviewDueAt !== null ? new Date(nextReviewDueAt) : null,

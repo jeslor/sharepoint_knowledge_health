@@ -1155,3 +1155,70 @@ sync and confirm paths, documented in full in
 Deliberately deferred (each requires its own separate design): delta
 queries, sync-state persistence, parallel drive processing, and caching
 for the eligibility endpoint.
+
+### 17.4 Source-of-truth and disambiguation guarantees, formalized (Phase 2 UX, retroactively recorded; manual-write conflict guard, new — Phase 3A-1)
+
+The following guarantees were built as part of Phase 2's admin UI but were
+never formally recorded in this ADR — recorded here now, alongside one
+genuinely new decision, so the full set of source-of-truth rules lives in
+one place rather than being inferable only from UI code and tests.
+
+**Already true since Phase 2 (formalized here, not changed by this
+addendum):**
+
+- **SharePoint is the authoritative review-date source for a library
+  whenever that library has an Active `SharePointReviewDateMapping`** —
+  this restates §17.1's precedence rule explicitly as a standing
+  guarantee, not just a sync-time mechanism.
+- **Missing-column guidance is mandatory, not optional.** When
+  `checkReviewDateEligibility` returns `NoEligibleColumn`, the UI must
+  explain that no column was found, that review dates continue to be
+  managed manually until one exists, and how to create one
+  (`docs/decisions` cross-reference: implemented as
+  `NO_ELIGIBLE_COLUMN_GUIDANCE` in `apps/web/src/components/sharepoint/review-date-status.ts`).
+  Automatic SharePoint column creation remains explicitly out of scope
+  (§17.2 already establishes this app has no write capability at all
+  prior to Phase 3A-2; see the new Amendment on `packages/graph-client`
+  below for the narrow exception that changes this).
+- **Ambiguous/multiple candidates always require explicit admin
+  confirmation — confidence never auto-selects.** Restates §17.2's
+  confidence-signal rule as a standing UI guarantee: a `MultipleEligibleColumns`
+  result must never resolve itself; the confirming admin must pick one.
+- **The actual mapped SharePoint column's display name must be shown**
+  wherever a document's review date is SharePoint-sourced (e.g. "Source:
+  SharePoint · Review Date"), never a bare "Active"/"SharePoint" label
+  with no column identity.
+
+**New in this addendum (Phase 3A-1) — the manual-write conflict guard:**
+
+§17.1 decided precedence at *sync* time but never addressed the *manual
+write API* itself. Gap found during Phase 3 investigation: `setReviewDate`
+(`PATCH .../documents/:id/review`) unconditionally stamps
+`reviewDateSource: Manual`, with no check for whether the document's
+library currently has an Active mapping. Not a data-corruption risk (the
+next sync silently restores the correct SharePoint value per §17.1's
+existing precedence, since GraphMetadata always supersedes Manual) — but
+a misleading UX: the edit appears to succeed, then is silently discarded
+on the next scan with no explanation ever surfaced to the user.
+
+**Decision**: `setReviewDate` must reject a manual write with `409
+Conflict` when the target document's library has an Active mapping,
+identifying the mapped column and pointing the user at SharePoint (or at
+removing the mapping first, if that's genuinely what they want). This
+reuses the existing `sharePointReviewDateMappings.findByLibrary` lookup
+already built for `resolveReviewDateColumnDisplayName`
+(`apps/api/src/documents/documents.service.ts`) — called unconditionally
+instead of only when `reviewDateSource` is already `GraphMetadata`. No
+schema change; no new repository method.
+
+### 17.5 Cross-reference — bulk-remediation resolution (ADR-0022)
+
+A `GovernanceIssue` can, starting in Phase 3A-2, also be resolved via a
+verified bulk-remediation job rather than only a direct human action —
+using the exact same `status`/`resolvedAt` transition `updateIssue`
+already performs, attributed to the user who initiated the remediation
+(never a synthetic system actor, consistent with
+`GovernanceActivity.actorUserId`'s non-nullable FK). Full mechanism
+documented in ADR-0022 (Bulk Remediation Job Architecture), not repeated
+here — this section exists only so a reader of this ADR's status
+machine (§4.5) knows a second resolution path exists at all.

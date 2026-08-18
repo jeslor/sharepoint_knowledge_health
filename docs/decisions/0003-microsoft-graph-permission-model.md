@@ -75,3 +75,78 @@ No per-customer app registrations are supported or planned.
 ### Future Considerations
 
 - If a specific customer's compliance requirements ever mandate a dedicated app registration, that would be handled as a customer-specific exception, not a change to the default model.
+
+---
+
+## Amendment (2026-08-13 — Sites.ReadWrite.All for Bulk Remediation, Phase 3A-2)
+
+This activates the option this ADR's own original Future Considerations
+section already named: *"If a future feature needs to write back to
+SharePoint (e.g.,... automated remediation actions), request the
+additional write scope as a separate, explicitly-justified consent step
+at that time — not bundled into initial onboarding."* Bulk remediation
+(ADR-0022) is that feature.
+
+**This amendment documents the decision only — no consent flow, UI, or
+Graph permission change is implemented in Phase 3A-0 or Phase 3A-1.**
+Both remain entirely read-only, using only the existing `Files.Read.All`/
+`Sites.Read.All` grant.
+
+### Decision
+
+Request `Sites.ReadWrite.All` (application permission) as an
+**additional, optional, separately-consented** scope in Phase 3A-2 —
+never bundled into the existing onboarding flow, never required to use
+any existing product functionality. `Files.Read.All`/`Sites.Read.All`
+remain the only scopes required for discovery, scanning, scoring, and
+review-date sync/eligibility/confirmation to work at all.
+
+### Backward compatibility — mandatory, not aspirational
+
+A tenant that has not granted the new scope must continue functioning
+identically to today: discovery, approval, scanning, scoring, and every
+Phase 1/1.1/1.2/2/3A-1 review-date capability (sync, eligibility,
+confirmation, the manual-write conflict guard) are entirely unaffected
+by whether this scope has been granted. Bulk remediation's entry points
+may remain visible but must show a clear, actionable "requires
+additional permission" state rather than erroring unclearly or
+disappearing silently.
+
+### No pre-flight permission probe
+
+Consistent with `GraphConsentVerifierService`'s existing design (a real
+smoke-test call, not a directory-role-assignment probe — this app is
+never granted `Directory.Read.All`/`Application.Read.All`, per ADR-0012's
+amendment, so that path is closed regardless), this amendment does not
+introduce a separate "check whether we have write permission" call. The
+first real write attempt is the check: a 403 (`GraphPermissionError`,
+ADR-0013's amendment) means the scope isn't granted, surfaced as one
+per-item failure in the existing partial-failure model (ADR-0022), not
+as new pre-flight machinery.
+
+### Security/procurement framing
+
+This is a genuine new procurement conversation for every existing
+customer, not a quiet backend change — matches this ADR's own
+foundational reasoning (§ "Context": *"customer security/IT teams review
+requested Graph permissions during procurement... unjustified write
+scopes are a common blocker"*). The scope is now justified by a specific,
+narrow, reviewable feature (setting one date field on documents an admin
+explicitly selects), meeting the bar this ADR's original Option B
+rejection implicitly set: request a write scope only once a concrete,
+justified feature exists, never speculatively.
+
+### Explicitly deferred — required before Phase 3A-2 can begin
+
+**The actual re-consent UI/UX mechanics are not designed by this
+amendment and must not be guessed at.** The existing `/connect` flow
+(ADR-0012's 2026-07-15 amendment) is bootstrap-only — it has never been
+exercised for "add a scope to an already-connected tenant," and Microsoft's
+admin-consent URL mechanics for that specific scenario need real
+investigation (not assumption) before implementation: does re-running the
+tenant-wide admin-consent URL with an expanded scope list correctly
+upgrade an existing grant, or does it require a distinct flow? This is
+listed as a required investigation/design prerequisite for Phase 3A-2,
+not a solved problem — implementation of Phase 3A-2 must not begin until
+this is resolved, either by a dedicated design pass or by live
+experimentation against a real tenant.

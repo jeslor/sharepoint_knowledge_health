@@ -64,6 +64,20 @@ export interface DocumentDetailResponse {
   // library. Lets the UI show "Source: SharePoint · Review Date" instead
   // of just "SharePoint".
   reviewDateColumnDisplayName: string | null;
+  // Phase 3A-1: whether this document's LIBRARY currently has an Active
+  // SharePointReviewDateMapping — independent of reviewDateSource, which
+  // only reflects this document's own last-synced value. A document that
+  // has never been scanned since its library's mapping was confirmed
+  // still needs sharePointManaged: true, so the UI can correctly disable
+  // manual editing before the first sync ever runs. When true, the manual
+  // review-date editor must not be shown; setReviewDate also rejects a
+  // conflicting write (409) for the same reason.
+  sharePointManaged: boolean;
+  // The mapped column's display name whenever sharePointManaged is true —
+  // separate from reviewDateColumnDisplayName (which stays gated on
+  // reviewDateSource, unchanged) so this field is reliably populated even
+  // pre-first-sync.
+  sharePointManagedColumnDisplayName: string | null;
   webUrl: string | null;
 }
 

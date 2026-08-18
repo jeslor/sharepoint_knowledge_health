@@ -128,6 +128,8 @@ describe('DocumentsService', () => {
         nextReviewDueAt: null,
         reviewDateSource: 'Manual',
         reviewDateColumnDisplayName: null,
+        sharePointManaged: false,
+        sharePointManagedColumnDisplayName: null,
         webUrl: null,
       });
     });
@@ -169,6 +171,7 @@ describe('DocumentsService', () => {
         });
         sharePointSites.findMany.mockResolvedValue([{ id: 'site-1', displayName: 'Team Site' }]);
         sharePointReviewDateMappings.findByLibrary.mockResolvedValue({
+          status: 'Active',
           columnDisplayNameAtConfirmation: 'Review Date',
         });
 
@@ -178,7 +181,7 @@ describe('DocumentsService', () => {
         expect(sharePointReviewDateMappings.findByLibrary).toHaveBeenCalledWith('site-1', 'list-1');
       });
 
-      it('returns null when the source is Manual — never looks up a mapping', async () => {
+      it('returns null when the source is Manual, even though a mapping lookup now still runs for sharePointManaged (Phase 3A-1)', async () => {
         documents.findFirstById.mockResolvedValue({
           ...baseDocument,
           currentHealthScoreId: null,
@@ -186,11 +189,22 @@ describe('DocumentsService', () => {
           reviewDateSource: 'Manual',
         });
         sharePointSites.findMany.mockResolvedValue([{ id: 'site-1', displayName: 'Team Site' }]);
+        sharePointReviewDateMappings.findByLibrary.mockResolvedValue({
+          status: 'Active',
+          columnDisplayNameAtConfirmation: 'Review Date',
+        });
 
         const result = await service.getDocument('org-1', 'doc-1');
 
+        // reviewDateColumnDisplayName's own contract is unchanged — still
+        // gated strictly on reviewDateSource, regardless of what the
+        // (now-unconditional) mapping lookup finds.
         expect(result?.reviewDateColumnDisplayName).toBeNull();
-        expect(sharePointReviewDateMappings.findByLibrary).not.toHaveBeenCalled();
+        // sharePointManagedColumnDisplayName is the new field that DOES
+        // reflect the mapping in this state — see the dedicated describe
+        // block below.
+        expect(result?.sharePointManaged).toBe(true);
+        expect(result?.sharePointManagedColumnDisplayName).toBe('Review Date');
       });
 
       it('returns null when the source is GraphMetadata but the document has no graphListId (never rescanned since Phase 1a)', async () => {
@@ -221,6 +235,68 @@ describe('DocumentsService', () => {
         const result = await service.getDocument('org-1', 'doc-1');
 
         expect(result?.reviewDateColumnDisplayName).toBeNull();
+      });
+    });
+
+    describe('sharePointManaged / sharePointManagedColumnDisplayName (Phase 3A-1)', () => {
+      it('is true with the column name populated when the library has an Active mapping, regardless of this document\'s own reviewDateSource', async () => {
+        documents.findFirstById.mockResolvedValue({
+          ...baseDocument,
+          currentHealthScoreId: null,
+          graphListId: 'list-1',
+          reviewDateSource: 'Manual', // this document hasn't synced yet
+        });
+        sharePointSites.findMany.mockResolvedValue([{ id: 'site-1', displayName: 'Team Site' }]);
+        sharePointReviewDateMappings.findByLibrary.mockResolvedValue({
+          status: 'Active',
+          columnDisplayNameAtConfirmation: 'Review Date',
+        });
+
+        const result = await service.getDocument('org-1', 'doc-1');
+
+        expect(result?.sharePointManaged).toBe(true);
+        expect(result?.sharePointManagedColumnDisplayName).toBe('Review Date');
+      });
+
+      it('is false when the mapping is Stale — manual editing is not blocked while SharePoint cannot currently provide a value', async () => {
+        documents.findFirstById.mockResolvedValue({
+          ...baseDocument,
+          currentHealthScoreId: null,
+          graphListId: 'list-1',
+          reviewDateSource: 'GraphMetadata',
+        });
+        sharePointSites.findMany.mockResolvedValue([{ id: 'site-1', displayName: 'Team Site' }]);
+        sharePointReviewDateMappings.findByLibrary.mockResolvedValue({
+          status: 'Stale',
+          columnDisplayNameAtConfirmation: 'Review Date',
+        });
+
+        const result = await service.getDocument('org-1', 'doc-1');
+
+        expect(result?.sharePointManaged).toBe(false);
+        expect(result?.sharePointManagedColumnDisplayName).toBeNull();
+      });
+
+      it('is false with no lookup at all when the document has no graphListId', async () => {
+        documents.findFirstById.mockResolvedValue({ ...baseDocument, currentHealthScoreId: null, graphListId: null });
+        sharePointSites.findMany.mockResolvedValue([{ id: 'site-1', displayName: 'Team Site' }]);
+
+        const result = await service.getDocument('org-1', 'doc-1');
+
+        expect(result?.sharePointManaged).toBe(false);
+        expect(result?.sharePointManagedColumnDisplayName).toBeNull();
+        expect(sharePointReviewDateMappings.findByLibrary).not.toHaveBeenCalled();
+      });
+
+      it('is false when no mapping exists for the library at all', async () => {
+        documents.findFirstById.mockResolvedValue({ ...baseDocument, currentHealthScoreId: null, graphListId: 'list-1' });
+        sharePointSites.findMany.mockResolvedValue([{ id: 'site-1', displayName: 'Team Site' }]);
+        sharePointReviewDateMappings.findByLibrary.mockResolvedValue(null);
+
+        const result = await service.getDocument('org-1', 'doc-1');
+
+        expect(result?.sharePointManaged).toBe(false);
+        expect(result?.sharePointManagedColumnDisplayName).toBeNull();
       });
     });
 
@@ -457,6 +533,82 @@ describe('DocumentsService', () => {
 
       expect(documents.updateById).toHaveBeenCalledWith('doc-1', { nextReviewDueAt: null, reviewDateSource: 'Manual' });
       expect(result).toEqual({ documentId: 'doc-1', nextReviewDueAt: null, reviewDateSource: 'Manual' });
+    });
+
+    describe('SharePoint-managed conflict guard (Phase 3A-1, ADR-0016 §17.4)', () => {
+      it('rejects with a 409 identifying the mapped column when the library has an Active mapping — never silently overwrites', async () => {
+        documents.findFirstById.mockResolvedValue({ id: 'doc-1', siteId: 'site-1', graphListId: 'list-1' });
+        sharePointReviewDateMappings.findByLibrary.mockResolvedValue({
+          status: 'Active',
+          columnDisplayNameAtConfirmation: 'Review Date',
+        });
+
+        await expect(service.setReviewDate('org-1', 'doc-1', '2026-12-01T00:00:00.000Z')).rejects.toThrow(
+          /managed by SharePoint.*Review Date/,
+        );
+        expect(documents.updateById).not.toHaveBeenCalled();
+      });
+
+      it('looks up the mapping using this document\'s own siteId/graphListId, not any other value (tenant/document isolation)', async () => {
+        documents.findFirstById.mockResolvedValue({ id: 'doc-1', siteId: 'site-42', graphListId: 'list-99' });
+        sharePointReviewDateMappings.findByLibrary.mockResolvedValue(null);
+        documents.updateById.mockResolvedValue({ id: 'doc-1', nextReviewDueAt: null, reviewDateSource: 'Manual' });
+
+        await service.setReviewDate('org-1', 'doc-1', null);
+
+        expect(sharePointReviewDateMappings.findByLibrary).toHaveBeenCalledWith('site-42', 'list-99');
+        // createTenantContext('org-1') already scopes sharePointReviewDateMappings
+        // to this organization (verified by the repository's own tenant-isolation
+        // tests) — this assertion confirms the service passes through the
+        // document's real identifiers rather than anything client-supplied.
+      });
+
+      it('allows the manual write when the mapping is Stale — SharePoint cannot currently provide a value', async () => {
+        documents.findFirstById.mockResolvedValue({ id: 'doc-1', siteId: 'site-1', graphListId: 'list-1' });
+        sharePointReviewDateMappings.findByLibrary.mockResolvedValue({
+          status: 'Stale',
+          columnDisplayNameAtConfirmation: 'Review Date',
+        });
+        documents.updateById.mockResolvedValue({
+          id: 'doc-1',
+          nextReviewDueAt: new Date('2026-12-01T00:00:00.000Z'),
+          reviewDateSource: 'Manual',
+        });
+
+        const result = await service.setReviewDate('org-1', 'doc-1', '2026-12-01T00:00:00.000Z');
+
+        expect(result).not.toBeNull();
+        expect(documents.updateById).toHaveBeenCalled();
+      });
+
+      it('allows the manual write when no mapping exists for the library at all', async () => {
+        documents.findFirstById.mockResolvedValue({ id: 'doc-1', siteId: 'site-1', graphListId: 'list-1' });
+        sharePointReviewDateMappings.findByLibrary.mockResolvedValue(null);
+        documents.updateById.mockResolvedValue({
+          id: 'doc-1',
+          nextReviewDueAt: new Date('2026-12-01T00:00:00.000Z'),
+          reviewDateSource: 'Manual',
+        });
+
+        const result = await service.setReviewDate('org-1', 'doc-1', '2026-12-01T00:00:00.000Z');
+
+        expect(result).not.toBeNull();
+        expect(documents.updateById).toHaveBeenCalled();
+      });
+
+      it('allows the manual write without any lookup when the document has no graphListId', async () => {
+        documents.findFirstById.mockResolvedValue({ id: 'doc-1' });
+        documents.updateById.mockResolvedValue({
+          id: 'doc-1',
+          nextReviewDueAt: new Date('2026-12-01T00:00:00.000Z'),
+          reviewDateSource: 'Manual',
+        });
+
+        const result = await service.setReviewDate('org-1', 'doc-1', '2026-12-01T00:00:00.000Z');
+
+        expect(result).not.toBeNull();
+        expect(sharePointReviewDateMappings.findByLibrary).not.toHaveBeenCalled();
+      });
     });
   });
 

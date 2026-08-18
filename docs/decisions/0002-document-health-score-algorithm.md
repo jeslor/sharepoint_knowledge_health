@@ -209,3 +209,75 @@ does **not** wire it into `hasReviewDate` — that wiring only happens once
 this amendment itself is separately reviewed and accepted, keeping
 governance-feature delivery and scoring-input changes on two independent
 approval tracks, per the explicit instruction to keep them separate.
+
+---
+
+## Amendment (2026-08-13 — Overdue/Due-Soon distinction, fulfilling this ADR's own 2026-07-23 deferral) — Accepted
+
+The 2026-07-23 amendment above explicitly deferred this exact question:
+*"Deliberately not proposed by this amendment: distinguishing 'has a
+review date' from 'review date has not yet passed'... That would be a
+genuine algorithm change — a new condition, not a new input — and is
+left as an explicit open question for a future amendment if there's
+evidence it's needed, not decided here."* Phase 3 (bulk remediation
+planning) supplies that evidence: a document with a review date 5 years
+in the past currently scores identically to one due next quarter, which
+undermines the whole point of a review-date signal.
+
+### Decision
+
+`ScoringInput.hasReviewDate: boolean` is replaced by
+`nextReviewDueAt: Date | null`, plus an explicit `now: Date` parameter
+threaded into `calculateScore`/`scoreReviewStatus` — never `new Date()`
+called inside the pure rule function itself, preserving this package's
+own stated design principle ("deterministic — same input always produces
+the same output, no external state").
+
+| State     | Condition                                | Score | HealthIssue?                    |
+|-----------|--------------------------------------------|-------|-----------------------------------|
+| Missing   | `nextReviewDueAt === null`                  | 0     | Yes — `RequiresReview` (unchanged) |
+| Overdue   | `nextReviewDueAt < now`                     | 50    | Yes — `NeedsAttention` (new)       |
+| Healthy   | `nextReviewDueAt >= now`                    | 100   | No (unchanged)                     |
+
+**Overdue's score (50) and severity (`NeedsAttention`) reuse the existing
+40–69 band from the Phase 5 amendment above**, rather than introducing a
+new scale. The ordering is deliberate: Missing (nobody ever established a
+cadence at all) is judged worse than Overdue (a cadence exists, it has
+simply lapsed) — 0 vs. 50 preserves that distinction while landing each
+state in the band its severity already implies (Missing < 40 →
+`RequiresReview`; Overdue in 40–69 → `NeedsAttention`).
+
+**Due Soon is explicitly NOT a scored state.** A document whose
+`nextReviewDueAt` falls within **30 days** of `now` stays in the Healthy
+branch (score 100, no `HealthIssue`) — "Due Soon" is a presentation-layer
+badge computed independently from the same `nextReviewDueAt` value at
+read time (document/library/org-level display), never persisted, never a
+`HealthIssue`, never a `GovernanceIssue`. Nothing is actually wrong yet;
+creating governance workflow noise for a document merely approaching its
+date would cheapen the signal for the two states that represent real
+problems (Missing, Overdue).
+
+**Due Soon window = 30 days**, chosen as a proportionate default for
+typical enterprise document-review cadences (commonly quarterly or
+annual) — gives an admin roughly a month's notice without being so wide
+it flags most of an organization's documents as "due soon" at once. Not
+derived from customer data (none exists yet); revisit if real usage shows
+it's poorly calibrated, per this ADR's own "treat the first weight/
+threshold set as provisional" precedent.
+
+### Scoring impact
+
+Weight (15%, MVP Weights table) is unchanged. This deepens the existing
+`ReviewStatus` rule's own internal logic — exactly the kind of change
+`calculate-score.ts`'s own doc comment anticipates ("adding a rule is
+mechanical... no existing rule needs to change"), except this isn't even
+a new rule, it's completing the third one. No other criterion is
+affected.
+
+**Rollout impact**: a one-time step-function shift the first scan after
+this ships — some previously-"Healthy-via-Missing-check-passing"
+documents (those with a review date already in the past) will newly
+surface a `NeedsAttention` issue where none existed before. Expected and
+correct, not a regression — flag to customers/support as a known
+one-time scoring shift, matching this ADR's own precedent for the
+2026-07-23 amendment's rollout note.

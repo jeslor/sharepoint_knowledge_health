@@ -1,4 +1,4 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { DocumentsController } from './documents.controller';
 import type { DocumentsService } from './documents.service';
 
@@ -133,6 +133,17 @@ describe('DocumentsController', () => {
       await expect(
         controller.setReviewDate('org-1', 'doc-missing', { nextReviewDueAt: null }),
       ).rejects.toThrow(NotFoundException);
+    });
+
+    // Phase 3A-1 (ADR-0016 §17.4): the controller does no exception mapping
+    // of its own for this case — it must simply not swallow a 409 the
+    // service throws for a SharePoint-managed library.
+    it('propagates the service\'s 409 when the library is SharePoint-managed, rather than swallowing it', async () => {
+      service.setReviewDate.mockRejectedValue(new ConflictException('Review dates for this library are managed by SharePoint'));
+
+      await expect(
+        controller.setReviewDate('org-1', 'doc-1', { nextReviewDueAt: '2026-12-01T00:00:00.000Z' }),
+      ).rejects.toThrow(ConflictException);
     });
   });
 

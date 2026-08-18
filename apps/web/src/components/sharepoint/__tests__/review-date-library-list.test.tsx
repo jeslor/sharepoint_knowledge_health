@@ -64,9 +64,19 @@ describe('ReviewDateLibraryList', () => {
 
     render(<ReviewDateLibraryList siteId="site-1" libraries={[library()]} canManage onMappingChanged={jest.fn()} />);
 
-    expect(screen.getByText('No SharePoint column found')).toBeInTheDocument();
+    expect(screen.getByText('Review date column not configured')).toBeInTheDocument();
     expect(screen.getByText(/create a Date and Time column in SharePoint/)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument();
+  });
+
+  it('CHECKED, NO ELIGIBLE COLUMN: offers a discoverable, structured how-to for creating the column (Phase 3A-1)', () => {
+    mockedUseEligibility.mockReturnValue({ result: { status: 'NoEligibleColumn' }, checking: false, checkError: undefined, check });
+
+    render(<ReviewDateLibraryList siteId="site-1" libraries={[library()]} canManage onMappingChanged={jest.fn()} />);
+
+    expect(screen.getByText('How do I create this column?')).toBeInTheDocument();
+    expect(screen.getByText(/Select "Add column"/)).toBeInTheDocument();
+    expect(screen.getByText(/Review Due Date/)).toBeInTheDocument();
   });
 
   it('CHECKED, ONE CANDIDATE: shows an "Action needed" badge and a Confirm button that opens the dialog', () => {

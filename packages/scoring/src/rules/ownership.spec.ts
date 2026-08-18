@@ -8,7 +8,7 @@ function baseInput(overrides: Partial<ScoringInput> = {}): ScoringInput {
     sourceCreatedAt: new Date('2026-01-01'),
     sourceModifiedAt: new Date('2026-06-01'),
     sizeBytes: 1000,
-    hasReviewDate: true,
+    nextReviewDueAt: new Date('2099-01-01'),
     owners: [],
     siblingDocuments: [],
     ...overrides,

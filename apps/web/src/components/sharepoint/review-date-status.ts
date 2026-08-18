@@ -37,7 +37,7 @@ export function deriveReviewDateLibraryStatus(
 
 export const REVIEW_DATE_STATUS_LABEL: Record<ReviewDateLibraryStatus['kind'], string> = {
   NotChecked: 'Not checked',
-  NoEligibleColumn: 'No SharePoint column found',
+  NoEligibleColumn: 'Review date column not configured',
   SingleEligibleColumn: 'Action needed',
   MultipleEligibleColumns: 'Action needed',
   Active: 'SharePoint review dates enabled',
@@ -71,9 +71,25 @@ export function reviewDateStatusExplanation(status: ReviewDateLibraryStatus): st
 }
 
 // Only shown for NoEligibleColumn — the self-service remediation path.
-// Never implies Knowledge Health can or will create the column itself.
+// Never implies Knowledge Health can or will create the column itself
+// (ADR-0016 §17.4: automatic column creation stays explicitly out of
+// scope). Short summary for inline display, always visible; the
+// step-by-step list below is for an optional, discoverable help
+// disclosure (tooltip/expandable), not forced onto every reader.
 export const NO_ELIGIBLE_COLUMN_GUIDANCE =
-  "You can continue managing review dates manually in Knowledge Health. If you want SharePoint to provide review dates, create a Date and Time column in SharePoint (for example, 'Review Date'), then return here and check again.";
+  "Knowledge Health couldn't find a SharePoint column that represents a review date for this library. You can continue managing review dates manually here, or create a Date and Time column in SharePoint so Knowledge Health can detect it automatically.";
+
+// Phase 3A-1: structured how-to steps, so an admin isn't left guessing
+// "where/how" from one paragraph alone. Column-name examples deliberately
+// mirror @sph/review-date-discovery's own high-confidence naming
+// patterns (ADR-0016 §17.2/§17.4) — a name chosen from this list is
+// guaranteed to be recognized, not a guess.
+export const NO_ELIGIBLE_COLUMN_STEPS: readonly string[] = [
+  'Open this library in SharePoint.',
+  'Select "Add column" and choose "Date and Time" as the column type.',
+  'Name it something that clearly represents a review date — for example "Review Date", "Review Due Date", or "Next Review Date".',
+  'Save the column, then return to Knowledge Health and check again. No changes are needed here — the next check detects it automatically.',
+];
 
 export const CONFIRM_OVERWRITE_WARNING =
   'Once confirmed, SharePoint becomes the source of review dates for documents in this library. Existing manually-entered review dates may be replaced when SharePoint provides a value.';

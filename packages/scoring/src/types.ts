@@ -28,7 +28,13 @@ export interface ScoringInput {
   sourceCreatedAt: Date;
   sourceModifiedAt: Date;
   sizeBytes: number;
-  hasReviewDate: boolean;
+  /**
+   * ADR-0002 amendment (2026-08-13): the actual scheduled review date, not
+   * a pre-computed boolean — scoreReviewStatus does its own date-vs-`now`
+   * comparison (Missing/Overdue/Healthy) rather than the caller collapsing
+   * that into "present or not" before this input is even constructed.
+   */
+  nextReviewDueAt: Date | null;
   owners: DocumentOwnerInput[];
   /** Other documents in the same tenant, for exact-match duplicate detection (ADR-0005). */
   siblingDocuments: SiblingDocumentInput[];

@@ -8,6 +8,8 @@ describe('DocumentReviewDate', () => {
         nextReviewDueAt="2026-12-01T00:00:00.000Z"
         reviewDateSource="Manual"
         reviewDateColumnDisplayName={null}
+        sharePointManaged={false}
+        sharePointManagedColumnDisplayName={null}
         canManage={false}
         onSave={jest.fn()}
         saving={false}
@@ -23,6 +25,8 @@ describe('DocumentReviewDate', () => {
         nextReviewDueAt={null}
         reviewDateSource={null}
         reviewDateColumnDisplayName={null}
+        sharePointManaged={false}
+        sharePointManagedColumnDisplayName={null}
         canManage={false}
         onSave={jest.fn()}
         saving={false}
@@ -38,6 +42,8 @@ describe('DocumentReviewDate', () => {
         nextReviewDueAt={null}
         reviewDateSource={null}
         reviewDateColumnDisplayName={null}
+        sharePointManaged={false}
+        sharePointManagedColumnDisplayName={null}
         canManage={false}
         onSave={jest.fn()}
         saving={false}
@@ -54,6 +60,8 @@ describe('DocumentReviewDate', () => {
         nextReviewDueAt={null}
         reviewDateSource={null}
         reviewDateColumnDisplayName={null}
+        sharePointManaged={false}
+        sharePointManagedColumnDisplayName={null}
         canManage={false}
         onSave={jest.fn()}
         saving={false}
@@ -71,6 +79,8 @@ describe('DocumentReviewDate', () => {
         nextReviewDueAt={null}
         reviewDateSource={null}
         reviewDateColumnDisplayName={null}
+        sharePointManaged={false}
+        sharePointManagedColumnDisplayName={null}
         canManage
         onSave={jest.fn()}
         saving={false}
@@ -86,6 +96,8 @@ describe('DocumentReviewDate', () => {
         nextReviewDueAt="2026-12-01T00:00:00.000Z"
         reviewDateSource="Manual"
         reviewDateColumnDisplayName={null}
+        sharePointManaged={false}
+        sharePointManagedColumnDisplayName={null}
         canManage={false}
         onSave={jest.fn()}
         saving={false}
@@ -102,6 +114,8 @@ describe('DocumentReviewDate', () => {
         nextReviewDueAt={null}
         reviewDateSource={null}
         reviewDateColumnDisplayName={null}
+        sharePointManaged={false}
+        sharePointManagedColumnDisplayName={null}
         canManage
         onSave={onSave}
         saving={false}
@@ -122,6 +136,8 @@ describe('DocumentReviewDate', () => {
         nextReviewDueAt="2026-12-01T00:00:00.000Z"
         reviewDateSource="Manual"
         reviewDateColumnDisplayName={null}
+        sharePointManaged={false}
+        sharePointManagedColumnDisplayName={null}
         canManage
         onSave={onSave}
         saving={false}
@@ -140,6 +156,8 @@ describe('DocumentReviewDate', () => {
         nextReviewDueAt={null}
         reviewDateSource={null}
         reviewDateColumnDisplayName={null}
+        sharePointManaged={false}
+        sharePointManagedColumnDisplayName={null}
         canManage
         onSave={jest.fn()}
         saving={false}
@@ -155,6 +173,8 @@ describe('DocumentReviewDate', () => {
         nextReviewDueAt={null}
         reviewDateSource={null}
         reviewDateColumnDisplayName={null}
+        sharePointManaged={false}
+        sharePointManagedColumnDisplayName={null}
         canManage
         onSave={jest.fn()}
         saving
@@ -170,6 +190,8 @@ describe('DocumentReviewDate', () => {
         nextReviewDueAt={null}
         reviewDateSource={null}
         reviewDateColumnDisplayName={null}
+        sharePointManaged={false}
+        sharePointManagedColumnDisplayName={null}
         canManage
         onSave={jest.fn()}
         saving={false}
@@ -185,6 +207,8 @@ describe('DocumentReviewDate', () => {
         nextReviewDueAt={null}
         reviewDateSource={null}
         reviewDateColumnDisplayName={null}
+        sharePointManaged={false}
+        sharePointManagedColumnDisplayName={null}
         canManage
         onSave={jest.fn()}
         saving={false}
@@ -201,6 +225,8 @@ describe('DocumentReviewDate', () => {
           nextReviewDueAt="2026-09-30T00:00:00.000Z"
           reviewDateSource="GraphMetadata"
           reviewDateColumnDisplayName="Review Date"
+          sharePointManaged={false}
+          sharePointManagedColumnDisplayName={null}
           canManage={false}
           onSave={jest.fn()}
           saving={false}
@@ -216,6 +242,8 @@ describe('DocumentReviewDate', () => {
           nextReviewDueAt="2026-09-30T00:00:00.000Z"
           reviewDateSource="GraphMetadata"
           reviewDateColumnDisplayName={null}
+          sharePointManaged={false}
+          sharePointManagedColumnDisplayName={null}
           canManage={false}
           onSave={jest.fn()}
           saving={false}
@@ -231,6 +259,8 @@ describe('DocumentReviewDate', () => {
           nextReviewDueAt="2026-09-30T00:00:00.000Z"
           reviewDateSource="Manual"
           reviewDateColumnDisplayName={null}
+          sharePointManaged={false}
+          sharePointManagedColumnDisplayName={null}
           canManage={false}
           onSave={jest.fn()}
           saving={false}
@@ -246,6 +276,8 @@ describe('DocumentReviewDate', () => {
           nextReviewDueAt={null}
           reviewDateSource={null}
           reviewDateColumnDisplayName={null}
+          sharePointManaged={false}
+          sharePointManagedColumnDisplayName={null}
           canManage={false}
           onSave={jest.fn()}
           saving={false}
@@ -261,6 +293,8 @@ describe('DocumentReviewDate', () => {
           nextReviewDueAt="2026-09-30T00:00:00.000Z"
           reviewDateSource="GraphMetadata"
           reviewDateColumnDisplayName="Review Date"
+          sharePointManaged={false}
+          sharePointManagedColumnDisplayName={null}
           canManage={false}
           onSave={jest.fn()}
           saving={false}
@@ -268,6 +302,98 @@ describe('DocumentReviewDate', () => {
         />,
       );
       expect(screen.queryByText(/GraphMetadata/)).not.toBeInTheDocument();
+    });
+  });
+
+  describe('SharePoint-managed conflict guard (Phase 3A-1)', () => {
+    it('never renders the manual editor when the library is SharePoint-managed, even for an Admin (canManage=true)', () => {
+      render(
+        <DocumentReviewDate
+          nextReviewDueAt="2026-09-30T00:00:00.000Z"
+          reviewDateSource="Manual"
+          reviewDateColumnDisplayName={null}
+          sharePointManaged
+          sharePointManagedColumnDisplayName="Review Date"
+          canManage
+          onSave={jest.fn()}
+          saving={false}
+          saveError={undefined}
+        />,
+      );
+      expect(screen.queryByLabelText(/scheduled review date/i)).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /^save$/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /clear/i })).not.toBeInTheDocument();
+    });
+
+    it('identifies the mapped SharePoint column by name in the explanation', () => {
+      render(
+        <DocumentReviewDate
+          nextReviewDueAt={null}
+          reviewDateSource={null}
+          reviewDateColumnDisplayName={null}
+          sharePointManaged
+          sharePointManagedColumnDisplayName="Review Date"
+          canManage
+          onSave={jest.fn()}
+          saving={false}
+          saveError={undefined}
+        />,
+      );
+      expect(screen.getByText(/managed by SharePoint/)).toBeInTheDocument();
+      expect(screen.getByText(/"Review Date" column/)).toBeInTheDocument();
+    });
+
+    it('still shows a clear explanation even when the column name is unavailable', () => {
+      render(
+        <DocumentReviewDate
+          nextReviewDueAt={null}
+          reviewDateSource={null}
+          reviewDateColumnDisplayName={null}
+          sharePointManaged
+          sharePointManagedColumnDisplayName={null}
+          canManage
+          onSave={jest.fn()}
+          saving={false}
+          saveError={undefined}
+        />,
+      );
+      expect(screen.getByText(/managed by SharePoint/)).toBeInTheDocument();
+    });
+
+    it('does not show the "requires Admin or Governance Manager" permission message when SharePoint-managed and canManage is false — the explanation is about the source, not permissions', () => {
+      render(
+        <DocumentReviewDate
+          nextReviewDueAt={null}
+          reviewDateSource={null}
+          reviewDateColumnDisplayName={null}
+          sharePointManaged
+          sharePointManagedColumnDisplayName="Review Date"
+          canManage={false}
+          onSave={jest.fn()}
+          saving={false}
+          saveError={undefined}
+        />,
+      );
+      expect(screen.queryByText(/requires admin or governance manager permissions/i)).not.toBeInTheDocument();
+      expect(screen.getByText(/managed by SharePoint/)).toBeInTheDocument();
+    });
+
+    it('the read-only current-value summary and source line stay visible even when SharePoint-managed', () => {
+      render(
+        <DocumentReviewDate
+          nextReviewDueAt="2026-09-30T00:00:00.000Z"
+          reviewDateSource="GraphMetadata"
+          reviewDateColumnDisplayName="Review Date"
+          sharePointManaged
+          sharePointManagedColumnDisplayName="Review Date"
+          canManage
+          onSave={jest.fn()}
+          saving={false}
+          saveError={undefined}
+        />,
+      );
+      expect(screen.getByText(/next review due/i)).toBeInTheDocument();
+      expect(screen.getByText('Source: SharePoint · Review Date')).toBeInTheDocument();
     });
   });
 });
