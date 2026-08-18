@@ -50,8 +50,11 @@ export interface ReviewDateLibraryResponse {
 // action above — lets a caller inspect a library's eligibility state
 // without attempting (and risking side effects from) a confirm call.
 // confidence is display-only metadata for a future admin selection UI; it
-// never changes which of these three states applies.
-export type ReviewDateCandidateConfidence = 'high' | 'medium' | 'low';
+// never changes which of these three states applies. 'ambiguous' (Phase
+// 3A-1) covers a candidate whose name contains "review" but no
+// date-indicating word (e.g. "Document Review") — still just as
+// non-gating as every other tier; a human always confirms explicitly.
+export type ReviewDateCandidateConfidence = 'high' | 'medium' | 'low' | 'ambiguous';
 
 export interface ReviewDateEligibilityColumn {
   id: string;

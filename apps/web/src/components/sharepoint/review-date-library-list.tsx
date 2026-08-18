@@ -8,7 +8,12 @@ import { useReviewDateEligibility } from '@/lib/api/hooks/use-review-date-eligib
 import { useConfirmReviewDateMapping } from '@/lib/api/hooks/use-confirm-review-date-mapping';
 import { ReviewDateStatusBadge } from './review-date-status-badge';
 import { ReviewDateConfirmDialog } from './review-date-confirm-dialog';
-import { deriveReviewDateLibraryStatus, reviewDateStatusExplanation, NO_ELIGIBLE_COLUMN_GUIDANCE } from './review-date-status';
+import {
+  deriveReviewDateLibraryStatus,
+  reviewDateStatusExplanation,
+  NO_ELIGIBLE_COLUMN_GUIDANCE,
+  NO_ELIGIBLE_COLUMN_STEPS,
+} from './review-date-status';
 
 interface ReviewDateLibraryListProps {
   siteId: string;
@@ -120,7 +125,24 @@ function ReviewDateLibraryRow({ siteId, library, canManage, onMappingChanged }: 
 
       <p className="mt-1 text-xs text-slate-500">{reviewDateStatusExplanation(status)}</p>
 
-      {status.kind === 'NoEligibleColumn' && <p className="mt-1 text-xs text-slate-500">{NO_ELIGIBLE_COLUMN_GUIDANCE}</p>}
+      {status.kind === 'NoEligibleColumn' && (
+        <div className="mt-1">
+          <p className="text-xs text-slate-500">{NO_ELIGIBLE_COLUMN_GUIDANCE}</p>
+          {/* Native disclosure — accessible by default, no JS state needed;
+              keeps the step-by-step how-to out of the way until an admin
+              actually wants it, rather than always-on wall-of-text. */}
+          <details className="mt-1 text-xs text-slate-500">
+            <summary className="cursor-pointer font-medium text-slate-600 hover:text-slate-900">
+              How do I create this column?
+            </summary>
+            <ol className="mt-1 list-decimal space-y-0.5 pl-4">
+              {NO_ELIGIBLE_COLUMN_STEPS.map((step) => (
+                <li key={step}>{step}</li>
+              ))}
+            </ol>
+          </details>
+        </div>
+      )}
 
       {status.kind === 'Active' && (
         <p className="mt-1 text-xs text-slate-500">

@@ -15,6 +15,14 @@ interface DocumentReviewDateProps {
   // "Source: ..." sentences below.
   reviewDateSource: string | null;
   reviewDateColumnDisplayName: string | null;
+  // Phase 3A-1 (ADR-0016 §17.4): true whenever this document's LIBRARY has
+  // an Active SharePoint mapping right now — independent of
+  // reviewDateSource, which only reflects this document's own last sync.
+  // When true, the manual editor must never render: it would either be
+  // rejected by the API's own 409 guard, or (worse) appear to succeed and
+  // then be silently overwritten by the next scan.
+  sharePointManaged: boolean;
+  sharePointManagedColumnDisplayName: string | null;
   canManage: boolean;
   onSave: (nextReviewDueAt: string | null) => Promise<void>;
   saving: boolean;
@@ -35,6 +43,8 @@ export function DocumentReviewDate({
   nextReviewDueAt,
   reviewDateSource,
   reviewDateColumnDisplayName,
+  sharePointManaged,
+  sharePointManagedColumnDisplayName,
   canManage,
   onSave,
   saving,
@@ -78,38 +88,53 @@ export function DocumentReviewDate({
           : 'Source: Manually managed'}
       </p>
 
-      {canManage && (
-        <>
-          <div className="flex flex-wrap items-end gap-3">
-            <Field label="Scheduled review date">
-              <Input type="date" value={dateInput} disabled={saving} onChange={(event) => setDateInput(event.target.value)} />
-            </Field>
-            <Button size="sm" disabled={saving || unchanged} onClick={handleSave}>
-              {saving ? 'Saving…' : 'Save'}
-            </Button>
-            {nextReviewDueAt && (
-              <Button variant="ghost" size="sm" disabled={saving} onClick={handleClear}>
-                Clear
-              </Button>
-            )}
-          </div>
-          <p className="text-xs text-slate-500">
-            This is the next date the document should be reviewed. Saving does not immediately resolve the governance
-            issue — the next scan must confirm the review date is set before the issue is verified as fixed.
-          </p>
-          {saveError && <ErrorState error={saveError} />}
-        </>
-      )}
-
-      {!canManage && (
-        // Closes the self-service dead end: a Member arriving here via a
-        // ReviewStatus issue's remediation guidance previously found the
-        // control simply absent, with no explanation. The read-only
-        // summary line above stays visible either way — this doesn't gate
-        // anything, it only explains the existing, unchanged boundary.
+      {sharePointManaged ? (
+        // Phase 3A-1: never a competing manual control here — SharePoint
+        // is authoritative for this library right now (ADR-0016 §17.1/
+        // §17.4). Shown instead of the editor regardless of canManage,
+        // since manually editing here would do nothing durable.
         <p className="text-sm text-slate-500">
-          Setting the review date requires Admin or Governance Manager permissions. Please contact your administrator.
+          This library&apos;s review dates are managed by SharePoint
+          {sharePointManagedColumnDisplayName ? ` via the "${sharePointManagedColumnDisplayName}" column` : ''}.
+          Update the value directly in SharePoint, or ask an administrator to remove the mapping to manage this
+          document&apos;s review date manually again.
         </p>
+      ) : (
+        <>
+          {canManage && (
+            <>
+              <div className="flex flex-wrap items-end gap-3">
+                <Field label="Scheduled review date">
+                  <Input type="date" value={dateInput} disabled={saving} onChange={(event) => setDateInput(event.target.value)} />
+                </Field>
+                <Button size="sm" disabled={saving || unchanged} onClick={handleSave}>
+                  {saving ? 'Saving…' : 'Save'}
+                </Button>
+                {nextReviewDueAt && (
+                  <Button variant="ghost" size="sm" disabled={saving} onClick={handleClear}>
+                    Clear
+                  </Button>
+                )}
+              </div>
+              <p className="text-xs text-slate-500">
+                This is the next date the document should be reviewed. Saving does not immediately resolve the governance
+                issue — the next scan must confirm the review date is set before the issue is verified as fixed.
+              </p>
+              {saveError && <ErrorState error={saveError} />}
+            </>
+          )}
+
+          {!canManage && (
+            // Closes the self-service dead end: a Member arriving here via a
+            // ReviewStatus issue's remediation guidance previously found the
+            // control simply absent, with no explanation. The read-only
+            // summary line above stays visible either way — this doesn't gate
+            // anything, it only explains the existing, unchanged boundary.
+            <p className="text-sm text-slate-500">
+              Setting the review date requires Admin or Governance Manager permissions. Please contact your administrator.
+            </p>
+          )}
+        </>
       )}
 
       {showSavedToast && <Toast message="Review date saved." onDismiss={() => setShowSavedToast(false)} />}

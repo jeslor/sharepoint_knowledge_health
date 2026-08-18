@@ -33,15 +33,14 @@ interface ScanAggregateSummary {
  * Approved, persists normalized metadata, and scores every document in the
  * tenant. Metadata analysis only — no document content is ever downloaded.
  *
- * ReviewStatus scoring input (ADR-0002 amendment, accepted 2026-07-23):
- * Graph's driveItem endpoint has no native "review date" — that's a
- * SharePoint custom list column, which requires the separate List Items
- * API that packages/graph-client does not implement (ADR-0013 §8). Until
- * that exists, `hasReviewDate` reflects `Document.nextReviewDueAt`, set
- * only via `PATCH /organizations/:id/documents/:documentId/review`
- * (`reviewDateSource: Manual`) — the only review-date source that exists
- * today. A document nobody has set a review date for continues to fail
- * ReviewStatus exactly as before; this only stops it being *unconditional*.
+ * ReviewStatus scoring input (ADR-0002 amendments, 2026-07-23 and
+ * 2026-08-13): `nextReviewDueAt` is passed straight through from
+ * `Document.nextReviewDueAt` — set either manually (`PATCH
+ * /organizations/:id/documents/:documentId/review`, `reviewDateSource:
+ * Manual`) or by the SharePoint review-date sync
+ * (`sharepoint-metadata/review-date-sync.ts`, `reviewDateSource:
+ * GraphMetadata`) — scoreReviewStatus itself now does the date-vs-`now`
+ * comparison (Missing/Overdue/Healthy), not this call site.
  */
 @Processor(SCAN_QUEUE, { concurrency: Number(process.env.WORKER_CONCURRENCY) || 5 })
 export class DocumentCollectorProcessor extends WorkerHost {
@@ -497,6 +496,13 @@ export class DocumentCollectorProcessor extends WorkerHost {
     let criticalIssuesCount = 0;
     let warningIssuesCount = 0;
 
+    // One shared instant for every document scored in this batch — every
+    // document in the same scan is judged against the same "now" for
+    // Overdue/Healthy, rather than each drifting by however long the loop
+    // takes to reach it (ADR-0002 amendment, 2026-08-13: "pass now
+    // explicitly, never call new Date() inside the scoring function").
+    const scoringNow = new Date();
+
     for (const document of documents) {
       const key = `${document.name}::${document.sizeBytes}`;
       const ownerInputs: DocumentOwnerInput[] = (ownersByDocumentId.get(document.id) ?? []).map((owner) => ({
@@ -510,10 +516,10 @@ export class DocumentCollectorProcessor extends WorkerHost {
         sourceCreatedAt: document.sourceCreatedAt,
         sourceModifiedAt: document.sourceModifiedAt,
         sizeBytes: Number(document.sizeBytes),
-        // See class-level doc comment — Manual is the only source today.
-        hasReviewDate: document.nextReviewDueAt !== null,
+        nextReviewDueAt: document.nextReviewDueAt,
         owners: ownerInputs,
         siblingDocuments: siblingsByKey.get(key) ?? [],
+        now: scoringNow,
       });
 
       const healthScore = await context.healthScores.create({

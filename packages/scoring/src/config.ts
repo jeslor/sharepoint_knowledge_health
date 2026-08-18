@@ -24,3 +24,21 @@ export const ISSUE_THRESHOLD = 70;
 export const SEVERITY_BANDS = {
   NEEDS_ATTENTION_MIN: 40, // 40-69 -> NeedsAttention, below 40 -> RequiresReview
 };
+
+/**
+ * ADR-0002 amendment (2026-08-13): ReviewStatus's Overdue sub-score —
+ * lands in the existing 40-69 NeedsAttention band (via SEVERITY_BANDS
+ * above), deliberately higher than Missing's 0 (a lapsed cadence is
+ * judged less severe than no cadence ever having existed).
+ */
+export const REVIEW_STATUS_OVERDUE_SCORE = 50;
+
+/**
+ * ADR-0002 amendment (2026-08-13): how many days out "Due Soon" looks —
+ * presentation-only (see rules/review-status.ts's classifyReviewDate),
+ * never affects the scored Overdue/Healthy outcome. Chosen as a
+ * proportionate default for typical enterprise review cadences
+ * (commonly quarterly/annual) — not derived from customer data, since
+ * none exists yet; revisit if real usage shows it's poorly calibrated.
+ */
+export const REVIEW_DATE_DUE_SOON_WINDOW_DAYS = 30;

@@ -7,12 +7,17 @@ const CONFIDENCE_LABEL: Record<ReviewDateEligibilityColumn['confidence'], string
   high: 'High confidence',
   medium: 'Medium confidence',
   low: 'Low confidence',
+  // Phase 3A-1: "review" is present in the name, but nothing indicates a
+  // date (e.g. "Document Review") — flagged distinctly so an admin knows
+  // to look closer, never silently folded into "low".
+  ambiguous: 'Uncertain — please verify',
 };
 
-const CONFIDENCE_TONE: Record<ReviewDateEligibilityColumn['confidence'], 'success' | 'info' | 'neutral'> = {
+const CONFIDENCE_TONE: Record<ReviewDateEligibilityColumn['confidence'], 'success' | 'info' | 'neutral' | 'warning'> = {
   high: 'success',
   medium: 'info',
   low: 'neutral',
+  ambiguous: 'warning',
 };
 
 interface ReviewDateCandidateSelectorProps {

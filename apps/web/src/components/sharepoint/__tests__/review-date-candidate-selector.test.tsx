@@ -7,6 +7,10 @@ const candidates: ReviewDateEligibilityColumn[] = [
   { id: 'col-2', name: 'ExpiryDate', displayName: 'Expiry Date', confidence: 'medium' },
 ];
 
+const ambiguousCandidates: ReviewDateEligibilityColumn[] = [
+  { id: 'col-3', name: 'DocumentReview', displayName: 'Document Review', confidence: 'ambiguous' },
+];
+
 describe('ReviewDateCandidateSelector', () => {
   it('renders one radio option per candidate, none pre-selected', () => {
     render(<ReviewDateCandidateSelector candidates={candidates} selectedId={null} onSelect={jest.fn()} />);
@@ -47,5 +51,13 @@ describe('ReviewDateCandidateSelector', () => {
     render(<ReviewDateCandidateSelector candidates={candidates} selectedId={null} onSelect={jest.fn()} />);
 
     expect(screen.getByText('Select the SharePoint column to use')).toBeInTheDocument();
+  });
+
+  it('shows an ambiguous candidate distinctly, not folded into "Low confidence" — still requires the same explicit selection', () => {
+    render(<ReviewDateCandidateSelector candidates={ambiguousCandidates} selectedId={null} onSelect={jest.fn()} />);
+
+    expect(screen.getByText('Uncertain — please verify')).toBeInTheDocument();
+    expect(screen.queryByText('Low confidence')).not.toBeInTheDocument();
+    expect(screen.getByRole('radio')).not.toBeChecked();
   });
 });

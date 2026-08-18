@@ -764,6 +764,23 @@ describe('DocumentCollectorProcessor', () => {
           expect.objectContaining({ criterion: 'ReviewStatus' }),
         );
       });
+
+      // ADR-0002 amendment (2026-08-13): Overdue is a new, distinct third
+      // outcome — worse than Healthy, but scored better than Missing (see
+      // packages/scoring's own unit tests for the exact score/severity
+      // reasoning; this test only confirms the real worker call site wires
+      // a past date through correctly end-to-end).
+      it('flags ReviewStatus as NeedsAttention (score 50), not RequiresReview, when nextReviewDueAt has already passed', async () => {
+        documents.findMany.mockResolvedValue([{ ...baseDocument, nextReviewDueAt: new Date('2020-06-01') }]);
+        healthScores.create.mockResolvedValue({ id: 'score-1' });
+
+        await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+        expect(healthScores.create).toHaveBeenCalledWith(expect.objectContaining({ reviewStatusScore: 50 }));
+        expect(healthIssues.create).toHaveBeenCalledWith(
+          expect.objectContaining({ healthScoreId: 'score-1', criterion: 'ReviewStatus', severity: 'NeedsAttention' }),
+        );
+      });
     });
   });
 

@@ -95,6 +95,8 @@ export default function DocumentDetailPage({ params }: DocumentDetailPageProps):
             nextReviewDueAt={document.nextReviewDueAt}
             reviewDateSource={document.reviewDateSource}
             reviewDateColumnDisplayName={document.reviewDateColumnDisplayName}
+            sharePointManaged={document.sharePointManaged}
+            sharePointManagedColumnDisplayName={document.sharePointManagedColumnDisplayName}
             canManage={canManageGovernance}
             onSave={setReviewDate}
             saving={savingReviewDate}

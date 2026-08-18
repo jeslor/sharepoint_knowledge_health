@@ -238,7 +238,7 @@ async function ensureDocuments(
       documentId,
       owners,
       siblingsByKey.get(key) ?? [],
-      plan.hasReviewDate,
+      plan.hasReviewDate ? daysAgo(-90) : null, // 90 days in the future — matches the DB write above
       daysAgo(plan.createdDaysAgo),
       daysAgo(plan.modifiedDaysAgo),
       plan.sizeBytes,

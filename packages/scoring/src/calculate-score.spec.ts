@@ -2,6 +2,7 @@ import { calculateScore } from './calculate-score';
 import type { ScoringInput } from './types';
 
 const now = new Date('2026-07-12T00:00:00Z');
+const FUTURE_REVIEW_DATE = new Date('2026-09-01T00:00:00Z'); // after `now` above -> Healthy
 
 function baseInput(overrides: Partial<ScoringInput> = {}): ScoringInput {
   return {
@@ -10,7 +11,7 @@ function baseInput(overrides: Partial<ScoringInput> = {}): ScoringInput {
     sourceCreatedAt: new Date('2026-06-01'),
     sourceModifiedAt: new Date('2026-06-01'),
     sizeBytes: 100_000,
-    hasReviewDate: true,
+    nextReviewDueAt: FUTURE_REVIEW_DATE,
     owners: [{ email: 'hr@example.com', isActiveUser: true }],
     siblingDocuments: [],
     now,
@@ -31,7 +32,7 @@ describe('calculateScore', () => {
     // Phase 5 task: missing review date is the dominant, explainable issue.
     const result = calculateScore(
       baseInput({
-        hasReviewDate: false,
+        nextReviewDueAt: null,
         sourceModifiedAt: new Date('2020-01-01'), // also stale
       }),
     );
@@ -62,7 +63,7 @@ describe('calculateScore', () => {
   it('surfaces one issue per failing criterion, not just the worst one', () => {
     const result = calculateScore(
       baseInput({
-        hasReviewDate: false,
+        nextReviewDueAt: null,
         owners: [],
         sourceModifiedAt: new Date('2019-01-01'),
       }),
@@ -75,11 +76,11 @@ describe('calculateScore', () => {
   it('classifies composite bands correctly at the documented thresholds', () => {
     expect(calculateScore(baseInput()).band).toBe('Healthy'); // 100
 
-    const needsAttention = calculateScore(baseInput({ hasReviewDate: false })); // -15 weight -> 85
+    const needsAttention = calculateScore(baseInput({ nextReviewDueAt: null })); // -15 weight -> 85
     expect(needsAttention.score).toBe(85);
     expect(needsAttention.band).toBe('NeedsAttention');
 
-    const requiresReview = calculateScore(baseInput({ hasReviewDate: false, owners: [] })); // -15 -20 -> 65
+    const requiresReview = calculateScore(baseInput({ nextReviewDueAt: null, owners: [] })); // -15 -20 -> 65
     expect(requiresReview.score).toBe(65);
     expect(requiresReview.band).toBe('RequiresReview');
   });

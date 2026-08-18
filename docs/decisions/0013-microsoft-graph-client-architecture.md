@@ -200,6 +200,73 @@ No `create`/`update`/`delete` functions exist anywhere in this module's surface 
 
 One field-mapping consequence, not a design change: `getAllSites`' response can omit both `displayName` and `name` for a tenant-provisioned system site (verified live against the tenant's built-in Search Center) — `listSites()` now falls back to `webUrl` as a last resort so a discovered site is never persisted with a blank name. `GraphSite` also gained `isPersonalSite?: boolean` (Graph's own field, present on `getAllSites` responses, absent on `getSite()`'s) — exposing a raw Graph field is consistent with this module's existing DTOs; what a caller *does* with it is `apps/worker`'s business rule, not this module's (see ADR-0014's own implementation note).
 
+## Amendment (2026-08-13 — Narrow SharePoint List-Item Field Write, Phase 3A-2)
+
+§8/§10 and the Architectural Rule above state plainly that no
+`create`/`update`/`delete` function exists in this module's surface, and
+that this is enforced by the public API shape itself, not just by the
+granted Graph permissions. **This amendment carves one narrow, explicit
+exception for one function — it does not reverse the rule.** Every other
+principle in this ADR (DTO/domain separation, §7's logging discipline,
+§9's product-independence test, the imports boundary) applies to this
+new function exactly as it applies to every existing one.
+
+**This amendment documents the decision only. The function itself is not
+implemented until Phase 3A-2** — Phase 3A-1 (semantic discovery, review-
+date health, the manual-write conflict guard) remains entirely read-only
+with respect to Microsoft Graph; nothing in that phase requires or
+introduces this function.
+
+### New function
+
+Follows §8's exact existing convention (`entraTenantId` first, then the
+resource path's own ids, then any payload, then `options`):
+
+```typescript
+function updateListItemFields(
+  entraTenantId: string,
+  driveId: string,
+  itemId: string,
+  fields: Record<string, string>,
+  options?: ListOptions,
+): Promise<void>;
+```
+
+Maps to `PATCH /drives/{driveId}/items/{itemId}/listItem/fields`.
+
+### Why this satisfies §9 (product-independent public API)
+
+`updateListItemFields` is Graph's own vocabulary — a list item's fields,
+generically — not this product's vocabulary. A function named
+`setReviewDate()` would fail §9's test outright (this module must never
+know a "review date" exists as a concept); `updateListItemFields()`
+passes it exactly the way `listItemFields()` (the read-side counterpart
+already built in Phase 1) already does. A reader with zero context on
+this product would understand what it does from Graph's own terms alone.
+
+### Error handling — reuses §5's existing hierarchy, unchanged
+
+No new error types. `GraphPermissionError` (403 — the write scope isn't
+granted for this organization, or was revoked), `GraphNotFoundError`
+(404 — the item was deleted or moved), `GraphThrottledError` (429/503 —
+surfaces only after the SDK's existing `RetryHandler` middleware, §3,
+has already exhausted its own retries; §3's retry policy is verb-
+agnostic and already applies to `PATCH` identically to `GET`, so no new
+retry handling is introduced by this amendment). §5's own stated
+principle — this module is "deliberately only about failure mode, never
+about what the caller should do in response" — applies unchanged to
+write failures: deciding how to react to a 403 on a write (mark a
+tenant's write-capability as ungranted, surface a per-item failure in a
+bulk job, etc.) remains the caller's business logic, per ADR-0022.
+
+### What this amendment explicitly does not do
+
+Does not add a generic PATCH/POST/DELETE surface — one function, one
+Graph resource shape, nothing else. Does not add `$batch` support (this
+ADR's own Future Considerations below already flags that as a distinct,
+later decision). Does not change token acquisition, pagination, DTO
+mapping, or logging — none of those are write-specific concerns.
+
 ## Future Considerations
 
 - If cross-replica token-cache warming becomes a measurable cost, `msal-node-extensions` (or a custom `ICachePlugin`) can back MSAL's cache with Redis — additive, not a redesign, since the public interface above doesn't change either way.
