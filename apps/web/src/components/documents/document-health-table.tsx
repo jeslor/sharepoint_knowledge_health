@@ -2,6 +2,7 @@ import Link from 'next/link';
 import type { DocumentHealthResponse } from '@sph/types';
 import { EmptyState } from '@/components/ui/query-state';
 import { HealthScoreBadge } from './health-score-badge';
+import { ReviewDateHealthBadge } from './review-date-health-badge';
 
 interface DocumentHealthTableProps {
   documents: DocumentHealthResponse[];
@@ -36,6 +37,7 @@ export function DocumentHealthTable({ documents, sortDir, onToggleScoreSort }: D
           </th>
           <th className="py-2.5 pr-4 font-medium">Status</th>
           <th className="py-2.5 pr-4 font-medium">Last modified</th>
+          <th className="py-2.5 pr-4 font-medium">Review date</th>
           <th className="py-2.5 pr-4 font-medium">Issues</th>
         </tr>
       </thead>
@@ -54,6 +56,14 @@ export function DocumentHealthTable({ documents, sortDir, onToggleScoreSort }: D
             </td>
             <td className="py-3 pr-4 text-slate-600">{document.status}</td>
             <td className="py-3 pr-4 text-slate-600">{new Date(document.lastModifiedAt).toLocaleDateString()}</td>
+            <td className="py-3 pr-4">
+              <div className="flex items-center gap-2">
+                <ReviewDateHealthBadge state={document.reviewDateHealth} />
+                {document.nextReviewDueAt && (
+                  <span className="text-slate-500">{new Date(document.nextReviewDueAt).toLocaleDateString()}</span>
+                )}
+              </div>
+            </td>
             <td className="py-3 pr-4 text-slate-600">{document.issueCount}</td>
           </tr>
         ))}

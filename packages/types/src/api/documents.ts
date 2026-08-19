@@ -24,6 +24,16 @@ export interface DocumentHealthIssueResponse {
   message: string;
 }
 
+// Phase 3A-1 (ADR-0002 amendment): the same Missing/Overdue/Healthy states
+// scoreReviewStatus scores, plus the presentation-only DueSoon state
+// (never scored, never a HealthIssue — a document within the 30-day
+// window stays Healthy for scoring purposes). Computed server-side by
+// @sph/scoring's classifyReviewDateHealth and returned as-is; redeclared
+// here rather than imported, matching this file's existing
+// IssueSeverityFilter precedent (packages/types must stay independent of
+// packages/scoring).
+export type ReviewDateHealthState = 'Missing' | 'Overdue' | 'DueSoon' | 'Healthy';
+
 export interface DocumentHealthResponse {
   documentId: string;
   documentName: string;
@@ -37,6 +47,8 @@ export interface DocumentHealthResponse {
   issueCount: number;
   calculatedAt: string;
   issues: DocumentHealthIssueResponse[];
+  nextReviewDueAt: string | null;
+  reviewDateHealth: ReviewDateHealthState;
 }
 
 export interface DocumentDetailResponse {
@@ -78,6 +90,8 @@ export interface DocumentDetailResponse {
   // reviewDateSource, unchanged) so this field is reliably populated even
   // pre-first-sync.
   sharePointManagedColumnDisplayName: string | null;
+  // Phase 3A-1: see ReviewDateHealthState above.
+  reviewDateHealth: ReviewDateHealthState;
   webUrl: string | null;
 }
 

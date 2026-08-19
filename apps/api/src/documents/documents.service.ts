@@ -1,5 +1,6 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { createTenantContext, type HealthIssue, type HealthScore } from '@sph/database';
+import { classifyReviewDateHealth } from '@sph/scoring';
 import type {
   AssignDocumentOwnerRequest,
   DocumentDetailResponse,
@@ -116,6 +117,11 @@ export class DocumentsService {
         document.reviewDateSource === 'GraphMetadata' ? (reviewDateMapping?.columnDisplayNameAtConfirmation ?? null) : null,
       sharePointManaged,
       sharePointManagedColumnDisplayName: sharePointManaged ? (reviewDateMapping?.columnDisplayNameAtConfirmation ?? null) : null,
+      // Phase 3A-1: the authoritative Missing/Overdue/DueSoon/Healthy
+      // classification lives in @sph/scoring (the same package that scores
+      // ReviewStatus) — computed here, at request time, off the real
+      // nextReviewDueAt column, never re-derived in the frontend.
+      reviewDateHealth: classifyReviewDateHealth(document.nextReviewDueAt, new Date()),
       webUrl: document.webUrl,
     };
   }
@@ -353,6 +359,11 @@ export class DocumentsService {
       }
     }
 
+    // Phase 3A-1: one `now` shared across the whole page, not re-read per
+    // row — a page of documents is judged against a single instant,
+    // matching the request/response boundary this endpoint already is.
+    const now = new Date();
+
     const data: DocumentHealthResponse[] = [];
     for (const document of documents) {
       const score = document.currentHealthScoreId ? healthScoreById.get(document.currentHealthScoreId) : undefined;
@@ -372,6 +383,8 @@ export class DocumentsService {
         issueCount: issues.length,
         calculatedAt: score.calculatedAt.toISOString(),
         issues: issues.map((issue) => ({ type: issue.criterion, severity: issue.severity, message: issue.message })),
+        nextReviewDueAt: document.nextReviewDueAt?.toISOString() ?? null,
+        reviewDateHealth: classifyReviewDateHealth(document.nextReviewDueAt, now),
       });
     }
 

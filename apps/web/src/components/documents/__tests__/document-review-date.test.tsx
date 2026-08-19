@@ -6,6 +6,7 @@ describe('DocumentReviewDate', () => {
     render(
       <DocumentReviewDate
         nextReviewDueAt="2026-12-01T00:00:00.000Z"
+        reviewDateHealth="Healthy"
         reviewDateSource="Manual"
         reviewDateColumnDisplayName={null}
         sharePointManaged={false}
@@ -23,6 +24,7 @@ describe('DocumentReviewDate', () => {
     render(
       <DocumentReviewDate
         nextReviewDueAt={null}
+        reviewDateHealth="Missing"
         reviewDateSource={null}
         reviewDateColumnDisplayName={null}
         sharePointManaged={false}
@@ -40,6 +42,7 @@ describe('DocumentReviewDate', () => {
     render(
       <DocumentReviewDate
         nextReviewDueAt={null}
+        reviewDateHealth="Missing"
         reviewDateSource={null}
         reviewDateColumnDisplayName={null}
         sharePointManaged={false}
@@ -58,6 +61,7 @@ describe('DocumentReviewDate', () => {
     render(
       <DocumentReviewDate
         nextReviewDueAt={null}
+        reviewDateHealth="Missing"
         reviewDateSource={null}
         reviewDateColumnDisplayName={null}
         sharePointManaged={false}
@@ -77,6 +81,7 @@ describe('DocumentReviewDate', () => {
     render(
       <DocumentReviewDate
         nextReviewDueAt={null}
+        reviewDateHealth="Missing"
         reviewDateSource={null}
         reviewDateColumnDisplayName={null}
         sharePointManaged={false}
@@ -94,6 +99,7 @@ describe('DocumentReviewDate', () => {
     render(
       <DocumentReviewDate
         nextReviewDueAt="2026-12-01T00:00:00.000Z"
+        reviewDateHealth="Healthy"
         reviewDateSource="Manual"
         reviewDateColumnDisplayName={null}
         sharePointManaged={false}
@@ -112,6 +118,7 @@ describe('DocumentReviewDate', () => {
     render(
       <DocumentReviewDate
         nextReviewDueAt={null}
+        reviewDateHealth="Missing"
         reviewDateSource={null}
         reviewDateColumnDisplayName={null}
         sharePointManaged={false}
@@ -134,6 +141,7 @@ describe('DocumentReviewDate', () => {
     render(
       <DocumentReviewDate
         nextReviewDueAt="2026-12-01T00:00:00.000Z"
+        reviewDateHealth="Healthy"
         reviewDateSource="Manual"
         reviewDateColumnDisplayName={null}
         sharePointManaged={false}
@@ -154,6 +162,7 @@ describe('DocumentReviewDate', () => {
     render(
       <DocumentReviewDate
         nextReviewDueAt={null}
+        reviewDateHealth="Missing"
         reviewDateSource={null}
         reviewDateColumnDisplayName={null}
         sharePointManaged={false}
@@ -171,6 +180,7 @@ describe('DocumentReviewDate', () => {
     render(
       <DocumentReviewDate
         nextReviewDueAt={null}
+        reviewDateHealth="Missing"
         reviewDateSource={null}
         reviewDateColumnDisplayName={null}
         sharePointManaged={false}
@@ -188,6 +198,7 @@ describe('DocumentReviewDate', () => {
     render(
       <DocumentReviewDate
         nextReviewDueAt={null}
+        reviewDateHealth="Missing"
         reviewDateSource={null}
         reviewDateColumnDisplayName={null}
         sharePointManaged={false}
@@ -205,6 +216,7 @@ describe('DocumentReviewDate', () => {
     render(
       <DocumentReviewDate
         nextReviewDueAt={null}
+        reviewDateHealth="Missing"
         reviewDateSource={null}
         reviewDateColumnDisplayName={null}
         sharePointManaged={false}
@@ -223,6 +235,7 @@ describe('DocumentReviewDate', () => {
       render(
         <DocumentReviewDate
           nextReviewDueAt="2026-09-30T00:00:00.000Z"
+          reviewDateHealth="Healthy"
           reviewDateSource="GraphMetadata"
           reviewDateColumnDisplayName="Review Date"
           sharePointManaged={false}
@@ -240,6 +253,7 @@ describe('DocumentReviewDate', () => {
       render(
         <DocumentReviewDate
           nextReviewDueAt="2026-09-30T00:00:00.000Z"
+          reviewDateHealth="Healthy"
           reviewDateSource="GraphMetadata"
           reviewDateColumnDisplayName={null}
           sharePointManaged={false}
@@ -257,6 +271,7 @@ describe('DocumentReviewDate', () => {
       render(
         <DocumentReviewDate
           nextReviewDueAt="2026-09-30T00:00:00.000Z"
+          reviewDateHealth="Healthy"
           reviewDateSource="Manual"
           reviewDateColumnDisplayName={null}
           sharePointManaged={false}
@@ -274,6 +289,7 @@ describe('DocumentReviewDate', () => {
       render(
         <DocumentReviewDate
           nextReviewDueAt={null}
+          reviewDateHealth="Missing"
           reviewDateSource={null}
           reviewDateColumnDisplayName={null}
           sharePointManaged={false}
@@ -291,6 +307,7 @@ describe('DocumentReviewDate', () => {
       render(
         <DocumentReviewDate
           nextReviewDueAt="2026-09-30T00:00:00.000Z"
+          reviewDateHealth="Healthy"
           reviewDateSource="GraphMetadata"
           reviewDateColumnDisplayName="Review Date"
           sharePointManaged={false}
@@ -310,6 +327,7 @@ describe('DocumentReviewDate', () => {
       render(
         <DocumentReviewDate
           nextReviewDueAt="2026-09-30T00:00:00.000Z"
+          reviewDateHealth="Healthy"
           reviewDateSource="Manual"
           reviewDateColumnDisplayName={null}
           sharePointManaged
@@ -329,6 +347,7 @@ describe('DocumentReviewDate', () => {
       render(
         <DocumentReviewDate
           nextReviewDueAt={null}
+          reviewDateHealth="Missing"
           reviewDateSource={null}
           reviewDateColumnDisplayName={null}
           sharePointManaged
@@ -347,6 +366,7 @@ describe('DocumentReviewDate', () => {
       render(
         <DocumentReviewDate
           nextReviewDueAt={null}
+          reviewDateHealth="Missing"
           reviewDateSource={null}
           reviewDateColumnDisplayName={null}
           sharePointManaged
@@ -364,6 +384,7 @@ describe('DocumentReviewDate', () => {
       render(
         <DocumentReviewDate
           nextReviewDueAt={null}
+          reviewDateHealth="Missing"
           reviewDateSource={null}
           reviewDateColumnDisplayName={null}
           sharePointManaged
@@ -382,6 +403,7 @@ describe('DocumentReviewDate', () => {
       render(
         <DocumentReviewDate
           nextReviewDueAt="2026-09-30T00:00:00.000Z"
+          reviewDateHealth="Healthy"
           reviewDateSource="GraphMetadata"
           reviewDateColumnDisplayName="Review Date"
           sharePointManaged
@@ -394,6 +416,31 @@ describe('DocumentReviewDate', () => {
       );
       expect(screen.getByText(/next review due/i)).toBeInTheDocument();
       expect(screen.getByText('Source: SharePoint · Review Date')).toBeInTheDocument();
+    });
+  });
+
+  describe('review-date health badge (Phase 3A-1)', () => {
+    it.each([
+      ['Missing', 'Missing'],
+      ['Overdue', 'Overdue'],
+      ['DueSoon', 'Due Soon'],
+      ['Healthy', 'Healthy'],
+    ] as const)('renders the %s state as "%s"', (state, label) => {
+      render(
+        <DocumentReviewDate
+          nextReviewDueAt={null}
+          reviewDateHealth={state}
+          reviewDateSource={null}
+          reviewDateColumnDisplayName={null}
+          sharePointManaged={false}
+          sharePointManagedColumnDisplayName={null}
+          canManage={false}
+          onSave={jest.fn()}
+          saving={false}
+          saveError={undefined}
+        />,
+      );
+      expect(screen.getByText(label)).toBeInTheDocument();
     });
   });
 });
