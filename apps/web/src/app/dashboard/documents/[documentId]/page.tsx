@@ -93,6 +93,7 @@ export default function DocumentDetailPage({ params }: DocumentDetailPageProps):
         <div className="mt-2">
           <DocumentReviewDate
             nextReviewDueAt={document.nextReviewDueAt}
+            reviewDateHealth={document.reviewDateHealth}
             reviewDateSource={document.reviewDateSource}
             reviewDateColumnDisplayName={document.reviewDateColumnDisplayName}
             sharePointManaged={document.sharePointManaged}

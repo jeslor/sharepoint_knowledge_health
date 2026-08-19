@@ -451,7 +451,7 @@ async function simulateResolutionSuggested(
       documentId,
       [{ email: DEMO_ASSIGNEE_EMAIL, isActiveUser: null }],
       [],
-      updatedDocument!.nextReviewDueAt !== null,
+      updatedDocument!.nextReviewDueAt,
       document.sourceCreatedAt,
       new Date(), // modified "now" — someone just added the review date
       Number(document.sizeBytes),

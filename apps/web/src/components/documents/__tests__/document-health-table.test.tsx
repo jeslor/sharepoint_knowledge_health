@@ -15,6 +15,8 @@ const document: DocumentHealthResponse = {
   issueCount: 2,
   calculatedAt: '2026-07-01T00:00:00.000Z',
   issues: [],
+  nextReviewDueAt: null,
+  reviewDateHealth: 'Missing',
 };
 
 describe('DocumentHealthTable', () => {
@@ -33,12 +35,64 @@ describe('DocumentHealthTable', () => {
     expect(screen.getByText('42/100')).toBeInTheDocument();
     expect(screen.getByText('Active')).toBeInTheDocument();
     expect(screen.getByText('2')).toBeInTheDocument();
+    expect(screen.getByText('Missing')).toBeInTheDocument();
   });
 
   it('shows "Unassigned" when a document has no owner', () => {
     render(<DocumentHealthTable documents={[{ ...document, owner: null }]} sortDir="asc" onToggleScoreSort={jest.fn()} />);
 
     expect(screen.getByText('Unassigned')).toBeInTheDocument();
+  });
+
+  describe('review-date health column (Phase 3A-1)', () => {
+    it('shows the review-date status badge and the actual date when one is set', () => {
+      render(
+        <DocumentHealthTable
+          documents={[{ ...document, nextReviewDueAt: '2026-12-01T00:00:00.000Z', reviewDateHealth: 'Healthy' }]}
+          sortDir="asc"
+          onToggleScoreSort={jest.fn()}
+        />,
+      );
+
+      expect(screen.getByText('Healthy')).toBeInTheDocument();
+      expect(screen.getByText(new Date('2026-12-01T00:00:00.000Z').toLocaleDateString())).toBeInTheDocument();
+    });
+
+    it('shows the Overdue badge without a date fallback issue when nextReviewDueAt is in the past', () => {
+      render(
+        <DocumentHealthTable
+          documents={[{ ...document, nextReviewDueAt: '2026-01-01T00:00:00.000Z', reviewDateHealth: 'Overdue' }]}
+          sortDir="asc"
+          onToggleScoreSort={jest.fn()}
+        />,
+      );
+
+      expect(screen.getByText('Overdue')).toBeInTheDocument();
+    });
+
+    it('shows the Missing badge with no date text when nextReviewDueAt is null', () => {
+      render(
+        <DocumentHealthTable
+          documents={[{ ...document, nextReviewDueAt: null, reviewDateHealth: 'Missing' }]}
+          sortDir="asc"
+          onToggleScoreSort={jest.fn()}
+        />,
+      );
+
+      expect(screen.getByText('Missing')).toBeInTheDocument();
+    });
+
+    it('shows the Due Soon badge', () => {
+      render(
+        <DocumentHealthTable
+          documents={[{ ...document, nextReviewDueAt: '2026-08-25T00:00:00.000Z', reviewDateHealth: 'DueSoon' }]}
+          sortDir="asc"
+          onToggleScoreSort={jest.fn()}
+        />,
+      );
+
+      expect(screen.getByText('Due Soon')).toBeInTheDocument();
+    });
   });
 
   it('calls onToggleScoreSort when the score header is clicked', () => {

@@ -1,14 +1,20 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import type { ReviewDateHealthState } from '@sph/types';
 import { ErrorState } from '@/components/ui/query-state';
 import { Button } from '@/components/ui/button';
 import { Field } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { Toast } from '@/components/ui/toast';
+import { ReviewDateHealthBadge } from './review-date-health-badge';
 
 interface DocumentReviewDateProps {
   nextReviewDueAt: string | null;
+  // Phase 3A-1: the authoritative Missing/Overdue/DueSoon/Healthy
+  // classification, computed server-side (@sph/scoring's
+  // classifyReviewDateHealth) — never re-derived here.
+  reviewDateHealth: ReviewDateHealthState;
   // Phase 2: 'GraphMetadata' when SharePoint is the source, 'Manual' (or
   // null, for a document with no review date history yet) otherwise —
   // never rendered as the raw enum value, only through the two fixed
@@ -41,6 +47,7 @@ function toDateInputValue(iso: string | null): string {
 // the page already computes it, never a self-service variant.
 export function DocumentReviewDate({
   nextReviewDueAt,
+  reviewDateHealth,
   reviewDateSource,
   reviewDateColumnDisplayName,
   sharePointManaged,
@@ -77,11 +84,14 @@ export function DocumentReviewDate({
 
   return (
     <div className="space-y-3">
-      <p className="text-sm text-slate-600">
-        {nextReviewDueAt
-          ? `Next review due ${new Date(nextReviewDueAt).toLocaleDateString()}.`
-          : 'No review date scheduled.'}
-      </p>
+      <div className="flex items-center gap-2">
+        <ReviewDateHealthBadge state={reviewDateHealth} />
+        <p className="text-sm text-slate-600">
+          {nextReviewDueAt
+            ? `Next review due ${new Date(nextReviewDueAt).toLocaleDateString()}.`
+            : 'No review date scheduled.'}
+        </p>
+      </div>
       <p className="text-xs text-slate-500">
         {reviewDateSource === 'GraphMetadata'
           ? `Source: SharePoint${reviewDateColumnDisplayName ? ` · ${reviewDateColumnDisplayName}` : ''}`

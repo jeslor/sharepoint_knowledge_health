@@ -17,6 +17,8 @@ interface SeededOrg {
   governanceActivityId: string;
   auditLogId: string;
   notificationId: string;
+  sharePointReviewDateMappingId: string;
+  sharePointReviewDateMappingGraphListId: string;
   context: TenantContext;
 }
 
@@ -180,6 +182,17 @@ async function seedOrganization(label: string): Promise<SeededOrg> {
     },
   });
 
+  const sharePointReviewDateMapping = await prisma.sharePointReviewDateMapping.create({
+    data: {
+      organizationId: organization.id,
+      siteId: site.id,
+      graphListId: `list-${unique}`,
+      columnDefinitionId: `col-${unique}`,
+      columnDisplayNameAtConfirmation: 'Review Date',
+      confirmedByUserId: user.id,
+    },
+  });
+
   return {
     organizationId: organization.id,
     userId: user.id,
@@ -196,6 +209,8 @@ async function seedOrganization(label: string): Promise<SeededOrg> {
     governanceActivityId: governanceActivity.id,
     auditLogId: auditLog.id,
     notificationId: notification.id,
+    sharePointReviewDateMappingId: sharePointReviewDateMapping.id,
+    sharePointReviewDateMappingGraphListId: sharePointReviewDateMapping.graphListId,
     context: createTenantContext(organization.id),
   };
 }
@@ -377,6 +392,44 @@ describe('Cross-tenant data isolation (ADR-0001)', () => {
     it('has no deleteById method — no retention/pruning policy is implemented yet (ADR-0021, matching AuditLog\'s identical accepted posture)', () => {
       const repo = orgA.context.notifications as unknown as { deleteById?: unknown };
       expect(repo.deleteById).toBeUndefined();
+    });
+  });
+
+  // Phase 3A-1: closes the gap the 2026-08-12 review-date retrospective
+  // flagged — this repository's own isolation coverage previously lived
+  // only in its dedicated spec file, not in this central sweep alongside
+  // every other tenant-scoped repository.
+  describe('SharePointReviewDateMappingRepository (Phase 3A-1 — retrospective gap closure)', () => {
+    it('findByLibrary never resolves another organization\'s mapping, even given that mapping\'s real siteId/graphListId', async () => {
+      const result = await orgA.context.sharePointReviewDateMappings.findByLibrary(
+        orgB.siteId,
+        orgB.sharePointReviewDateMappingGraphListId,
+      );
+      expect(result).toBeNull();
+    });
+
+    it('findByLibrary returns the row for the owning organization', async () => {
+      const result = await orgA.context.sharePointReviewDateMappings.findByLibrary(
+        orgA.siteId,
+        orgA.sharePointReviewDateMappingGraphListId,
+      );
+      expect(result?.id).toBe(orgA.sharePointReviewDateMappingId);
+    });
+
+    it('findManyBySite never includes another organization\'s mapping, even given that org\'s real siteId', async () => {
+      const list = await orgA.context.sharePointReviewDateMappings.findManyBySite(orgB.siteId);
+      expect(list.some((m) => m.id === orgB.sharePointReviewDateMappingId)).toBe(false);
+    });
+
+    it('create always writes under the bound organizationId, regardless of caller input', async () => {
+      const created = await orgA.context.sharePointReviewDateMappings.create({
+        siteId: orgA.siteId,
+        graphListId: `extra-${Date.now()}`,
+        columnDefinitionId: `extra-col-${Date.now()}`,
+        columnDisplayNameAtConfirmation: 'Review Date',
+        confirmedByUserId: orgA.userId,
+      });
+      expect(created.organizationId).toBe(orgA.organizationId);
     });
   });
 

@@ -130,6 +130,7 @@ describe('DocumentsService', () => {
         reviewDateColumnDisplayName: null,
         sharePointManaged: false,
         sharePointManagedColumnDisplayName: null,
+        reviewDateHealth: 'Missing',
         webUrl: null,
       });
     });
@@ -297,6 +298,72 @@ describe('DocumentsService', () => {
 
         expect(result?.sharePointManaged).toBe(false);
         expect(result?.sharePointManagedColumnDisplayName).toBeNull();
+      });
+    });
+
+    // Phase 3A-1 (ADR-0002 amendment): getDocument computes reviewDateHealth
+    // via @sph/scoring's classifyReviewDateHealth against the real system
+    // clock — pinned here with fake timers (matching the existing
+    // governance-issues.service.spec.ts / governance-analytics.service.spec.ts
+    // convention) rather than asserting against whatever `now` happens to be
+    // when this test suite runs.
+    describe('reviewDateHealth (Phase 3A-1)', () => {
+      const NOW = new Date('2026-08-19T00:00:00.000Z');
+
+      beforeEach(() => {
+        jest.useFakeTimers().setSystemTime(NOW);
+      });
+
+      afterEach(() => {
+        jest.useRealTimers();
+      });
+
+      it('is Missing when nextReviewDueAt is null', async () => {
+        documents.findFirstById.mockResolvedValue({ ...baseDocument, currentHealthScoreId: null, nextReviewDueAt: null });
+        sharePointSites.findMany.mockResolvedValue([{ id: 'site-1', displayName: 'Team Site' }]);
+
+        const result = await service.getDocument('org-1', 'doc-1');
+
+        expect(result?.reviewDateHealth).toBe('Missing');
+      });
+
+      it('is Overdue when nextReviewDueAt is in the past', async () => {
+        documents.findFirstById.mockResolvedValue({
+          ...baseDocument,
+          currentHealthScoreId: null,
+          nextReviewDueAt: new Date('2026-08-01T00:00:00.000Z'),
+        });
+        sharePointSites.findMany.mockResolvedValue([{ id: 'site-1', displayName: 'Team Site' }]);
+
+        const result = await service.getDocument('org-1', 'doc-1');
+
+        expect(result?.reviewDateHealth).toBe('Overdue');
+      });
+
+      it('is DueSoon when nextReviewDueAt falls within the configured window', async () => {
+        documents.findFirstById.mockResolvedValue({
+          ...baseDocument,
+          currentHealthScoreId: null,
+          nextReviewDueAt: new Date('2026-08-25T00:00:00.000Z'), // 6 days out
+        });
+        sharePointSites.findMany.mockResolvedValue([{ id: 'site-1', displayName: 'Team Site' }]);
+
+        const result = await service.getDocument('org-1', 'doc-1');
+
+        expect(result?.reviewDateHealth).toBe('DueSoon');
+      });
+
+      it('is Healthy when nextReviewDueAt is outside the Due Soon window', async () => {
+        documents.findFirstById.mockResolvedValue({
+          ...baseDocument,
+          currentHealthScoreId: null,
+          nextReviewDueAt: new Date('2026-12-01T00:00:00.000Z'),
+        });
+        sharePointSites.findMany.mockResolvedValue([{ id: 'site-1', displayName: 'Team Site' }]);
+
+        const result = await service.getDocument('org-1', 'doc-1');
+
+        expect(result?.reviewDateHealth).toBe('Healthy');
       });
     });
 
@@ -622,7 +689,15 @@ describe('DocumentsService', () => {
 
     it('joins each document to its site, owner, health score, and issues without N+1 per-document queries', async () => {
       documents.findMany.mockResolvedValue([
-        { id: 'doc-1', name: 'Employee Handbook.docx', siteId: 'site-1', status: 'Active', sourceModifiedAt: new Date('2026-06-01T00:00:00.000Z'), currentHealthScoreId: 'score-1' },
+        {
+          id: 'doc-1',
+          name: 'Employee Handbook.docx',
+          siteId: 'site-1',
+          status: 'Active',
+          sourceModifiedAt: new Date('2026-06-01T00:00:00.000Z'),
+          currentHealthScoreId: 'score-1',
+          nextReviewDueAt: null,
+        },
       ]);
       documents.count.mockResolvedValue(1);
       healthScores.findMany.mockResolvedValue([
@@ -654,9 +729,58 @@ describe('DocumentsService', () => {
           issueCount: 1,
           calculatedAt: '2026-07-01T00:00:00.000Z',
           issues: [{ type: 'ReviewStatus', severity: 'RequiresReview', message: 'Missing review date' }],
+          nextReviewDueAt: null,
+          reviewDateHealth: 'Missing',
         },
       ]);
       expect(result.pagination).toEqual({ page: 1, pageSize: 25, total: 1, totalPages: 1 });
+    });
+
+    // Phase 3A-1: same classifyReviewDateHealth call listDocumentHealth now
+    // makes per row — pinned clock, matching the getDocument coverage above.
+    describe('reviewDateHealth per row (Phase 3A-1)', () => {
+      const NOW = new Date('2026-08-19T00:00:00.000Z');
+
+      beforeEach(() => {
+        jest.useFakeTimers().setSystemTime(NOW);
+      });
+
+      afterEach(() => {
+        jest.useRealTimers();
+      });
+
+      it('classifies each row independently using a shared "now"', async () => {
+        documents.findMany.mockResolvedValue([
+          {
+            id: 'doc-overdue',
+            name: 'Overdue.docx',
+            siteId: 'site-1',
+            status: 'Active',
+            sourceModifiedAt: new Date('2026-06-01T00:00:00.000Z'),
+            currentHealthScoreId: 'score-1',
+            nextReviewDueAt: new Date('2026-08-01T00:00:00.000Z'),
+          },
+          {
+            id: 'doc-healthy',
+            name: 'Healthy.docx',
+            siteId: 'site-1',
+            status: 'Active',
+            sourceModifiedAt: new Date('2026-06-01T00:00:00.000Z'),
+            currentHealthScoreId: 'score-2',
+            nextReviewDueAt: new Date('2026-12-01T00:00:00.000Z'),
+          },
+        ]);
+        documents.count.mockResolvedValue(2);
+        healthScores.findMany.mockResolvedValue([
+          { id: 'score-1', compositeScore: 50, healthBand: 'NeedsAttention', calculatedAt: new Date('2026-07-01T00:00:00.000Z') },
+          { id: 'score-2', compositeScore: 100, healthBand: 'Healthy', calculatedAt: new Date('2026-07-01T00:00:00.000Z') },
+        ]);
+
+        const result = await service.listDocumentHealth('org-1', {});
+
+        expect(result.data.find((d) => d.documentId === 'doc-overdue')?.reviewDateHealth).toBe('Overdue');
+        expect(result.data.find((d) => d.documentId === 'doc-healthy')?.reviewDateHealth).toBe('Healthy');
+      });
     });
 
     it('skips a document whose currentHealthScoreId points at a score that no longer resolves', async () => {
