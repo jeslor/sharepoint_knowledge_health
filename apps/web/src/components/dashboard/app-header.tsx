@@ -1,5 +1,5 @@
 'use client';
-
+import Image from 'next/image';
 import { AppsRegular, NavigationRegular, ShieldCheckmarkRegular } from '@fluentui/react-icons';
 import { useCurrentUser } from '@/lib/auth/current-user-context';
 import { SignOutButton } from '@/components/auth/sign-out-button';
@@ -46,7 +46,7 @@ export function AppHeader({ mobileNavOpen, onToggleMobileNav }: AppHeaderProps):
             aria-label="Open Microsoft 365 admin center"
             className="hidden rounded-md p-1.5 text-slate-500 transition-colors duration-150 ease-premium hover:bg-slate-50 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-600 sm:block"
           >
-            <AppsRegular fontSize={20} />
+            <Image src="/images/logo_small.png" alt="Microsoft 365" width={25} height={25} />
           </a>
         </Tooltip>
 
@@ -68,8 +68,14 @@ export function AppHeader({ mobileNavOpen, onToggleMobileNav }: AppHeaderProps):
             {/* Breakpoints preserved exactly as before this pass — tenantName
                 at md:, displayName at sm: — only the divider around the
                 group is new. */}
-            {user?.tenantName && <span className="hidden text-caption text-slate-500 md:inline">{user.tenantName}</span>}
-            {user?.displayName && <span className="text-body-strong text-slate-900">{user.displayName}</span>}
+            {user?.tenantName && (
+              <span className="hidden text-caption text-slate-500 md:inline">
+                {user.tenantName}
+              </span>
+            )}
+            {user?.displayName && (
+              <span className="text-body-strong text-slate-900">{user.displayName}</span>
+            )}
           </div>
         )}
         <SignOutButton />
