@@ -20,7 +20,12 @@ export type AuditLogAction =
   | 'scan.triggered'
   | 'scan_schedule.created'
   | 'scan_schedule.updated'
-  | 'microsoft_tenant.connected';
+  | 'microsoft_tenant.connected'
+  // ADR-0023 §3.9: written only when consentAssertedPermissionVersion
+  // actually advances (an admin completed a real re-consent redirect) —
+  // never for a routine background read-verification refresh, and never
+  // for a tenant already at the current required version.
+  | 'microsoft_tenant.permission_consent_asserted';
 
 export type AuditLogTargetType = 'User' | 'SharePointSite' | 'ScanJob' | 'ScanSchedule' | 'MicrosoftTenant';
 

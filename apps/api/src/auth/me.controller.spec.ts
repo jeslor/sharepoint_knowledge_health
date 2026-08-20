@@ -1,9 +1,10 @@
-import { createTenantContext, type User } from '@sph/database';
+import { createTenantContext, derivePermissionReconsentState, type User } from '@sph/database';
 import { MeController } from './me.controller';
 
 jest.mock('@sph/database');
 
 const mockedCreateContext = createTenantContext as jest.MockedFunction<typeof createTenantContext>;
+const mockedDerivePermissionReconsentState = derivePermissionReconsentState as jest.MockedFunction<typeof derivePermissionReconsentState>;
 
 function user(overrides: Partial<User> = {}): User {
   return {
@@ -28,6 +29,11 @@ describe('MeController', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockedCreateContext.mockReturnValue({ microsoftTenants } as never);
+    mockedDerivePermissionReconsentState.mockReturnValue({
+      needsReadReconsent: false,
+      needsWriteConsentAssertion: false,
+      needsReconsent: false,
+    });
   });
 
   it('returns the user identity plus the connected tenant name', async () => {
@@ -44,14 +50,38 @@ describe('MeController', () => {
       displayName: 'Sarah Kim',
       email: 'sarah@contoso.com',
       tenantName: 'Contoso Ltd.',
+      needsReconsent: false,
     });
   });
 
-  it('returns tenantName: null when there is no Consented Microsoft tenant', async () => {
+  it('returns tenantName: null and needsReconsent: false when there is no Consented Microsoft tenant', async () => {
     microsoftTenants.findMany.mockResolvedValue([]);
 
     const result = await controller.getMe(user());
 
     expect(result.tenantName).toBeNull();
+    expect(result.needsReconsent).toBe(false);
+    // Nothing to derive a reconsent state from — must not be called at all.
+    expect(mockedDerivePermissionReconsentState).not.toHaveBeenCalled();
+  });
+
+  it('derives needsReconsent from the connected tenant row (ADR-0023) rather than computing it inline', async () => {
+    const tenant = {
+      tenantName: 'Contoso Ltd.',
+      status: 'Consented',
+      verifiedReadPermissionVersion: null,
+      consentAssertedPermissionVersion: null,
+    };
+    microsoftTenants.findMany.mockResolvedValue([tenant]);
+    mockedDerivePermissionReconsentState.mockReturnValue({
+      needsReadReconsent: true,
+      needsWriteConsentAssertion: true,
+      needsReconsent: true,
+    });
+
+    const result = await controller.getMe(user());
+
+    expect(mockedDerivePermissionReconsentState).toHaveBeenCalledWith(tenant);
+    expect(result.needsReconsent).toBe(true);
   });
 });

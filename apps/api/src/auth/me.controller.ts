@@ -1,5 +1,5 @@
 import { Controller, Get, UseGuards } from '@nestjs/common';
-import { createTenantContext, type User } from '@sph/database';
+import { createTenantContext, derivePermissionReconsentState, type User } from '@sph/database';
 import type { MeResponse } from '@sph/types';
 import { EntraJwtGuard } from './entra-jwt.guard';
 import { TenantContextGuard } from './tenant-context.guard';
@@ -24,6 +24,10 @@ export class MeController {
       displayName: user.displayName,
       email: user.email,
       tenantName: consentedTenant?.tenantName ?? null,
+      // ADR-0023 §3.4/§3.10: derived at read time from the same row already
+      // fetched above — no extra query. false whenever there's no Consented
+      // tenant at all (nothing to reconsent).
+      needsReconsent: consentedTenant ? derivePermissionReconsentState(consentedTenant).needsReconsent : false,
     };
   }
 }

@@ -1,7 +1,7 @@
 # ADR-0023: Microsoft Tenant Re-Consent Detection
 
 Date: 2026-08-20
-Status: Accepted (design) — no code, schema, migration, endpoint, or UI implemented yet. Implementation requires separate, explicit approval per section 5's plan.
+Status: Implemented (2026-08-21) — see §9 for exact deviations from the original design and full validation results.
 
 ---
 
@@ -150,4 +150,39 @@ One new `AuditLogAction` value (exact name TBD at implementation, e.g. `microsof
 - **ADR-0012** — the `NeedsReconsent` status value it named as a future possibility (2026-07-20 amendment) is superseded by this ADR's §3.1 decision not to add it; the reconnect-endpoint idea it named is superseded by §3.8's decision to reuse `/connect` via a new frontend entry point instead.
 - **ADR-0022** — unaffected; its §9 reactive per-item write-verification model is reused as-is (§4), not modified.
 
-Status: **Accepted (design)**. No code, schema, migration, endpoint, or UI has been implemented. Implementation requires separate, explicit approval of the plan in §5.
+## 9. Implementation Notes (2026-08-21)
+
+Implemented per §5's plan, with two deliberate deviations discovered and resolved during implementation — both reported before proceeding, per this work's own ground rule not to silently redesign around a contradiction.
+
+### Deviation 1 — §3.5's periodic health-check tick does not exist
+
+§3.5 assumed extending "the existing 15-minute tenant-wide health-check tick (ADR-0012, 2026-07-20 amendment)." Direct inspection at implementation time found that tick was never actually built — ADR-0012's 2026-07-20 amendment documented a `Consented → Revoked` health check (a `GET /organization` Graph call, a `revokedAt` field) that, like `NeedsReconsent`, was named but never implemented. The only real 15-minute repeatable job in the codebase (`apps/worker/src/scheduler/scheduler.processor.ts`) does something unrelated (fires due `ScanSchedule`s) and makes no Graph calls at all.
+
+**Resolved by explicit user decision**: skip the periodic-refresh piece entirely for this round. `verifiedReadPermissionVersion` only refreshes via the consent-callback flow (§3.7, implemented as designed). Building ADR-0012's own health check is out of scope here — a separate, larger, unapproved piece of work. This means a `Consented` tenant that never revisits `/connect` or the new Settings entry point will not have its `verifiedReadPermissionVersion` refreshed passively; only an active visit refreshes it. Not a correctness problem (§3.6's "never treat unknown as denied" rule still holds — it just means `needsReadReconsent` can stay `true` longer than it would with a periodic check), but worth naming as a real, accepted limitation.
+
+### Deviation 2 — the best-effort refresh lives in the controller, not inside `resolveOrProvisionFromConsent`
+
+§3.7 described the refresh as happening inside `resolveOrProvisionFromConsent`'s `existing`/`provisioned-pending` branches. Implementation found a direct, deliberate, already-existing test guarding against exactly that: `packages/database/src/onboarding.spec.ts`'s *"does not invoke the verifier for an already-existing user or an already-connected tenant (verification only gates brand-new bootstrap)"* — asserting `verifyTenantConsent` is never called on those branches, a guarantee this ADR should not weaken.
+
+**Resolved without changing that guarantee**: the best-effort read-verification refresh and the unconditional consent-assertion write both live in `ConsentCallbackController` (`apps/api/src/auth/consent-callback.controller.ts`), called *after* `resolveOrProvisionFromConsent` returns, using the same injected `GraphConsentVerifierService` instance. `resolveOrProvisionFromConsent` itself is untouched — its existing test suite passes unmodified. This is a placement detail, not a design change: the refresh still happens exactly once per callback, still best-effort, still never blocks sign-in.
+
+### What was built, exactly as designed
+
+- `MicrosoftTenant.verifiedReadPermissionVersion Int?` / `consentAssertedPermissionVersion Int?` / `consentAssertedAt DateTime?` — additive migration, all nullable, no backfill (`prisma/migrations/20260820120000_add_microsoft_tenant_permission_state`).
+- `REQUIRED_GRAPH_PERMISSIONS` / `REQUIRED_PERMISSION_VERSION` (`packages/database/src/graph-permissions.ts`) — the single source of truth, per §3.2. Not placed in `packages/config` (env-schema-only today) or `packages/graph-client` (`packages/database` cannot depend on it — the same purity rule protecting `ConsentVerifier`); co-located instead with the other consent/permission logic already in `packages/database`.
+- `derivePermissionReconsentState`, `applyVerifiedReadPermission`, `applyConsentAssertion` (`packages/database/src/permission-state.ts`) — exactly the two-field model from §3.3/§3.4, with `applyVerifiedReadPermission`/`applyConsentAssertion` implemented as single conditioned `updateMany` calls (never regress a higher stored version, and the caller learns whether anything actually advanced from one atomic operation rather than a separate read-then-write).
+- `ConsentCallbackController` (§3.7): unconditional consent-assertion write for every non-rejected resolution; best-effort read-permission refresh, skipping a redundant Graph call for `'bootstrapped'` (already proven inside `resolveOrProvisionFromConsent`'s own pre-bootstrap gate) and re-verifying live for `'existing'`/`'provisioned-pending'`; a `ConsentVerificationError` or any infrastructure error leaves `verifiedReadPermissionVersion` untouched, exactly per §3.6.
+- `'microsoft_tenant.permission_consent_asserted'` audit action (`packages/types/src/api/audit-log.ts`), written only when `applyConsentAssertion` reports `advanced: true` — confirmed by test that a repeat call at the same version produces no duplicate entry.
+- `ConsentResolution.needsReconsent` (both `packages/database` and its `packages/types` mirror) and `MeResponse.needsReconsent` (`GET /auth/me`, computed from the same tenant row already fetched — no extra query) — additive.
+- Settings entry point (§3.8): `apps/web/src/app/dashboard/settings/page.tsx`, Admin-only (client-side gate, matching `dashboard/users`/`dashboard/sharepoint`'s existing convention), reusing `buildAdminConsentUrl`/`adminConsentRedirectUri`/`startConnectFlow` verbatim — zero new OAuth code, zero new backend endpoint. Added to `dashboard-nav.tsx`'s existing Admin-only "Administration" group.
+
+### Two small adjacent fixes made while touching these files (not part of ADR-0023's design, flagged separately)
+
+- `packages/types/src/api/consent-callback.ts`'s `ConsentResolution` mirror was missing the `'graph-consent-not-verified'` rejection reason that `packages/database`'s real type has carried since ADR-0012's 2026-08-01 amendment — a pre-existing drift bug, corrected while adding `needsReconsent` to the same union. Confirmed no frontend code switched exhaustively on `reason` (only compares against literals), so this is a strict widening with no behavior change.
+- `MeResponse.needsReconsent` and `ConsentResolution.needsReconsent` are both **optional**, not required as originally sketched in §3.10 — required would have broken every existing test fixture across `apps/web` that constructs a `MeResponse`/`ConsentResolution` literal (four test files). Optional is additive and the real backend always populates it regardless.
+
+### Validation
+
+Full monorepo, `pnpm exec turbo run typecheck lint test build --continue`, twice (once with a fresh `--force` test run, no cache): **37/37 tasks green**. Test totals: `@sph/config` 9, `@sph/scoring` 46, `@sph/graph-client` 53, `@sph/review-date-discovery` 39, `@sph/database` 96 (80 prior + 16 new — `permission-state.spec.ts`, real Postgres), `@sph/worker` 124 (unchanged, untouched by this ADR), `@sph/api` 500 (483 prior + 17 new across `consent-callback.controller.spec.ts`/`me.controller.spec.ts`), `@sph/web` 508 (502 prior + 6 new — `dashboard/settings/__tests__/page.test.tsx` plus extended nav assertions). 1375 tests total, 0 failures. The migration was applied via `prisma migrate deploy` against this session's reachable Postgres instance.
+
+Status: **Implemented**. §5's plan is complete except for the periodic-refresh piece (Deviation 1, explicitly descoped) — no other part of §3 was skipped or altered from what was approved.
