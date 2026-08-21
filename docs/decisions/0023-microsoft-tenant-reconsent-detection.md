@@ -185,4 +185,15 @@ Implemented per §5's plan, with two deliberate deviations discovered and resolv
 
 Full monorepo, `pnpm exec turbo run typecheck lint test build --continue`, twice (once with a fresh `--force` test run, no cache): **37/37 tasks green**. Test totals: `@sph/config` 9, `@sph/scoring` 46, `@sph/graph-client` 53, `@sph/review-date-discovery` 39, `@sph/database` 96 (80 prior + 16 new — `permission-state.spec.ts`, real Postgres), `@sph/worker` 124 (unchanged, untouched by this ADR), `@sph/api` 500 (483 prior + 17 new across `consent-callback.controller.spec.ts`/`me.controller.spec.ts`), `@sph/web` 508 (502 prior + 6 new — `dashboard/settings/__tests__/page.test.tsx` plus extended nav assertions). 1375 tests total, 0 failures. The migration was applied via `prisma migrate deploy` against this session's reachable Postgres instance.
 
-Status: **Implemented**. §5's plan is complete except for the periodic-refresh piece (Deviation 1, explicitly descoped) — no other part of §3 was skipped or altered from what was approved.
+### Live E2E confirmation (2026-08-21)
+
+The full flow was exercised live, through the actual `/dashboard/settings` entry point, against the same real tenant used for ADR-0003's original investigation (which had never gone through the post-ADR-0023 code, so `verifiedReadPermissionVersion`/`consentAssertedPermissionVersion` both started `NULL`). Confirmed:
+
+- The Settings page renders correctly for an Admin — connected tenant name, the "needs refresh" banner (since both fields were `NULL`), and the refresh button.
+- Clicking "Refresh Microsoft 365 permissions" reused the real `/adminconsent` redirect and completed the same flow already validated in ADR-0003.
+- Post-callback, `consentAssertedPermissionVersion`/`consentAssertedAt` were set, `verifiedReadPermissionVersion` was set (the live Graph re-check succeeded), `GET /auth/me` returned `needsReconsent: false`, and the "needs refresh" banner disappeared.
+- A `microsoft_tenant.permission_consent_asserted` audit entry appeared for the first pass.
+- **Idempotency confirmed live**: running the same flow a second time produced no second audit entry and no change to `consentAssertedAt`.
+- **Authorization confirmed live**: the Settings nav link and page are both correctly absent for a non-Admin account.
+
+This closes out ADR-0023 end to end — every claim in §9's implementation notes is now backed by live observation, not just tests, for the one real tenant available. Status unchanged: **Implemented**. §5's plan is complete except for the periodic-refresh piece (Deviation 1, explicitly descoped) — no other part of §3 was skipped or altered from what was approved.

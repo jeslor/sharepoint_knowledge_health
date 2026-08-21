@@ -44,9 +44,9 @@ export function AppHeader({ mobileNavOpen, onToggleMobileNav }: AppHeaderProps):
             target="_blank"
             rel="noopener noreferrer"
             aria-label="Open Microsoft 365 admin center"
-            className="hidden rounded-md p-1.5 text-slate-500 transition-colors duration-150 ease-premium hover:bg-slate-50 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-600 sm:block"
+            className="hidden rounded-md text-slate-500 transition-colors duration-150 ease-premium hover:bg-slate-50 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-600 sm:block"
           >
-            <Image src="/images/logo_small.png" alt="Microsoft 365" width={25} height={25} />
+            <Image src="/images/logo_small.png" alt="Microsoft 365" width={30} height={30} />
           </a>
         </Tooltip>
 
