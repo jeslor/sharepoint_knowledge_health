@@ -1,10 +1,21 @@
 import { Body, Controller, ForbiddenException, Logger, Post, UnauthorizedException } from '@nestjs/common';
-import { resolveOrProvisionFromConsent } from '@sph/database';
+import {
+  applyConsentAssertion,
+  applyVerifiedReadPermission,
+  createTenantContext,
+  derivePermissionReconsentState,
+  REQUIRED_PERMISSION_VERSION,
+  resolveOrProvisionFromConsent,
+  type ConsentResolution,
+} from '@sph/database';
+import type { ConsentResolution as ConsentResolutionResponse } from '@sph/types';
 import { entraJwks, verifyEntraToken } from './entra-jwt.guard';
 import type { ConsentCallbackRequest } from './consent-callback.dto';
 import { DiscoveryProducerService } from '../discovery/discovery-producer.service';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { GraphConsentVerifierService } from './graph-consent-verifier.service';
+
+type NonRejectedResolution = Exclude<ConsentResolution, { kind: 'rejected' }>;
 
 /**
  * ADR-0012 §1/§3: the ONLY place a brand-new Organization can be created.
@@ -24,7 +35,7 @@ export class ConsentCallbackController {
   ) {}
 
   @Post('consent-callback')
-  async handleConsentCallback(@Body() body: ConsentCallbackRequest) {
+  async handleConsentCallback(@Body() body: ConsentCallbackRequest): Promise<ConsentResolutionResponse> {
     const clientId = process.env.ENTRA_CLIENT_ID;
     if (!clientId) {
       throw new UnauthorizedException('Server misconfigured');
@@ -80,6 +91,71 @@ export class ConsentCallbackController {
       }
     }
 
-    return resolution;
+    // ADR-0023: reaching this endpoint at all means a real admin-consent
+    // redirect just completed, for every non-rejected kind — not just
+    // 'bootstrapped'. Both steps are best-effort and must never turn an
+    // otherwise-successful sign-in into a failure.
+    await this.recordConsentAssertion(resolution);
+    await this.refreshVerifiedReadPermission(resolution, claims.tid);
+
+    const context = createTenantContext(resolution.organizationId);
+    const tenant = await context.microsoftTenants.findFirstById(resolution.microsoftTenantId);
+
+    return {
+      ...resolution,
+      needsReconsent: tenant ? derivePermissionReconsentState(tenant).needsReconsent : false,
+    };
+  }
+
+  /**
+   * ADR-0023 §3.3/§3.7/§3.9: records ONLY that a real admin-consent redirect
+   * completed for the current required version — an assertion, never proof
+   * of the effective (in particular, write) grant. Advances unconditionally
+   * for every non-rejected resolution; audits only when it actually changes
+   * something, matching this app's existing no-noise audit discipline
+   * (ADR-0021) — a tenant already at the current version produces no
+   * duplicate entry.
+   */
+  private async recordConsentAssertion(resolution: NonRejectedResolution): Promise<void> {
+    const { advanced } = await applyConsentAssertion(resolution.microsoftTenantId, REQUIRED_PERMISSION_VERSION, new Date());
+    if (!advanced) return;
+
+    await this.auditLog.record(resolution.organizationId, {
+      actorUserId: resolution.userId,
+      action: 'microsoft_tenant.permission_consent_asserted',
+      targetType: 'MicrosoftTenant',
+      targetId: resolution.microsoftTenantId,
+      metadata: { permissionVersion: REQUIRED_PERMISSION_VERSION },
+    });
+  }
+
+  /**
+   * ADR-0023 §3.5/§3.6/§3.7: best-effort, never allowed to fail an
+   * otherwise-successful sign-in. For 'bootstrapped', the read-scope check
+   * already just ran (and passed) inside resolveOrProvisionFromConsent's own
+   * mandatory pre-bootstrap gate — recording it here avoids a redundant
+   * Graph call. For 'existing'/'provisioned-pending', a fresh real check
+   * runs; a ConsentVerificationError (denied) or any infrastructure error
+   * leaves verifiedReadPermissionVersion untouched — never downgraded, never
+   * treated as "not granted" just because Graph was unreachable.
+   */
+  private async refreshVerifiedReadPermission(resolution: NonRejectedResolution, entraTenantId: string): Promise<void> {
+    if (resolution.kind === 'bootstrapped') {
+      await applyVerifiedReadPermission(resolution.microsoftTenantId, REQUIRED_PERMISSION_VERSION).catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.error(`Failed to record verified-read-permission for bootstrapped tenant ${resolution.microsoftTenantId}: ${message}`);
+      });
+      return;
+    }
+
+    try {
+      await this.consentVerifier.verifyTenantConsent(entraTenantId);
+      await applyVerifiedReadPermission(resolution.microsoftTenantId, REQUIRED_PERMISSION_VERSION);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(
+        `Read-permission re-verification did not succeed for tenant ${resolution.microsoftTenantId} (leaving verifiedReadPermissionVersion unchanged): ${message}`,
+      );
+    }
   }
 }

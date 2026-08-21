@@ -263,6 +263,17 @@ model MicrosoftTenant {
   status                 MicrosoftTenantStatus @default(PendingConsent)
   consentGrantedAt       DateTime?
   consentGrantedByUserId String?
+  // ADR-0023 §3.3: two deliberately separate, honestly-scoped fields — not
+  // one shared "granted permissions" version. verifiedReadPermissionVersion
+  // is real evidence, advanced only after a passing GraphConsentVerifierService
+  // check. consentAssertedPermissionVersion/consentAssertedAt only record
+  // that an admin completed a real admin-consent redirect for the current
+  // permission requirement — never proof of the effective (in particular,
+  // write) grant. Nullable/additive; existing rows stay NULL (no backfill,
+  // no manufactured historical evidence).
+  verifiedReadPermissionVersion    Int?
+  consentAssertedPermissionVersion Int?
+  consentAssertedAt               DateTime?
   // ADR-0014 amendment (2026-07-20): current discovery job state only — see
   // the enum's own doc comment. Not history; ADR-0019's AuditLog owns that.
   discoveryStatus        DiscoveryStatus       @default(NotStarted)

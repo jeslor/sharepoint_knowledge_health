@@ -20,6 +20,8 @@ import {
   AlertFilled,
   HistoryRegular,
   HistoryFilled,
+  SettingsRegular,
+  SettingsFilled,
   ChevronDownRegular,
   type FluentIcon,
 } from '@fluentui/react-icons';
@@ -72,6 +74,9 @@ const GROUPS: NavGroup[] = [
     links: [
       { href: '/dashboard/sharepoint', label: 'Sites', icon: BuildingRegular, activeIcon: BuildingFilled },
       { href: '/dashboard/users', label: 'Users', icon: PeopleRegular, activeIcon: PeopleFilled },
+      // ADR-0023 §3.8: the re-consent entry point — Admin-only, matching
+      // Sites/Users' existing gating rationale exactly.
+      { href: '/dashboard/settings', label: 'Settings', icon: SettingsRegular, activeIcon: SettingsFilled },
     ],
   },
 ];

@@ -21,6 +21,9 @@ export { shouldEnqueueDiscovery, discoveryJobId } from './discovery';
 export { recoverStaleScanJobs } from './scan-recovery';
 export { recoverStaleDiscoveries } from './discovery-recovery';
 export { checkDatabaseConnection } from './health-check';
+export { REQUIRED_GRAPH_PERMISSIONS, REQUIRED_PERMISSION_VERSION } from './graph-permissions';
+export { derivePermissionReconsentState, applyVerifiedReadPermission, applyConsentAssertion } from './permission-state';
+export type { PermissionReconsentState } from './permission-state';
 
 export type {
   Organization,

@@ -129,31 +129,34 @@ describe('DashboardNav', () => {
     expect(within(desktopSidebar()).getByLabelText('250 unread')).toHaveTextContent('99+');
   });
 
-  it('hides Sites and Users links for a Member', () => {
+  it('hides Sites, Users, and Settings links for a Member', () => {
     mockUser = user({ role: 'Member' });
     render(<DashboardNav mobileOpen={false} onCloseMobile={noop} />);
 
     const { queryByRole } = within(desktopSidebar());
     expect(queryByRole('link', { name: /sites/i })).not.toBeInTheDocument();
     expect(queryByRole('link', { name: /users/i })).not.toBeInTheDocument();
+    expect(queryByRole('link', { name: /settings/i })).not.toBeInTheDocument();
   });
 
-  it('hides Sites and Users links for a GovernanceManager', () => {
+  it('hides Sites, Users, and Settings links for a GovernanceManager', () => {
     mockUser = user({ role: 'GovernanceManager' });
     render(<DashboardNav mobileOpen={false} onCloseMobile={noop} />);
 
     const { queryByRole } = within(desktopSidebar());
     expect(queryByRole('link', { name: /sites/i })).not.toBeInTheDocument();
     expect(queryByRole('link', { name: /users/i })).not.toBeInTheDocument();
+    expect(queryByRole('link', { name: /settings/i })).not.toBeInTheDocument();
   });
 
-  it('shows Sites and Users links for an Admin', () => {
+  it('shows Sites, Users, and Settings links for an Admin', () => {
     mockUser = user({ role: 'Admin' });
     render(<DashboardNav mobileOpen={false} onCloseMobile={noop} />);
 
     const { getByRole } = within(desktopSidebar());
     expect(getByRole('link', { name: /sites/i })).toHaveAttribute('href', '/dashboard/sharepoint');
     expect(getByRole('link', { name: /users/i })).toHaveAttribute('href', '/dashboard/users');
+    expect(getByRole('link', { name: /settings/i })).toHaveAttribute('href', '/dashboard/settings');
   });
 
   it('marks the link matching the current path as the active page', () => {

@@ -14,4 +14,12 @@ export interface MeResponse {
   // already requires one to provision a user), but not impossible (e.g. the
   // tenant is later revoked), so this stays nullable rather than assumed.
   tenantName: string | null;
+  // ADR-0023 §3.4/§3.10: combined, derived signal — a real Graph-verified
+  // read-scope gap OR the admin never asserting consent for the current
+  // required version. Never implies Sites.ReadWrite.All has been
+  // independently verified either way (ADR-0023 §3.3). Always false when
+  // there's no Consented tenant to evaluate. Optional (rather than
+  // required) purely to keep this an additive change for every existing
+  // MeResponse test fixture in apps/web — the real backend always sets it.
+  needsReconsent?: boolean;
 }
