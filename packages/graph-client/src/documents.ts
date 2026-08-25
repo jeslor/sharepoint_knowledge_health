@@ -55,3 +55,39 @@ export async function getDocument(
     throw mapGraphError(error, options?.correlationId);
   }
 }
+
+/**
+ * ADR-0013 (Amendment, 2026-08-13 — Narrow SharePoint List-Item Field
+ * Write, Phase 3A-2): the one narrow, explicit exception to this module's
+ * otherwise-read-only surface. PATCH /drives/{driveId}/items/{itemId}/listItem/fields
+ * — the same drive/driveItem resource path getDocument/listChildren above
+ * already use, navigated to that item's associated list-item fields.
+ * `itemId` is the driveItem id (the same id `getDocument` takes, and what
+ * this product persists as `Document.graphItemId`) — there is no separate
+ * SharePoint list-item id to resolve for this call.
+ *
+ * `fields` is intentionally `Record<string, string>`, not `unknown` — this
+ * amendment's one sanctioned use is setting a date-typed column, always a
+ * string value on the wire (an ISO 8601 date string), and narrowing the
+ * type here is cheaper than a runtime check for the one shape this
+ * function is scoped to support.
+ *
+ * Returns void, not the updated resource: matches ADR-0013's exact
+ * decision — the caller (SetReviewDateAction, ADR-0022) verifies the
+ * write via its own separate, already-existing read call, never by
+ * trusting this PATCH's own response body.
+ */
+export async function updateListItemFields(
+  entraTenantId: string,
+  driveId: string,
+  itemId: string,
+  fields: Record<string, string>,
+  options?: ListOptions,
+): Promise<void> {
+  const client = createGraphClient(entraTenantId);
+  try {
+    await client.api(`/drives/${driveId}/items/${itemId}/listItem/fields`).patch(fields);
+  } catch (error) {
+    throw mapGraphError(error, options?.correlationId);
+  }
+}

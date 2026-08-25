@@ -5,6 +5,7 @@ import { QueueModule } from './queue/queue.module';
 import { SchedulerModule } from './scheduler/scheduler.module';
 import { DiscoveryModule } from './discovery/discovery.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { RemediationModule } from './remediation/remediation.module';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { NotificationsModule } from './notifications/notifications.module';
     SchedulerModule,
     DiscoveryModule,
     NotificationsModule,
+    RemediationModule,
   ],
 })
 export class AppModule {}

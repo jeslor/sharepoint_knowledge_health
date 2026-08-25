@@ -19,6 +19,8 @@ interface SeededOrg {
   notificationId: string;
   sharePointReviewDateMappingId: string;
   sharePointReviewDateMappingGraphListId: string;
+  remediationJobId: string;
+  remediationItemId: string;
   context: TenantContext;
 }
 
@@ -193,6 +195,25 @@ async function seedOrganization(label: string): Promise<SeededOrg> {
     },
   });
 
+  const remediationJob = await prisma.remediationJob.create({
+    data: {
+      organizationId: organization.id,
+      issueType: 'ReviewStatus',
+      payload: { nextReviewDueAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString() },
+      initiatedByUserId: user.id,
+      initiatedByRole: 'Admin',
+      totalCount: 1,
+    },
+  });
+
+  const remediationItem = await prisma.remediationItem.create({
+    data: {
+      organizationId: organization.id,
+      remediationJobId: remediationJob.id,
+      documentId: document.id,
+    },
+  });
+
   return {
     organizationId: organization.id,
     userId: user.id,
@@ -211,6 +232,8 @@ async function seedOrganization(label: string): Promise<SeededOrg> {
     notificationId: notification.id,
     sharePointReviewDateMappingId: sharePointReviewDateMapping.id,
     sharePointReviewDateMappingGraphListId: sharePointReviewDateMapping.graphListId,
+    remediationJobId: remediationJob.id,
+    remediationItemId: remediationItem.id,
     context: createTenantContext(organization.id),
   };
 }
@@ -355,6 +378,94 @@ describe('Cross-tenant data isolation (ADR-0001)', () => {
       const list = await orgA.context.notifications.findMany();
       expect(list.some((n) => n.id === orgB.notificationId)).toBe(false);
       expect(await orgA.context.notifications.findFirstById(orgB.notificationId)).toBeNull();
+    });
+
+    it('RemediationJobRepository never leaks across organizations', async () => {
+      const list = await orgA.context.remediationJobs.findMany();
+      expect(list.some((j) => j.id === orgB.remediationJobId)).toBe(false);
+      expect(await orgA.context.remediationJobs.findFirstById(orgB.remediationJobId)).toBeNull();
+    });
+
+    it('RemediationItemRepository never leaks across organizations', async () => {
+      const list = await orgA.context.remediationItems.findMany();
+      expect(list.some((i) => i.id === orgB.remediationItemId)).toBe(false);
+      expect(await orgA.context.remediationItems.findFirstById(orgB.remediationItemId)).toBeNull();
+    });
+  });
+
+  // ADR-0022 §13.1: organizationId is a direct column on RemediationItem
+  // (not scoped only through its parent RemediationJob) precisely so it
+  // gets the exact same isolation guarantees as every other tenant-scoped
+  // repository — verified here with the same full-CRUD rigor as
+  // DocumentRepository above, since this is a new, security-sensitive
+  // write surface (a bulk operation targeting many documents at once).
+  describe('RemediationJobRepository / RemediationItemRepository (ADR-0022 — full CRUD isolation, new write surface)', () => {
+    it('RemediationJobRepository.updateById is a no-op against another organization\'s job', async () => {
+      const result = await orgA.context.remediationJobs.updateById(orgB.remediationJobId, { status: 'Completed' });
+      expect(result).toBeNull();
+
+      const untouched = await orgB.context.remediationJobs.findFirstById(orgB.remediationJobId);
+      expect(untouched?.status).toBe('Running');
+    });
+
+    it('RemediationJobRepository.deleteById is a no-op against another organization\'s job', async () => {
+      const deleted = await orgA.context.remediationJobs.deleteById(orgB.remediationJobId);
+      expect(deleted).toBe(false);
+
+      const stillExists = await orgB.context.remediationJobs.findFirstById(orgB.remediationJobId);
+      expect(stillExists).not.toBeNull();
+    });
+
+    it('RemediationJobRepository.create always writes under the bound organizationId, regardless of caller input', async () => {
+      const created = await orgA.context.remediationJobs.create({
+        issueType: 'ReviewStatus',
+        payload: { nextReviewDueAt: new Date().toISOString() },
+        initiatedByUserId: orgA.userId,
+        initiatedByRole: 'Admin',
+        totalCount: 0,
+      });
+      expect(created.organizationId).toBe(orgA.organizationId);
+    });
+
+    it('RemediationItemRepository.updateById is a no-op against another organization\'s item', async () => {
+      const result = await orgA.context.remediationItems.updateById(orgB.remediationItemId, { status: 'Succeeded' });
+      expect(result).toBeNull();
+
+      const untouched = await orgB.context.remediationItems.findFirstById(orgB.remediationItemId);
+      expect(untouched?.status).toBe('Pending');
+    });
+
+    it('RemediationItemRepository.deleteById is a no-op against another organization\'s item', async () => {
+      const deleted = await orgA.context.remediationItems.deleteById(orgB.remediationItemId);
+      expect(deleted).toBe(false);
+
+      const stillExists = await orgB.context.remediationItems.findFirstById(orgB.remediationItemId);
+      expect(stillExists).not.toBeNull();
+    });
+
+    it('RemediationItemRepository.create always writes under the bound organizationId, regardless of caller input', async () => {
+      // A second, throwaway document — the seeded remediationItemId
+      // already occupies the (remediationJobId, documentId) pair the
+      // @@unique constraint enforces, so this test needs its own target.
+      const extraDocument = await prisma.document.create({
+        data: {
+          organizationId: orgA.organizationId,
+          siteId: orgA.siteId,
+          graphItemId: `extra-item-${Date.now()}`,
+          name: 'extra-remediation-target.docx',
+          path: '/extra-remediation-target.docx',
+          fileType: 'docx',
+          sizeBytes: 512,
+          sourceCreatedAt: new Date(),
+          sourceModifiedAt: new Date(),
+        },
+      });
+
+      const created = await orgA.context.remediationItems.create({
+        remediationJobId: orgA.remediationJobId,
+        documentId: extraDocument.id,
+      });
+      expect(created.organizationId).toBe(orgA.organizationId);
     });
   });
 

@@ -1,7 +1,13 @@
 import type { Client } from '@microsoft/microsoft-graph-client';
 import { createGraphClient } from './client/graph-client-factory';
-import { listChildren } from './documents';
-import { GraphThrottledError } from './errors';
+import { listChildren, updateListItemFields } from './documents';
+import {
+  GraphThrottledError,
+  GraphTransientError,
+  GraphPermissionError,
+  GraphNotFoundError,
+  GraphAuthenticationError,
+} from './errors';
 
 jest.mock('./client/graph-client-factory');
 
@@ -88,5 +94,135 @@ describe('listChildren', () => {
     await expect(
       collect(listChildren('entra-tenant-1', 'drive-1', 'folder-1', { correlationId: 'corr-1' })),
     ).rejects.toThrow(GraphThrottledError);
+  });
+});
+
+// ADR-0013 (Amendment, 2026-08-13 — Narrow SharePoint List-Item Field
+// Write, Phase 3A-2): the one write function in this otherwise read-only
+// module. ADR-0022 §13.4 (corrected 2026-08-22): itemId is the driveItem
+// id (Document.graphItemId) — no separate list-item id involved.
+describe('updateListItemFields', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('PATCHes /drives/{driveId}/items/{itemId}/listItem/fields with exactly the given fields', async () => {
+    let requestedUrl: string | undefined;
+    let requestedBody: unknown;
+    mockedCreateGraphClient.mockReturnValue({
+      api: (url: string) => {
+        requestedUrl = url;
+        return {
+          patch: async (body: unknown) => {
+            requestedBody = body;
+          },
+        };
+      },
+    } as unknown as Client);
+
+    await updateListItemFields('entra-tenant-1', 'drive-1', 'item-1', { ReviewDate: '2026-12-01' });
+
+    expect(requestedUrl).toBe('/drives/drive-1/items/item-1/listItem/fields');
+    expect(requestedBody).toEqual({ ReviewDate: '2026-12-01' });
+  });
+
+  it('resolves to undefined on success — the caller must verify via its own separate read, not this response', async () => {
+    mockedCreateGraphClient.mockReturnValue({
+      api: () => ({ patch: async () => ({ id: 'item-1', fields: { ReviewDate: '2026-12-01' } }) }),
+    } as unknown as Client);
+
+    await expect(updateListItemFields('entra-tenant-1', 'drive-1', 'item-1', { ReviewDate: '2026-12-01' })).resolves.toBeUndefined();
+  });
+
+  it('maps a 403 to GraphPermissionError (Sites.ReadWrite.All missing or revoked)', async () => {
+    mockedCreateGraphClient.mockReturnValue({
+      api: () => ({
+        patch: async () => {
+          throw { statusCode: 403, code: 'accessDenied', message: 'Access denied' };
+        },
+      }),
+    } as unknown as Client);
+
+    await expect(
+      updateListItemFields('entra-tenant-1', 'drive-1', 'item-1', { ReviewDate: '2026-12-01' }),
+    ).rejects.toThrow(GraphPermissionError);
+  });
+
+  it('maps a 404 to GraphNotFoundError (item deleted or moved before the write)', async () => {
+    mockedCreateGraphClient.mockReturnValue({
+      api: () => ({
+        patch: async () => {
+          throw { statusCode: 404, code: 'itemNotFound', message: 'The item was not found' };
+        },
+      }),
+    } as unknown as Client);
+
+    await expect(
+      updateListItemFields('entra-tenant-1', 'drive-1', 'item-1', { ReviewDate: '2026-12-01' }),
+    ).rejects.toThrow(GraphNotFoundError);
+  });
+
+  it('maps a 429 to GraphThrottledError (surfaces only after the SDK\'s own RetryHandler middleware has already exhausted its retries)', async () => {
+    mockedCreateGraphClient.mockReturnValue({
+      api: () => ({
+        patch: async () => {
+          throw { statusCode: 429, code: 'activityLimitReached', message: 'Throttled' };
+        },
+      }),
+    } as unknown as Client);
+
+    await expect(
+      updateListItemFields('entra-tenant-1', 'drive-1', 'item-1', { ReviewDate: '2026-12-01' }),
+    ).rejects.toThrow(GraphThrottledError);
+  });
+
+  it('maps a 5xx (other than 503, which is throttling) to GraphTransientError (retryable, not permanent)', async () => {
+    mockedCreateGraphClient.mockReturnValue({
+      api: () => ({
+        patch: async () => {
+          throw { statusCode: 502, code: 'internalServerError', message: 'Bad gateway' };
+        },
+      }),
+    } as unknown as Client);
+
+    await expect(
+      updateListItemFields('entra-tenant-1', 'drive-1', 'item-1', { ReviewDate: '2026-12-01' }),
+    ).rejects.toThrow(GraphTransientError);
+  });
+
+  it('propagates a token-acquisition/authentication failure as GraphAuthenticationError, not a document-level permanent failure', async () => {
+    mockedCreateGraphClient.mockReturnValue({
+      api: () => ({
+        patch: async () => {
+          throw { statusCode: 401, code: 'InvalidAuthenticationToken', message: 'Access token is empty' };
+        },
+      }),
+    } as unknown as Client);
+
+    await expect(
+      updateListItemFields('entra-tenant-1', 'drive-1', 'item-1', { ReviewDate: '2026-12-01' }),
+    ).rejects.toThrow(GraphAuthenticationError);
+  });
+
+  it('threads correlationId through to the mapped error, exactly like every existing read function', async () => {
+    mockedCreateGraphClient.mockReturnValue({
+      api: () => ({
+        patch: async () => {
+          throw { statusCode: 403, code: 'accessDenied', message: 'Access denied' };
+        },
+      }),
+    } as unknown as Client);
+
+    await expect(
+      updateListItemFields('entra-tenant-1', 'drive-1', 'item-1', { ReviewDate: '2026-12-01' }, { correlationId: 'corr-1' }),
+    ).rejects.toMatchObject({ correlationId: 'corr-1' });
+  });
+
+  it('acquires the Graph client via the same createGraphClient(entraTenantId) path every other function uses — no second auth path', async () => {
+    mockedCreateGraphClient.mockReturnValue({
+      api: () => ({ patch: async () => undefined }),
+    } as unknown as Client);
+
+    await updateListItemFields('entra-tenant-2', 'drive-1', 'item-1', { ReviewDate: '2026-12-01' });
+
+    expect(mockedCreateGraphClient).toHaveBeenCalledWith('entra-tenant-2');
   });
 });

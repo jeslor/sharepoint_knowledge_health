@@ -132,6 +132,26 @@ enum GovernanceIssueStatus {
   Resolved
 }
 
+// ADR-0022 §6/§13.1: terminal once every RemediationItem reaches a
+// terminal state of its own (Succeeded/Failed/Skipped) — not stored per
+// item, computed by whoever finalizes the job.
+enum RemediationJobStatus {
+  Running
+  Completed
+}
+
+// ADR-0022 §13.3: a write that succeeds but can't be verified stays
+// Pending (retryable) — never a distinct status, never Failed, never
+// Succeeded without confirmation. See that section for the full
+// rationale; this enum intentionally has no "verification failed" or
+// "retryable" value beyond Pending itself.
+enum RemediationItemStatus {
+  Pending
+  Succeeded
+  Failed
+  Skipped
+}
+
 // ADR-0016 §4.3: same reserved-until-later shape as DocumentOwnerSource.
 // GraphMetadata is unused until a future Graph List Items API integration
 // (ADR-0016 §9) — Phase 8A only ever writes Manual.
@@ -216,6 +236,8 @@ model Organization {
   auditLogs                    AuditLog[]
   notifications                Notification[]
   sharePointReviewDateMappings SharePointReviewDateMapping[]
+  remediationJobs              RemediationJob[]
+  remediationItems             RemediationItem[]
 
   @@index([status])
 }
@@ -245,6 +267,7 @@ model User {
   auditLogEntries             AuditLog[]
   notifications               Notification[]
   confirmedReviewDateMappings SharePointReviewDateMapping[] @relation("SharePointReviewDateMappingConfirmedBy")
+  initiatedRemediationJobs    RemediationJob[]              @relation("RemediationJobInitiatedBy")
 
   // The Entra oid claim (entraObjectId) is only unique WITHIN the Azure AD
   // tenant that issued it (ADR-0010) — Microsoft's own multi-tenant app
@@ -375,6 +398,7 @@ model Document {
   governanceIssues   GovernanceIssue[]
   governanceActivity GovernanceActivity[]
   notifications      Notification[]
+  remediationItems   RemediationItem[]
 
   @@unique([siteId, graphItemId])
   @@index([organizationId, status])
@@ -753,4 +777,66 @@ model AuditLog {
   actorUser    User?        @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
 
   @@index([organizationId, createdAt])
+}
+
+/// ADR-0022 (as amended by its 2026-08-21 §13 addendum): one row per bulk
+/// remediation operation. issueType reuses HealthIssueCriterion as its key
+/// (no parallel taxonomy) — Phase 3A-2 only ever writes 'ReviewStatus'.
+/// initiatedByRole is captured at creation time so a worker processing
+/// this job later never re-derives authorization from request state that
+/// may no longer exist (ADR-0022 §8).
+model RemediationJob {
+  id                String               @id @default(cuid())
+  organizationId    String
+  issueType         HealthIssueCriterion
+  payload           Json
+  status            RemediationJobStatus @default(Running)
+  initiatedByUserId String
+  initiatedByRole   UserRole
+  totalCount        Int
+  succeededCount    Int                  @default(0)
+  failedCount       Int                  @default(0)
+  createdAt         DateTime             @default(now())
+  completedAt       DateTime?
+
+  organization    Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  // Restrict, matching ScanJob.triggeredByUserId/GovernanceActivity.actorUserId's
+  // precedent — who initiated a bulk write must never be silently lost to
+  // a user deletion.
+  initiatedByUser User              @relation("RemediationJobInitiatedBy", fields: [initiatedByUserId], references: [id], onDelete: Restrict)
+  items           RemediationItem[]
+
+  @@index([organizationId, status])
+}
+
+/// ADR-0022 §13.1: organizationId is a direct column here too, not scoped
+/// only through the parent RemediationJob — matching this schema's
+/// otherwise-100%-consistent convention (HealthIssue, HealthScore,
+/// GovernanceIssue, SharePointReviewDateMapping, ScanJob all carry their
+/// own organizationId; there is no existing precedent anywhere in this
+/// schema for parent-only tenant scoping).
+///
+/// ADR-0022 §13.3: a write that PATCHes successfully but whose targeted
+/// re-fetch cannot confirm the expected value stays Pending (retryable),
+/// never Failed and never Succeeded without confirmation — see that
+/// section. errorType mirrors @sph/graph-client's error class names
+/// directly (e.g. "GraphPermissionError") — no new taxonomy.
+model RemediationItem {
+  id               String                @id @default(cuid())
+  organizationId   String
+  remediationJobId String
+  documentId       String
+  status           RemediationItemStatus @default(Pending)
+  errorType        String?
+  errorMessage     String?
+  attemptCount     Int                   @default(0)
+  updatedAt        DateTime              @updatedAt
+
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  remediationJob RemediationJob @relation(fields: [remediationJobId], references: [id], onDelete: Cascade)
+  document       Document       @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([remediationJobId, documentId])
+  @@index([organizationId, status])
+  @@index([remediationJobId, status])
 }

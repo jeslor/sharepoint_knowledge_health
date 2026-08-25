@@ -9,8 +9,9 @@ import {
 } from '@sph/types';
 import { createTenantContext, type TenantContext, type Document, type DocumentOwner, type SharePointSite } from '@sph/database';
 import { listDrives, listDocuments, listChildren, type GraphDriveItem, GraphClientError } from '@sph/graph-client';
-import { calculateScore, type DocumentOwnerInput, type SiblingDocumentInput } from '@sph/scoring';
+import { calculateScore, type SiblingDocumentInput } from '@sph/scoring';
 import { syncConfirmedReviewDateMapping } from '../sharepoint-metadata/review-date-sync';
+import { buildScoringInput } from '../scoring/build-scoring-input';
 
 /**
  * ADR-0015 §3 — the exact aggregate a HealthSnapshot needs, computed once
@@ -505,22 +506,12 @@ export class DocumentCollectorProcessor extends WorkerHost {
 
     for (const document of documents) {
       const key = `${document.name}::${document.sizeBytes}`;
-      const ownerInputs: DocumentOwnerInput[] = (ownersByDocumentId.get(document.id) ?? []).map((owner) => ({
-        email: owner.email,
-        isActiveUser: owner.email !== null ? (activeByEmail.get(owner.email) ?? null) : null,
-      }));
-
-      const result = calculateScore({
-        documentId: document.id,
-        documentName: document.name,
-        sourceCreatedAt: document.sourceCreatedAt,
-        sourceModifiedAt: document.sourceModifiedAt,
-        sizeBytes: Number(document.sizeBytes),
-        nextReviewDueAt: document.nextReviewDueAt,
-        owners: ownerInputs,
-        siblingDocuments: siblingsByKey.get(key) ?? [],
-        now: scoringNow,
-      });
+      // ADR-0022 Phase 5: this mapping is now shared with rescore-document.ts's
+      // single-document rescore path (buildScoringInput, apps/worker/src/scoring) —
+      // extracted unchanged, so this loop's behavior is identical to before.
+      const result = calculateScore(
+        buildScoringInput(document, ownersByDocumentId.get(document.id) ?? [], activeByEmail, siblingsByKey.get(key) ?? [], scoringNow),
+      );
 
       const healthScore = await context.healthScores.create({
         documentId: document.id,

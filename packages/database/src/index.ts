@@ -24,6 +24,8 @@ export { checkDatabaseConnection } from './health-check';
 export { REQUIRED_GRAPH_PERMISSIONS, REQUIRED_PERMISSION_VERSION } from './graph-permissions';
 export { derivePermissionReconsentState, applyVerifiedReadPermission, applyConsentAssertion } from './permission-state';
 export type { PermissionReconsentState } from './permission-state';
+export { createRemediationJobWithItems } from './remediation';
+export type { CreateRemediationJobInput, RemediationJobWithItems } from './remediation';
 
 export type {
   Organization,
@@ -42,6 +44,8 @@ export type {
   AuditLog,
   Notification,
   SharePointReviewDateMapping,
+  RemediationJob,
+  RemediationItem,
 } from '@prisma/client';
 
 export {
@@ -64,4 +68,6 @@ export {
   DiscoveryStatus,
   NotificationType,
   SharePointReviewDateMappingStatus,
+  RemediationJobStatus,
+  RemediationItemStatus,
 } from '@prisma/client';
