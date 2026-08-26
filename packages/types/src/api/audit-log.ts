@@ -25,9 +25,14 @@ export type AuditLogAction =
   // actually advances (an admin completed a real re-consent redirect) —
   // never for a routine background read-verification refresh, and never
   // for a tenant already at the current required version.
-  | 'microsoft_tenant.permission_consent_asserted';
+  | 'microsoft_tenant.permission_consent_asserted'
+  // ADR-0022 §3.6: one row per bulk-remediation initiation (aggregate,
+  // matching this type's existing convention of one row per privileged
+  // action, never per affected entity — e.g. site approval). Written by
+  // the API layer at job-creation time (Phase 6, not this phase).
+  | 'remediation_job.initiated';
 
-export type AuditLogTargetType = 'User' | 'SharePointSite' | 'ScanJob' | 'ScanSchedule' | 'MicrosoftTenant';
+export type AuditLogTargetType = 'User' | 'SharePointSite' | 'ScanJob' | 'ScanSchedule' | 'MicrosoftTenant' | 'RemediationJob';
 
 export interface AuditLogResponse {
   id: string;

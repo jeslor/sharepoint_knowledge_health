@@ -1,7 +1,7 @@
 # ADR-0022: Bulk Remediation Job Architecture
 
 Date: 2026-08-13
-Status: Accepted (planning) — Phase 3A-0. No code in this ADR; Phase 3A-2 implements §3/§6, Phase 3A-3 implements §7.
+Status: Accepted — implementation-ready as of the 2026-08-21 addendum (§13). No code has been written yet; Phase 3A-2 implements §3/§6 (as amended by §13.1), Phase 3A-3 implements §7.
 
 ---
 
@@ -240,6 +240,7 @@ model RemediationJob {
 
 model RemediationItem {
   id                 String                  @id @default(cuid())
+  organizationId     String                  // see §13.1 — added by the 2026-08-21 addendum
   remediationJobId   String
   documentId         String
   status             RemediationItemStatus   @default(Pending)
@@ -248,18 +249,25 @@ model RemediationItem {
   attemptCount       Int                     @default(0)
   updatedAt          DateTime                @updatedAt
 
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   remediationJob RemediationJob @relation(fields: [remediationJobId], references: [id], onDelete: Cascade)
   document       Document       @relation(fields: [documentId], references: [id], onDelete: Cascade)
 
   @@unique([remediationJobId, documentId])
+  @@index([organizationId, status])
   @@index([remediationJobId, status])
 }
 ```
 
-`organizationId` is intentionally on `RemediationJob` only, not repeated
-on `RemediationItem` — matches `HealthIssue`/`HealthScore`'s existing
-precedent of scoping the parent, not every child row, since every query
-path reaches `RemediationItem` through its parent job.
+**Corrected by §13.1 (2026-08-21)** — `organizationId` is now on
+`RemediationItem` directly, not only on `RemediationJob`. The original
+reasoning above ("matches `HealthIssue`/`HealthScore`'s existing
+precedent of scoping the parent, not every child row") was factually
+wrong about this repository's actual schema: direct inspection confirms
+`HealthIssue`, `HealthScore`, `GovernanceIssue`, `SharePointReviewDateMapping`,
+and `ScanJob` **all** carry their own `organizationId` column, with zero
+exceptions — there is no existing precedent anywhere in this schema for
+parent-only scoping. See §13.1 for the full correction and rationale.
 
 **Exact field names/types above are a proposal, not frozen** — Phase 3A-2
 implementation may adjust naming to match conventions discovered during
@@ -365,10 +373,13 @@ No schema beyond §6's two tables is needed to represent any of the above.
 - **Bounded in-job concurrency + no `$batch` sets a real write-throughput
   ceiling** — acceptable at current scale; revisit only if real usage
   proves it insufficient, not preemptively.
-- **The re-consent UX for `Sites.ReadWrite.All` is not yet designed**
-  (ADR-0003's amendment, explicitly deferred as a Phase 3A-2 prerequisite)
-  — implementation of §3/§6 above must not begin until that investigation
-  resolves.
+- ~~The re-consent UX for `Sites.ReadWrite.All` is not yet designed
+  (ADR-0003's amendment, explicitly deferred as a Phase 3A-2
+  prerequisite) — implementation of §3/§6 above must not begin until that
+  investigation resolves.~~ **Resolved (2026-08-21) — see §13.** ADR-0023
+  investigated this live against a real tenant, designed, implemented,
+  reviewed, and end-to-end-validated the re-consent detection/entry-point
+  mechanism. This is no longer a blocker for Phase 3A-2.
 
 ## 11. ADRs Requiring Amendment
 
@@ -379,10 +390,21 @@ No schema beyond §6's two tables is needed to represent any of the above.
   re-consent-UX prerequisite.
 - **ADR-0016** — addended (2026-08-13, §17.4/§17.5): the manual-write
   conflict guard, and a cross-reference to this ADR's resolution
-  mechanism.
+  mechanism. **Not yet further amended (2026-08-21)**: §13.2 below
+  documents a narrow, explicitly-scoped exception to ADR-0016 §16.1's
+  "a worker process must never mutate `GovernanceIssue` lifecycle
+  state... under any circumstance" rule, required for automated
+  remediation resolution. This exception is recorded here, in this ADR,
+  per explicit direction not to edit ADR-0016's own file as part of this
+  addendum — but a future formal amendment to ADR-0016 §16.1 (mirroring
+  its own existing §16 amendment structure) would be the more durable
+  home for it and is worth doing before or during implementation.
 - **ADR-0002** — amended (2026-08-13): the Missing/Overdue/Healthy/Due-Soon
   scoring change this ADR's verification step (§3.4) depends on to know
   whether an issue is "actually gone."
+- **ADR-0023** — not amended, referenced only. Fully implemented,
+  reviewed, and live-validated (2026-08-21) — resolves the re-consent-UX
+  prerequisite this ADR's §10 previously named as blocking. See §13.5.
 
 ## 12. Non-Goals (Phase 3A-2/3A-3)
 
@@ -395,4 +417,316 @@ reaffirmed here since it's adjacent territory — see ADR-0016 §17.2's
 existing confidence-scoring decision, unchanged by this ADR). The
 Live-Tenant Validation checklist itself lives in the Phase 3 architecture
 proposal (chat record, 2026-08-13) and `docs/testing/` conventions, not
-duplicated in this ADR.
+duplicated in this ADR. **Added by the 2026-08-21 addendum (§13.5)**:
+cross-job duplicate/overlap detection — no distributed document lock, no
+cross-job locking mechanism; the write's own idempotency (§9) already
+makes concurrent/overlapping jobs targeting the same document safe.
+
+## 13. Implementation Clarifications / Addendum (2026-08-21)
+
+A focused implementation-readiness investigation (source-level, against
+this repository's actual state — not assumption from this ADR's own
+text) found five genuine open decisions this ADR had not addressed, plus
+confirmed that ADR-0023 has fully closed the one prerequisite §10 named
+as blocking. This addendum resolves all five. Every other decision this
+ADR already made (§1-§12) stands unchanged except where a specific
+correction is called out below and cross-referenced from its original
+section.
+
+### 13.1 `RemediationItem.organizationId`
+
+**Decision**: `RemediationItem` gets its own `organizationId` column,
+directly, in addition to `RemediationJob.organizationId`. §6's schema
+block above has been updated in place to reflect this (a corrected
+`organization` relation, and `@@index([organizationId, status])` added
+alongside the existing `@@index([remediationJobId, status])`).
+`RemediationItem` remains linked to its parent via `remediationJobId`,
+and `@@unique([remediationJobId, documentId])` is unchanged.
+
+**Rationale**: §6's original text justified the omission by claiming it
+"matches `HealthIssue`/`HealthScore`'s existing precedent of scoping the
+parent, not every child row." Direct inspection of the actual schema
+during this investigation found that claim to be incorrect —
+`HealthIssue`, `HealthScore`, `GovernanceIssue`,
+`SharePointReviewDateMapping`, and `ScanJob` all carry their own
+`organizationId` column, with **zero exceptions** anywhere in this
+schema. Every existing tenant-scoped repository (`packages/database/src/repositories/*`)
+does flat, column-based `WHERE organizationId = ...` scoping, constructor-injected
+once and merged into every query — none of them scope through a parent
+relation. Omitting `organizationId` from `RemediationItem` would have
+made it the first model in this entire codebase to require join-based
+tenant isolation, a genuinely new pattern with no precedent to build on
+or test against.
+
+**Implementation constraint**: `RemediationItemRepository` must follow
+the exact same shape as every other tenant-scoped repository in
+`packages/database/src/repositories/` (constructor-injected
+`organizationId`, merged into every `WHERE` clause) — no special-casing.
+The existing `tenant-isolation.spec.ts` sweep gains two new entries
+(`RemediationJobRepository`, `RemediationItemRepository`) using its
+existing structure, unchanged.
+
+### 13.2 `GovernanceIssue` `Open → Resolved` — an explicit, narrow automated-resolution path
+
+**Decision**: bulk remediation does **not** perform a synthetic
+`Open → InProgress → Resolved` double-hop through the existing,
+human-facing `GovernanceIssuesService.updateIssue`/`ALLOWED_TRANSITIONS`
+path. That would write two `GovernanceActivity` rows (`StatusChanged`
+then `IssueResolved`) for one automated action, misrepresenting what
+actually happened. Instead, this ADR introduces a **separate, narrow,
+worker-callable resolution function**, living in `packages/database`
+(alongside the other tenant-scoped write helpers `apps/worker` already
+calls directly for `HealthScore`/`HealthIssue`, per this codebase's
+established `apps/api`-and-`apps/worker`-never-call-each-other boundary,
+ADR-0009) — not a new HTTP call from worker to API, and not a change to
+`GovernanceIssuesService.updateIssue` or `ALLOWED_TRANSITIONS` itself.
+
+This function:
+- accepts an `Open` **or** `InProgress` `GovernanceIssue` and transitions
+  it directly to `Resolved` — a transition `ALLOWED_TRANSITIONS`
+  (`governance-issues.service.ts`) does not permit for the human-facing,
+  HTTP-guarded path, and this addendum does not change that map;
+- is only ever invoked after `SetReviewDateAction`'s write has been
+  verified (§3.4) **and** the underlying `HealthIssue` for that criterion
+  is confirmed gone — never speculatively;
+- writes exactly one `GovernanceActivity` row, type `IssueResolved`
+  (already an existing enum value — confirmed present, no schema change
+  needed), `actorUserId` set to `RemediationJob.initiatedByUserId` — the
+  same real, already-role-checked user §8 already establishes as the
+  worker's sole source of "who authorized this," never a synthetic actor;
+- sets `resolvedAt` the same way `updateIssue` already does for a
+  human-driven `Resolved` transition — `new Date()` at the moment of
+  transition, no special-casing;
+- is scoped through `createTenantContext(organizationId)` exactly like
+  every other write in this system — tenant isolation is never bypassed;
+- has **no HTTP-facing authorization check of its own**, and does not
+  need one: authorization already happened once, at `RemediationJob`
+  creation time, inside the authenticated request where
+  `RolesGuard`/`OrganizationAccessGuard` ran (§8, unchanged) — this
+  function only ever executes a decision already authorized then, the
+  same principle §8 already states for the write path generally.
+
+**This is a narrow, explicitly-scoped exception, not a general weakening
+of `ALLOWED_TRANSITIONS`.** The human-facing HTTP path
+(`PATCH .../issues/:issueId`) is completely unchanged — a human still
+cannot skip `InProgress`, still cannot resolve an issue that isn't
+theirs without the appropriate role, still goes through
+`assertUpdateAuthorized`/`ALLOWED_TRANSITIONS` exactly as before. Only
+this one, narrowly-scoped, worker-internal function gains the ability to
+jump `Open → Resolved`, and only under the three preconditions above
+(verified write, confirmed-gone `HealthIssue`, a `RemediationJob`-derived
+actor).
+
+**Relationship to ADR-0016 §16.1**: that section states, in the course of
+narrowing the worker's *read* boundary, that the worker's *write*
+prohibition on `GovernanceIssue` ("must never mutate... under any
+circumstance") is "unchanged and still absolute." This addendum is a
+second, equally narrow exception to that same absolute rule — reasoned
+the same way ADR-0021 reasoned its read exception: the original rule's
+actual load-bearing guarantee is that `GovernanceIssue` stays
+trustworthy and not silently mutated by scan-time logic; a purpose-built,
+narrowly-scoped, three-precondition-gated resolution function invoked
+only from the remediation pipeline (never `DocumentCollectorProcessor`,
+never any other worker code path) preserves that guarantee's actual
+intent while adding the one capability this feature genuinely needs. Per
+explicit direction, ADR-0016's own file is not edited by this addendum —
+see §11's updated entry above for the forward-reference and the
+recommendation that a future formal ADR-0016 amendment (mirroring its
+existing §16 structure) would be the more durable home for this.
+
+### 13.3 Write succeeded, verification failed
+
+**Decision**: no new `RemediationItemStatus` value. If a `SetReviewDateAction`
+write (the Graph `PATCH`) succeeds, but the subsequent targeted re-fetch
+(§3.4) does not confirm the expected value, the item **stays `Pending`**
+— it is not marked `Failed`, and it is never marked `Succeeded` without
+confirmation.
+
+**Rationale**: the write itself is idempotent (§9, unchanged) — a retried
+`PATCH` is always safe to repeat. A `Pending` item is exactly "work that
+has not yet reached a verified terminal state," which is precisely what
+this scenario is. Marking it `Failed` would be actively wrong (the write
+plausibly succeeded) and would require a human to notice and retry
+something the system could safely retry itself; marking it `Succeeded`
+without confirmation would directly violate §3.4's own rule ("An item is
+marked `Succeeded` only after this verification confirms the fresh value
+matches what was written — never merely because the Graph PATCH call
+itself returned success").
+
+**One necessary distinction, so this doesn't silently expand the status
+model's meaning**: this `Pending`-on-ambiguous-mismatch case is different
+from a **verification call that itself fails with a real, classifiable
+Graph error** (e.g. the re-fetch returns `GraphNotFoundError` because the
+document was deleted moments after the write succeeded, or
+`GraphThrottledError`/`GraphTransientError` during the re-fetch itself).
+Those go through the exact same classification §9 already defines for
+the write call — `GraphNotFoundError`/`GraphPermissionError` → `Failed`
+with the matching `errorType`; `GraphThrottledError`/`GraphTransientError`
+→ stays `Pending`, retried. The **only** new case this decision covers is
+"the write returned success, the re-fetch returned success, but the
+returned value doesn't match what was written" — an ambiguous mismatch
+with no Graph error at all, which is the one case §9's existing
+error-type-based classification has nothing to say about.
+
+**Implementation constraint**: governance resolution (§13.2) is gated
+strictly on `Succeeded`, never on `Pending` — an item stuck in this
+ambiguous-mismatch state can never trigger a `GovernanceIssue`
+resolution, no matter how many retries it accumulates, until a retry
+actually confirms the value.
+
+### 13.4 DriveItem ID vs. SharePoint list item ID — corrected (2026-08-22)
+
+**This section was factually wrong when first written and is corrected
+here, before any code was written against it.** The original text assumed
+`updateListItemFields` would use the site/list-based Graph endpoint
+(`/sites/{siteId}/lists/{listId}/items/{itemId}/fields`, keyed on a
+distinct SharePoint list-item ID) and proposed resolving that list-item
+ID via `review-date-sync.ts`'s existing `listItemFields`/`listItemDriveItemIds`
+join. That endpoint choice was never actually decided anywhere — it
+conflicted with `docs/decisions/0013-microsoft-graph-client-architecture.md`'s
+own 2026-08-13 amendment, which had **already** specified
+`updateListItemFields` as the **drive-based** endpoint:
+
+```typescript
+function updateListItemFields(
+  entraTenantId: string,
+  driveId: string,
+  itemId: string,
+  fields: Record<string, string>,
+  options?: ListOptions,
+): Promise<void>;
+```
+
+mapping to `PATCH /drives/{driveId}/items/{itemId}/listItem/fields`. This
+was caught and reconciled before Phase 1 implementation began, in favor
+of ADR-0013's already-accepted, more specific decision — ADR-0013 is the
+ADR that actually authorizes and defines this function; ADR-0022 is a
+consumer of that capability and must not redefine it.
+
+**Decision (corrected)**: `Document.graphItemId` — already persisted,
+already known for every document — **is** the `itemId` this endpoint
+needs. There is no separate SharePoint list-item ID to resolve for the
+write itself; §13.4's original premise (a list-item-ID lookup) does not
+apply to the write path at all. **The real, remaining resolution
+problem is narrower and different**: obtaining the `driveId` for a given
+`Document`. `document-collector.processor.ts`'s `upsertDocument` knows
+`drive.id` at scan time but only ever persists `graphListId`
+(`drive.list?.id`) onto `Document` — `driveId` itself is not stored
+anywhere today.
+
+**Resolve `driveId` at remediation execution time, not by adding a new
+persisted field**: call the existing `listDrives(entraTenantId, site.graphSiteId)`
+(already in `packages/graph-client`, unchanged) and match the drive whose
+`list?.id === document.graphListId` — the same site-scoped drive
+enumeration `document-collector.processor.ts` already performs at scan
+time, just re-run at remediation time for the one drive a targeted
+document belongs to. No schema change is required for this concern.
+
+**Rationale**: matches this ADR's own standing preference (§3.2, §13.4's
+original intent) to reuse existing Graph read primitives rather than
+invent new persisted state, while accurately reflecting which primitive
+and which identifier actually apply. `review-date-sync.ts`'s
+`listItemFields`/`listItemDriveItemIds` join remains exactly as useful as
+before for its own purpose (§3.4's verification re-fetch, which is a
+site/list-based read, unchanged) — it was never the right mechanism for
+the *write's* identifier, only for the read/verify half of this feature.
+
+**Implementation constraint**: if, during actual implementation, resolving
+`driveId` via `listDrives` proves insufficient (e.g. too slow at scale
+for a large bulk job, or a document's backing drive can't be
+disambiguated this way in some edge case), that becomes its own,
+separately-justified design decision — a new ADR or a formal amendment to
+this one — not something to silently work around by adding a persisted
+`driveId` field without that justification first.
+
+### 13.5 Duplicate remediation jobs — confirmed non-goal
+
+**Decision**: no cross-job locking, no distributed document lock, no
+overlap-detection system. This is an explicit non-goal, added to §12.
+
+**Rationale**: the write is idempotent (§9) — if two `RemediationJob`s
+somehow target the same document, both writes are safe to execute in
+either order or interleaved, and governance resolution (§13.2) remains
+conditional on a fresh, successful verification regardless of which job
+happens to run last. `RemediationItem`'s existing
+`@@unique([remediationJobId, documentId])` already prevents a document
+from appearing twice *within* one job; nothing further is needed
+*across* jobs given idempotency.
+
+**Implementation constraint**: the job-creation API endpoint should
+prevent *accidental* duplicate submissions from a single user
+interaction (e.g. a double-click) where that's straightforward — an
+ordinary client-side submit-guard or a request-level check, not a new
+distributed-locking mechanism. No cross-job overlap detection should be
+built.
+
+### ADR-0023 status
+
+ADR-0023 (Microsoft Tenant Re-Consent Detection) is **fully implemented,
+code-reviewed, and live-validated end to end** (2026-08-21) — see that
+ADR's own §9. It is **no longer a blocker** for this ADR's implementation
+(§10's bullet on this is struck through above). The interaction between
+the two remains exactly as ADR-0023 itself specifies: `needsReconsent`/
+`consentAssertedPermissionVersion` may inform this feature's UI (e.g.
+gating the bulk-remediation entry point's visibility or messaging with a
+"refresh permissions" prompt) but must never be treated as proof write
+access exists, and must never influence whether an actual `PATCH` is
+attempted or how its result is classified. The real, sole authority for
+write-permission remains this ADR's own §8/§9 reactive `GraphPermissionError`
+model, unchanged. A real 403 during a bulk write does not, and should
+not, feed back into `MicrosoftTenant`'s permission-state fields —
+`RemediationItem.errorType` is the correct, sufficient place for that
+signal, exactly as §9 already establishes.
+
+### Preserved decisions (explicitly reaffirmed, unchanged by this addendum)
+
+- `Sites.ReadWrite.All` as the correct, sole additional permission (§3,
+  ADR-0003's amendment) — independently reconfirmed correct during this
+  investigation.
+- No pre-flight write-permission probe (§8) — a real `GraphPermissionError`
+  on the first write remains the authoritative signal.
+- The initiating user (`RemediationJob.initiatedByUserId`) is the sole
+  governance actor for any automated action this feature performs (§3.5,
+  §13.2) — never a synthetic "system" actor.
+- Maximum 500 selected documents per job (§7).
+- Idempotent writes as the foundational safety property this whole
+  architecture is built around (§9, §13.5).
+- No Graph `$batch` (§12).
+- No ETag/optimistic-concurrency conflict detection (§9, §12) — the
+  documented, accepted stale-write risk stands unchanged.
+- No second remediation action type until `SetReviewDate` is proven live
+  (§12).
+- No LLM/AI-based column matching (§12).
+- No periodic tenant-permission health check — ADR-0023 §3.5 itself
+  explicitly descoped this (no such infrastructure exists anywhere in
+  this codebase today); this ADR does not reopen that question or
+  introduce one of its own.
+
+### Implementation-readiness statement
+
+With the five decisions above resolved, **this ADR is implementation-ready.**
+No further design investigation is required before Phase 3A-2 begins.
+
+### Implementation sequence
+
+1. `updateListItemFields` (`packages/graph-client`) — no dependency on
+   anything else in this list; fully isolable and testable on its own.
+2. `RemediationJob`/`RemediationItem` schema + migration (§6, as amended
+   by §13.1).
+3. `SetReviewDateAction` (depends on #1 and #13.4's ID-resolution
+   approach).
+4. `REMEDIATION_QUEUE` + worker processor, including the resume-on-retry
+   and bounded-in-job-concurrency logic §3.3 already calls for (depends
+   on #2 and #3).
+5. Automated governance resolution (§13.2) (depends on #4 — only ever
+   invoked after a real verified write).
+6. API trigger + status/progress endpoints (depends on #2; independent of
+   #5).
+7. UI bulk-selection/remediation flow (`BulkActionToolbar`, `useApiQuery`'s
+   `pollIntervalMs` — both already exist, unused; depends on #6).
+8. Permission-state UX integration (§13's ADR-0023 status note above) —
+   layered onto #7 last, a display-only concern with no functional
+   dependency on the write path.
+9. Live-tenant E2E validation (§10, §12) — non-negotiable before this is
+   considered production-ready, per this ADR's own original risk
+   assessment, unchanged.

@@ -47,3 +47,16 @@ export interface NotificationReconciliationJobPayload {
 // NOTIFICATION_RECONCILIATION_QUEUE above, never a second reconciliation
 // execution path of its own.
 export const NOTIFICATION_RECONCILIATION_SWEEP_QUEUE = 'notification-reconciliation-sweep-queue';
+
+// ADR-0022 §3.3/§13: one job per bulk remediation operation. Minimal
+// payload, matching ScanJobPayload's exact shape — the worker never
+// re-derives who initiated the job or which documents are targeted from
+// anything except this payload plus the RemediationJob/RemediationItem
+// rows it points to; Postgres is the durable source of truth, this queue
+// is only a trigger (ADR-0015 §1's philosophy, restated in ADR-0022 §3.3).
+export const REMEDIATION_QUEUE = 'remediation-queue';
+
+export interface RemediationJobPayload {
+  organizationId: string;
+  remediationJobId: string;
+}
