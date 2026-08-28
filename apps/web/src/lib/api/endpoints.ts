@@ -6,6 +6,8 @@ import type {
   ConsentCallbackRequest,
   ConsentResolution,
   CreateGovernanceIssueRequest,
+  CreateRemediationJobRequest,
+  CreateRemediationJobResponse,
   CreateScanScheduleRequest,
   DocumentDetailResponse,
   DocumentHealthQuery,
@@ -392,4 +394,19 @@ export function markNotificationRead(organizationId: string, notificationId: str
 
 export function markAllNotificationsRead(organizationId: string, token: string): Promise<{ updatedCount: number }> {
   return apiRequest(`/organizations/${organizationId}/notifications/mark-all-read`, token, { method: 'POST' });
+}
+
+// P0-6 (ADR-0022 Phase 7): the exact CreateRemediationJobRequest/Response
+// contract apps/api/src/remediation/remediation.controller.ts already
+// implements (P0-1) — issueType/documentIds/nextReviewDueAt in, {
+// remediationJobId, totalCount, ineligibleDocumentIds } out.
+export function createRemediationJob(
+  organizationId: string,
+  token: string,
+  body: CreateRemediationJobRequest,
+): Promise<CreateRemediationJobResponse> {
+  return apiRequest(`/organizations/${organizationId}/remediation-jobs`, token, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
 }
