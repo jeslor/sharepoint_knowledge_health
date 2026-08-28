@@ -37,4 +37,25 @@ describe('Toast', () => {
     jest.advanceTimersByTime(60_000);
     expect(onDismiss).not.toHaveBeenCalled();
   });
+
+  describe('action link (P0-7)', () => {
+    it('renders no link when no action is supplied', () => {
+      render(<Toast message="Assignment updated" onDismiss={jest.fn()} durationMs={0} />);
+      expect(screen.queryByRole('link')).not.toBeInTheDocument();
+    });
+
+    it('renders the action as a link to the given href', () => {
+      render(
+        <Toast
+          message="Remediation started for 2 documents."
+          onDismiss={jest.fn()}
+          durationMs={0}
+          action={{ label: 'View progress', href: '/dashboard/documents/remediation-jobs/job-1' }}
+        />,
+      );
+
+      const link = screen.getByRole('link', { name: 'View progress' });
+      expect(link).toHaveAttribute('href', '/dashboard/documents/remediation-jobs/job-1');
+    });
+  });
 });

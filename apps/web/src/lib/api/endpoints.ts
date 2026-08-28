@@ -32,8 +32,12 @@ import type {
   NotificationResponse,
   OnboardingStatusResponse,
   OrganizationUserResponse,
+  OwnershipCoverageResponse,
   PaginatedResponse,
   ConfirmReviewDateMappingRequest,
+  RemediationJobDetailResponse,
+  RemediationJobListQuery,
+  RemediationJobSummary,
   ReviewDateEligibilityResponse,
   ReviewDateLibraryResponse,
   ReviewDateMappingResponse,
@@ -409,4 +413,35 @@ export function createRemediationJob(
     method: 'POST',
     body: JSON.stringify(body),
   });
+}
+
+// P0-7 (ADR-0022 Phase 7): the exact PaginatedResponse<RemediationJobSummary>
+// contract apps/api/src/remediation/remediation.controller.ts's
+// listRemediationJobs already implements (P0-3) — same page/pageSize
+// convention as getAuditLog/getNotifications above, via buildQueryString.
+export function listRemediationJobs(
+  organizationId: string,
+  token: string,
+  query: RemediationJobListQuery = {},
+): Promise<PaginatedResponse<RemediationJobSummary>> {
+  const queryString = buildQueryString(query);
+  return apiRequest(`/organizations/${organizationId}/remediation-jobs${queryString}`, token);
+}
+
+// P0-7: the exact RemediationJobDetailResponse contract
+// getRemediationJob already implements (P0-3) — job summary plus
+// per-RemediationItem results.
+export function getRemediationJob(
+  organizationId: string,
+  jobId: string,
+  token: string,
+): Promise<RemediationJobDetailResponse> {
+  return apiRequest(`/organizations/${organizationId}/remediation-jobs/${jobId}`, token);
+}
+
+// ADR-0024 Phase A: the exact OwnershipCoverageResponse contract
+// apps/api/src/ownership/ownership.controller.ts implements — no query
+// parameters (a current-state snapshot, not a filtered/date-ranged view).
+export function getOwnershipCoverage(organizationId: string, token: string): Promise<OwnershipCoverageResponse> {
+  return apiRequest(`/organizations/${organizationId}/ownership-coverage`, token);
 }

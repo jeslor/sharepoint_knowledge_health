@@ -92,9 +92,14 @@ function GovernanceDashboardContent(): JSX.Element {
       <PageHeader
         title="Governance"
         action={
-          <Link href="/dashboard/governance/analytics" className="text-sm font-medium text-brand-700 hover:text-brand-800">
-            View executive analytics
-          </Link>
+          <div className="flex items-center gap-4">
+            <Link href="/dashboard/governance/owners" className="text-sm font-medium text-brand-700 hover:text-brand-800">
+              Ownership coverage
+            </Link>
+            <Link href="/dashboard/governance/analytics" className="text-sm font-medium text-brand-700 hover:text-brand-800">
+              View executive analytics
+            </Link>
+          </div>
         }
       />
 

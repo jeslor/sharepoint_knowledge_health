@@ -1,4 +1,4 @@
-import type { PrismaClient, Prisma, DocumentOwner } from '@prisma/client';
+import type { PrismaClient, Prisma, DocumentOwner, DocumentOwnerSource } from '@prisma/client';
 
 export type DocumentOwnerCreateData = Omit<Prisma.DocumentOwnerUncheckedCreateInput, 'organizationId'>;
 export type DocumentOwnerUpdateData = Omit<Prisma.DocumentOwnerUncheckedUpdateInput, 'organizationId' | 'id'>;
@@ -45,5 +45,21 @@ export class DocumentOwnerRepository {
       where: { id, organizationId: this.organizationId },
     });
     return result.count > 0;
+  }
+
+  /**
+   * ADR-0024 §3.3 — a row-level count, independent of any document-level
+   * coverage computation (Invariant 5: never usable as, or compared
+   * against, a coverage-percentage denominator). Same shape as
+   * GovernanceIssueRepository.groupByIssueType/groupByStatus — one real
+   * SQL GROUP BY, not a full fetch bucketed in Node.
+   */
+  async groupBySource(where: Prisma.DocumentOwnerWhereInput): Promise<{ source: DocumentOwnerSource; count: number }[]> {
+    const results = await this.prisma.documentOwner.groupBy({
+      by: ['source'],
+      where: { ...where, organizationId: this.organizationId },
+      _count: { _all: true },
+    });
+    return results.map((result) => ({ source: result.source, count: result._count._all }));
   }
 }

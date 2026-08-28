@@ -1,6 +1,7 @@
 'use client';
 
 import { Suspense, useCallback, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import type { DocumentHealthQuery, IssueSeverityFilter, SortDirection } from '@sph/types';
 import { DocumentHealthTable, isReviewStatusCandidate } from '@/components/documents/document-health-table';
@@ -73,7 +74,7 @@ function DocumentsPageContent(): JSX.Element {
 
   // P0-6 (ADR-0022 Phase 7): the confirmation dialog + submission flow.
   const [isRemediationDialogOpen, setIsRemediationDialogOpen] = useState(false);
-  const [remediationToast, setRemediationToast] = useState<string | undefined>();
+  const [remediationToast, setRemediationToast] = useState<{ message: string; jobId: string } | undefined>();
   const { submit: submitRemediationJob, submitting: submittingRemediationJob, submitError: remediationSubmitError } =
     useCreateRemediationJob();
 
@@ -92,9 +93,14 @@ function DocumentsPageContent(): JSX.Element {
 
       setIsRemediationDialogOpen(false);
       setSelectedDocumentIds(new Set());
-      setRemediationToast(
-        `Remediation started for ${result.totalCount} document${result.totalCount === 1 ? '' : 's'}.`,
-      );
+      // P0-7: the toast's own "View progress" link is this job's one
+      // immediate, dismissible path to the progress/detail view (D's
+      // "immediate visibility" requirement) — it also always shows up in
+      // Remediation history (sorted by createdAt desc) either way.
+      setRemediationToast({
+        message: `Remediation started for ${result.totalCount} document${result.totalCount === 1 ? '' : 's'}.`,
+        jobId: result.remediationJobId,
+      });
     },
     [selectedDocumentIds, submitRemediationJob],
   );
@@ -124,7 +130,14 @@ function DocumentsPageContent(): JSX.Element {
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Document health" />
+      <PageHeader
+        title="Document health"
+        action={
+          <Link href="/dashboard/documents/remediation-jobs" className="text-sm font-medium text-brand-700 hover:text-brand-800">
+            Remediation history
+          </Link>
+        }
+      />
       <DocumentFilters
         values={{ severity: query.severity, siteId: query.siteId, minScore: query.minScore, maxScore: query.maxScore }}
         sites={sites ?? []}
@@ -157,7 +170,13 @@ function DocumentsPageContent(): JSX.Element {
         submitting={submittingRemediationJob}
         submitError={remediationSubmitError}
       />
-      {remediationToast && <Toast message={remediationToast} onDismiss={() => setRemediationToast(undefined)} />}
+      {remediationToast && (
+        <Toast
+          message={remediationToast.message}
+          onDismiss={() => setRemediationToast(undefined)}
+          action={{ label: 'View progress', href: `/dashboard/documents/remediation-jobs/${remediationToast.jobId}` }}
+        />
+      )}
     </div>
   );
 }
