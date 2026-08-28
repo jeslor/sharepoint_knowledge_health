@@ -1,7 +1,7 @@
 # ADR-0024: Knowledge Owner Coverage Reporting
 
 Date: 2026-08-28
-Status: Proposed — awaiting approval before implementation. Scoped to Phase A (read-only reporting) only; Phase B (bulk owner assignment, §10) is documented for context and is explicitly not implementation scope.
+Status: Implemented (2026-08-28) — Phase A (read-only reporting) shipped and live-validated against the Onwell Group tenant, including a fix for an empty-string-email identity-breakdown defect found during validation (see commit 54636e4). Phase B (bulk owner assignment, §10) remains documented for context only and is not implemented.
 
 ---
 
