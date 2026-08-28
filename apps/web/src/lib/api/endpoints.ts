@@ -34,6 +34,9 @@ import type {
   OrganizationUserResponse,
   PaginatedResponse,
   ConfirmReviewDateMappingRequest,
+  RemediationJobDetailResponse,
+  RemediationJobListQuery,
+  RemediationJobSummary,
   ReviewDateEligibilityResponse,
   ReviewDateLibraryResponse,
   ReviewDateMappingResponse,
@@ -409,4 +412,28 @@ export function createRemediationJob(
     method: 'POST',
     body: JSON.stringify(body),
   });
+}
+
+// P0-7 (ADR-0022 Phase 7): the exact PaginatedResponse<RemediationJobSummary>
+// contract apps/api/src/remediation/remediation.controller.ts's
+// listRemediationJobs already implements (P0-3) — same page/pageSize
+// convention as getAuditLog/getNotifications above, via buildQueryString.
+export function listRemediationJobs(
+  organizationId: string,
+  token: string,
+  query: RemediationJobListQuery = {},
+): Promise<PaginatedResponse<RemediationJobSummary>> {
+  const queryString = buildQueryString(query);
+  return apiRequest(`/organizations/${organizationId}/remediation-jobs${queryString}`, token);
+}
+
+// P0-7: the exact RemediationJobDetailResponse contract
+// getRemediationJob already implements (P0-3) — job summary plus
+// per-RemediationItem results.
+export function getRemediationJob(
+  organizationId: string,
+  jobId: string,
+  token: string,
+): Promise<RemediationJobDetailResponse> {
+  return apiRequest(`/organizations/${organizationId}/remediation-jobs/${jobId}`, token);
 }
