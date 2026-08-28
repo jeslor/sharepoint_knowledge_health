@@ -291,3 +291,116 @@ describe('RemediationJob/RemediationItem schema compatibility (migration sanity 
     expect(remainingItems).toHaveLength(0);
   });
 });
+
+describe('RemediationItemRepository.markSkippedForJob (Phase 6, P0-2 Option A — enqueue-failure compensating write)', () => {
+  let org: SeededOrg;
+
+  beforeEach(async () => {
+    org = await seedOrg('mark-skipped', 3);
+  }, 30_000);
+
+  afterEach(async () => {
+    await prisma.organization.delete({ where: { id: org.organizationId } });
+  }, 30_000);
+
+  afterAll(async () => {
+    await prisma.$disconnect();
+  });
+
+  it('marks every RemediationItem belonging to the job Skipped with the given errorType/errorMessage', async () => {
+    const context = createTenantContext(org.organizationId);
+    const created = await createRemediationJobWithItems(jobInput(org));
+
+    const count = await context.remediationItems.markSkippedForJob(created.id, {
+      errorType: 'EnqueueFailed',
+      errorMessage: 'Failed to enqueue remediation job: connect ECONNREFUSED 127.0.0.1:6379',
+    });
+
+    expect(count).toBe(3);
+    const items = await context.remediationItems.findMany({ where: { remediationJobId: created.id } });
+    expect(items).toHaveLength(3);
+    expect(items.every((item) => item.status === 'Skipped')).toBe(true);
+    expect(items.every((item) => item.errorType === 'EnqueueFailed')).toBe(true);
+    expect(items.every((item) => item.errorMessage?.includes('ECONNREFUSED'))).toBe(true);
+  });
+
+  it('never touches RemediationItems belonging to a different job', async () => {
+    const context = createTenantContext(org.organizationId);
+    const targetJob = await createRemediationJobWithItems(jobInput(org, [org.documentIds[0]!]));
+    const otherJob = await createRemediationJobWithItems(jobInput(org, [org.documentIds[1]!]));
+
+    await context.remediationItems.markSkippedForJob(targetJob.id, {
+      errorType: 'EnqueueFailed',
+      errorMessage: 'boom',
+    });
+
+    const otherItems = await context.remediationItems.findMany({ where: { remediationJobId: otherJob.id } });
+    expect(otherItems.every((item) => item.status === 'Pending')).toBe(true);
+    expect(otherItems.every((item) => item.errorType === null)).toBe(true);
+  });
+});
+
+describe('RemediationItemRepository.groupByStatusForJobs (P0-3 — list/detail live counts)', () => {
+  let org: SeededOrg;
+
+  beforeEach(async () => {
+    org = await seedOrg('group-by-status', 5);
+  }, 30_000);
+
+  afterEach(async () => {
+    await prisma.organization.delete({ where: { id: org.organizationId } });
+  }, 30_000);
+
+  afterAll(async () => {
+    await prisma.$disconnect();
+  });
+
+  it('returns per-job, per-status counts across more than one job in a single call', async () => {
+    const context = createTenantContext(org.organizationId);
+    const jobA = await createRemediationJobWithItems(jobInput(org, org.documentIds.slice(0, 3)));
+    const jobB = await createRemediationJobWithItems(jobInput(org, org.documentIds.slice(3, 5)));
+
+    await context.remediationItems.updateById(jobA.items[0]!.id, { status: 'Succeeded' });
+    await context.remediationItems.updateById(jobA.items[1]!.id, { status: 'Failed', errorType: 'GraphNotFoundError' });
+    // jobA.items[2] stays Pending.
+    await context.remediationItems.updateById(jobB.items[0]!.id, { status: 'Skipped', errorType: 'DocumentNotFound' });
+
+    const grouped = await context.remediationItems.groupByStatusForJobs([jobA.id, jobB.id]);
+
+    const forJobA = grouped.filter((row) => row.remediationJobId === jobA.id);
+    expect(forJobA).toEqual(
+      expect.arrayContaining([
+        { remediationJobId: jobA.id, status: 'Succeeded', count: 1 },
+        { remediationJobId: jobA.id, status: 'Failed', count: 1 },
+        { remediationJobId: jobA.id, status: 'Pending', count: 1 },
+      ]),
+    );
+    const forJobB = grouped.filter((row) => row.remediationJobId === jobB.id);
+    expect(forJobB).toEqual(
+      expect.arrayContaining([
+        { remediationJobId: jobB.id, status: 'Skipped', count: 1 },
+        { remediationJobId: jobB.id, status: 'Pending', count: 1 },
+      ]),
+    );
+  });
+
+  it('returns an empty array for an empty jobId list without querying', async () => {
+    const context = createTenantContext(org.organizationId);
+    expect(await context.remediationItems.groupByStatusForJobs([])).toEqual([]);
+  });
+
+  it('never includes counts for a job belonging to a different organization', async () => {
+    const otherOrg = await seedOrg('group-by-status-other', 1);
+    try {
+      const context = createTenantContext(org.organizationId);
+      const ownJob = await createRemediationJobWithItems(jobInput(org, [org.documentIds[0]!]));
+      const otherJob = await createRemediationJobWithItems(jobInput(otherOrg, [otherOrg.documentIds[0]!]));
+
+      const grouped = await context.remediationItems.groupByStatusForJobs([ownJob.id, otherJob.id]);
+
+      expect(grouped.some((row) => row.remediationJobId === otherJob.id)).toBe(false);
+    } finally {
+      await prisma.organization.delete({ where: { id: otherOrg.organizationId } });
+    }
+  });
+});
