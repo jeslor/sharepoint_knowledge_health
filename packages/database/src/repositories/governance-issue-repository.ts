@@ -76,4 +76,28 @@ export class GovernanceIssueRepository {
     });
     return results.map((result) => ({ status: result.status, count: result._count._all }));
   }
+
+  /**
+   * ADR-0022 §13.2 (Phase 5) — the automated-remediation resolution path's
+   * exactly-once transition guard, mirroring RemediationJobRepository.markCompletedIfRunning
+   * and permission-state.ts's applyVerifiedReadPermission/applyConsentAssertion
+   * exactly: conditioned in the same query (status IN Open/InProgress in the
+   * WHERE, not a separate read-then-write), so a concurrent/duplicate
+   * resolution attempt for the same GovernanceIssue can tell, from
+   * `advanced` alone, whether *this* call is the one that actually
+   * transitioned it — which is what governance-resolution.ts uses to
+   * decide whether to write the one accompanying GovernanceActivity row.
+   * Deliberately bypasses GovernanceIssuesService/ALLOWED_TRANSITIONS
+   * (apps/api, HTTP-guarded, human-facing) — this is the narrow,
+   * explicitly-approved exception ADR-0022 §13.2 authorizes, not a
+   * bypass of authorization (the caller has already resolved authorization
+   * at RemediationJob-creation time, per ADR-0022 §8).
+   */
+  async resolveIfOpenOrInProgress(id: string, data: { resolvedAt: Date }): Promise<{ advanced: boolean }> {
+    const result = await this.prisma.governanceIssue.updateMany({
+      where: { id, organizationId: this.organizationId, status: { in: ['Open', 'InProgress'] } },
+      data: { ...data, status: 'Resolved' },
+    });
+    return { advanced: result.count > 0 };
+  }
 }

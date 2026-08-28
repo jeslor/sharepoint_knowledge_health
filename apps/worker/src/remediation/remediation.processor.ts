@@ -2,10 +2,18 @@ import { InjectQueue, OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullm
 import { Logger } from '@nestjs/common';
 import type { Job, Queue } from 'bullmq';
 import { NOTIFICATION_RECONCILIATION_QUEUE, REMEDIATION_QUEUE, type RemediationJobPayload } from '@sph/types';
-import { createTenantContext, type RemediationItem, type RemediationJob, type TenantContext } from '@sph/database';
+import {
+  createTenantContext,
+  resolveGovernanceIssueForRemediation,
+  type Document,
+  type RemediationItem,
+  type RemediationJob,
+  type TenantContext,
+} from '@sph/database';
 import { GraphClientError, GraphNotFoundError, GraphPermissionError, GraphThrottledError, GraphTransientError } from '@sph/graph-client';
 import { executeSetReviewDateAction, type SetReviewDateActionPayload } from './set-review-date.action';
 import { runWithConcurrencyLimit } from './concurrency-limiter';
+import { rescoreDocument } from '../scoring/rescore-document';
 
 // ADR-0022 §3.3: a dedicated env var, deliberately not shared with
 // WORKER_CONCURRENCY (which governs how many *jobs* this processor's own
@@ -36,13 +44,14 @@ function errorStack(error: unknown): string | undefined {
  * acts on rows still `Pending`; already-`Succeeded`/`Failed`/`Skipped`
  * rows are never re-touched.
  *
- * Governance resolution (ADR-0022 §13.2) is deliberately NOT implemented
- * here — it requires rescoring the document (§3.4, "reusing calculateScore's
- * existing per-document call shape"), which is real, separately-scoped
- * work this phase's own primary goal (item orchestration only) does not
- * cover. A Succeeded item here ends at that status; closing the loop to
- * GovernanceIssue.Resolved is an explicit follow-up, not silently dropped
- * or silently folded in.
+ * Governance resolution (ADR-0022 §13.2, Phase 5): only ever attempted
+ * immediately after an item's write is verified — never on the mere
+ * strength of a successful PATCH — and only ever using the rescore
+ * (rescore-document.ts) to confirm the specific criterion's HealthIssue
+ * is actually gone. A rescoring failure, or the issue still being present,
+ * leaves the RemediationItem's own Succeeded status untouched (the write
+ * itself really did succeed) but leaves governance unresolved — these are
+ * deliberately distinct failure modes, never conflated.
  */
 @Processor(REMEDIATION_QUEUE, { concurrency: Number(process.env.WORKER_CONCURRENCY) || 5 })
 export class RemediationProcessor extends WorkerHost {
@@ -77,7 +86,7 @@ export class RemediationProcessor extends WorkerHost {
     });
 
     await runWithConcurrencyLimit(pendingItems, remediationItemConcurrency(), async (item) => {
-      await this.processItem(context, entraTenantId, item, payload);
+      await this.processItem(context, entraTenantId, remediationJob, item, payload);
     });
 
     await this.finalizeIfComplete(context, remediationJobId);
@@ -122,6 +131,7 @@ export class RemediationProcessor extends WorkerHost {
   private async processItem(
     context: TenantContext,
     entraTenantId: string,
+    remediationJob: RemediationJob,
     item: RemediationItem,
     payload: SetReviewDateActionPayload,
   ): Promise<void> {
@@ -145,6 +155,7 @@ export class RemediationProcessor extends WorkerHost {
 
       if (result.outcome === 'verified') {
         await context.remediationItems.updateById(item.id, { status: 'Succeeded', attemptCount: { increment: 1 } });
+        await this.tryResolveGovernance(context, remediationJob, document);
       } else {
         // Write succeeded, verification did not confirm it — ADR-0022
         // §13.3: stays Pending (retryable), never Failed, never Succeeded.
@@ -206,6 +217,54 @@ export class RemediationProcessor extends WorkerHost {
       errorStack(error),
     );
     throw error;
+  }
+
+  /**
+   * ADR-0022 §13.2, Phase 5 — the "confirm the underlying HealthIssue for
+   * that criterion is actually gone" precondition, and only that
+   * precondition. Called only after the item's own write has already been
+   * verified (never on a bare PATCH success). Rescoring is compute-only
+   * (rescore-document.ts) — never persisted, so a rescoring failure here
+   * has no data-integrity consequence, only a missed governance-resolution
+   * opportunity this item's own status is unaffected by (it's already,
+   * correctly, Succeeded). actorUserId comes from RemediationJob.initiatedByUserId
+   * exactly as ADR-0022 §13.2 specifies — never a synthetic "system" actor,
+   * never re-derived from anything except what was captured at job-creation
+   * time (ADR-0022 §8, unchanged).
+   */
+  private async tryResolveGovernance(context: TenantContext, remediationJob: RemediationJob, document: Document): Promise<void> {
+    let scoreResult;
+    try {
+      scoreResult = await rescoreDocument(context, document);
+    } catch (error) {
+      this.logger.error(
+        `Rescoring failed for document ${document.id} after a verified remediation — governance left unresolved: ${errorMessage(error)}`,
+        errorStack(error),
+      );
+      return;
+    }
+
+    const issueStillPresent = scoreResult.issues.some((issue) => issue.type === remediationJob.issueType);
+    if (issueStillPresent) return; // verified write, but this criterion's issue is still present — governance stays open
+
+    try {
+      await resolveGovernanceIssueForRemediation({
+        organizationId: context.organizationId,
+        documentId: document.id,
+        issueType: remediationJob.issueType,
+        actorUserId: remediationJob.initiatedByUserId,
+      });
+    } catch (error) {
+      // Governance-resolution failure (e.g. a transient DB error) is its own
+      // distinct failure mode (ADR-0022 §13.2) — must never propagate up to
+      // processItem's outer catch, which would otherwise misclassify it via
+      // handleItemError and overwrite this item's already-persisted
+      // Succeeded status (the write itself really did succeed).
+      this.logger.error(
+        `Governance resolution failed for document ${document.id}, issueType ${remediationJob.issueType} — governance left unresolved: ${errorMessage(error)}`,
+        errorStack(error),
+      );
+    }
   }
 
   /**

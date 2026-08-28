@@ -1,18 +1,27 @@
 import type { Job, Queue } from 'bullmq';
 import type { RemediationJobPayload } from '@sph/types';
-import { createTenantContext } from '@sph/database';
+import { createTenantContext, resolveGovernanceIssueForRemediation } from '@sph/database';
 import { GraphNotFoundError, GraphPermissionError, GraphThrottledError, GraphTransientError, GraphAuthenticationError } from '@sph/graph-client';
 import { RemediationProcessor } from './remediation.processor';
 import { executeSetReviewDateAction } from './set-review-date.action';
+import { rescoreDocument } from '../scoring/rescore-document';
 
 jest.mock('@sph/database', () => ({
   ...jest.requireActual('@sph/database'),
   createTenantContext: jest.fn(),
+  resolveGovernanceIssueForRemediation: jest.fn(),
 }));
 jest.mock('./set-review-date.action');
+// Phase 5: rescore-document.ts has its own dedicated spec covering its
+// correctness in isolation (rescore-document.spec.ts) — the processor only
+// needs to verify it's called correctly and its result is interpreted
+// correctly, not re-verify scoring behavior itself.
+jest.mock('../scoring/rescore-document');
 
 const mockedCreateTenantContext = createTenantContext as jest.MockedFunction<typeof createTenantContext>;
 const mockedExecuteAction = executeSetReviewDateAction as jest.MockedFunction<typeof executeSetReviewDateAction>;
+const mockedRescoreDocument = rescoreDocument as jest.MockedFunction<typeof rescoreDocument>;
+const mockedResolveGovernance = resolveGovernanceIssueForRemediation as jest.MockedFunction<typeof resolveGovernanceIssueForRemediation>;
 
 interface FakeItemRow {
   id: string;
@@ -70,8 +79,22 @@ function createFakeRemediationItemsRepo(initial: FakeItemRow[]) {
   };
 }
 
-function createFakeRemediationJobsRepo(initial: { id: string; organizationId: string; status: 'Running' | 'Completed'; payload: unknown }) {
-  const job = { ...initial, succeededCount: 0, failedCount: 0, completedAt: null as Date | null };
+function createFakeRemediationJobsRepo(initial: {
+  id: string;
+  organizationId: string;
+  status: 'Running' | 'Completed';
+  payload: unknown;
+  issueType?: string;
+  initiatedByUserId?: string;
+}) {
+  const job = {
+    issueType: 'ReviewStatus',
+    initiatedByUserId: 'user-1',
+    ...initial,
+    succeededCount: 0,
+    failedCount: 0,
+    completedAt: null as Date | null,
+  };
   return {
     findFirstById: jest.fn(async (id: string) => (id === job.id ? { ...job } : null)),
     markCompletedIfRunning: jest.fn(async (id: string, data: Record<string, unknown>) => {
@@ -102,6 +125,11 @@ describe('RemediationProcessor (ADR-0022 Phase 4)', () => {
     reconciliationQueue = { add: jest.fn().mockResolvedValue(undefined) };
     processor = new RemediationProcessor(reconciliationQueue as unknown as Queue);
     delete process.env.REMEDIATION_WORKER_CONCURRENCY;
+    // Sensible defaults for Phase 5's governance integration — most of the
+    // Phase 4 tests above don't care about this at all, so it defaults to
+    // "the issue is gone, resolve it," matching the common happy path.
+    mockedRescoreDocument.mockResolvedValue({ score: 100, band: 'Healthy', issues: [], breakdown: {} as never });
+    mockedResolveGovernance.mockResolvedValue({ resolved: true });
   });
 
   function wireContext(
@@ -475,5 +503,149 @@ describe('RemediationProcessor (ADR-0022 Phase 4)', () => {
 
     await expect(processor.process(job({ organizationId: 'org-1', remediationJobId: 'job-1' }))).rejects.toThrow(/malformed payload/);
     expect(mockedExecuteAction).not.toHaveBeenCalled();
+  });
+
+  describe('governance resolution (ADR-0022 §13.2, Phase 5)', () => {
+    it('verified write + rescoring confirms the issue is gone → resolves governance for the matching (documentId, issueType)', async () => {
+      const jobsRepo = createFakeRemediationJobsRepo({
+        id: 'job-1',
+        organizationId: 'org-1',
+        status: 'Running',
+        payload: defaultPayload,
+        issueType: 'ReviewStatus',
+        initiatedByUserId: 'user-42',
+      });
+      const itemsRepo = createFakeRemediationItemsRepo([makeItem({ id: 'item-1', documentId: 'doc-1' })]);
+      wireContext(itemsRepo, jobsRepo, { 'doc-1': makeDocument('doc-1') });
+      mockedExecuteAction.mockResolvedValue({ outcome: 'verified' });
+      mockedRescoreDocument.mockResolvedValue({ score: 100, band: 'Healthy', issues: [], breakdown: {} as never });
+
+      await processor.process(job({ organizationId: 'org-1', remediationJobId: 'job-1' }));
+
+      expect(itemsRepo.rows.get('item-1')?.status).toBe('Succeeded');
+      expect(mockedRescoreDocument).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ id: 'doc-1' }));
+      expect(mockedResolveGovernance).toHaveBeenCalledWith({
+        organizationId: 'org-1',
+        documentId: 'doc-1',
+        issueType: 'ReviewStatus',
+        actorUserId: 'user-42',
+      });
+    });
+
+    it('verified write but rescoring shows the issue remains → governance is left open (never called)', async () => {
+      const jobsRepo = createFakeRemediationJobsRepo({
+        id: 'job-1',
+        organizationId: 'org-1',
+        status: 'Running',
+        payload: defaultPayload,
+        issueType: 'ReviewStatus',
+      });
+      const itemsRepo = createFakeRemediationItemsRepo([makeItem({ id: 'item-1', documentId: 'doc-1' })]);
+      wireContext(itemsRepo, jobsRepo, { 'doc-1': makeDocument('doc-1') });
+      mockedExecuteAction.mockResolvedValue({ outcome: 'verified' });
+      mockedRescoreDocument.mockResolvedValue({
+        score: 60,
+        band: 'NeedsAttention',
+        issues: [{ type: 'ReviewStatus' } as never],
+        breakdown: {} as never,
+      });
+
+      await processor.process(job({ organizationId: 'org-1', remediationJobId: 'job-1' }));
+
+      expect(itemsRepo.rows.get('item-1')?.status).toBe('Succeeded'); // the write itself still succeeded
+      expect(mockedResolveGovernance).not.toHaveBeenCalled();
+    });
+
+    it('verification unconfirmed (outcome: unverified) → never rescores, never touches governance', async () => {
+      const jobsRepo = createFakeRemediationJobsRepo({ id: 'job-1', organizationId: 'org-1', status: 'Running', payload: defaultPayload });
+      const itemsRepo = createFakeRemediationItemsRepo([makeItem({ id: 'item-1', documentId: 'doc-1' })]);
+      wireContext(itemsRepo, jobsRepo, { 'doc-1': makeDocument('doc-1') });
+      mockedExecuteAction.mockResolvedValue({ outcome: 'unverified' });
+
+      await processor.process(job({ organizationId: 'org-1', remediationJobId: 'job-1' }));
+
+      expect(itemsRepo.rows.get('item-1')?.status).toBe('Pending');
+      expect(mockedRescoreDocument).not.toHaveBeenCalled();
+      expect(mockedResolveGovernance).not.toHaveBeenCalled();
+    });
+
+    it('rescoring itself fails → governance is left unresolved, but the item stays Succeeded (the write really did succeed)', async () => {
+      const jobsRepo = createFakeRemediationJobsRepo({ id: 'job-1', organizationId: 'org-1', status: 'Running', payload: defaultPayload });
+      const itemsRepo = createFakeRemediationItemsRepo([makeItem({ id: 'item-1', documentId: 'doc-1' })]);
+      wireContext(itemsRepo, jobsRepo, { 'doc-1': makeDocument('doc-1') });
+      mockedExecuteAction.mockResolvedValue({ outcome: 'verified' });
+      mockedRescoreDocument.mockRejectedValue(new Error('rescoring boom'));
+
+      await expect(processor.process(job({ organizationId: 'org-1', remediationJobId: 'job-1' }))).resolves.toBeUndefined();
+
+      expect(itemsRepo.rows.get('item-1')?.status).toBe('Succeeded');
+      expect(mockedResolveGovernance).not.toHaveBeenCalled();
+    });
+
+    it('governance resolution itself failing (e.g. a transient DB error) does not overwrite the item\'s already-Succeeded status', async () => {
+      const jobsRepo = createFakeRemediationJobsRepo({ id: 'job-1', organizationId: 'org-1', status: 'Running', payload: defaultPayload });
+      const itemsRepo = createFakeRemediationItemsRepo([makeItem({ id: 'item-1', documentId: 'doc-1' })]);
+      wireContext(itemsRepo, jobsRepo, { 'doc-1': makeDocument('doc-1') });
+      mockedExecuteAction.mockResolvedValue({ outcome: 'verified' });
+      mockedRescoreDocument.mockResolvedValue({ score: 100, band: 'Healthy', issues: [], breakdown: {} as never });
+      mockedResolveGovernance.mockRejectedValue(new Error('DB unavailable'));
+
+      await expect(processor.process(job({ organizationId: 'org-1', remediationJobId: 'job-1' }))).resolves.toBeUndefined();
+
+      expect(itemsRepo.rows.get('item-1')?.status).toBe('Succeeded');
+      expect(itemsRepo.rows.get('item-1')?.errorType).not.toBe('Error'); // never reclassified via handleItemError
+    });
+
+    it('passes the RemediationJob\'s own initiatedByUserId through as the actor — never a synthetic/system actor', async () => {
+      const jobsRepo = createFakeRemediationJobsRepo({
+        id: 'job-1',
+        organizationId: 'org-1',
+        status: 'Running',
+        payload: defaultPayload,
+        initiatedByUserId: 'user-real-actor',
+      });
+      const itemsRepo = createFakeRemediationItemsRepo([makeItem({ id: 'item-1', documentId: 'doc-1' })]);
+      wireContext(itemsRepo, jobsRepo, { 'doc-1': makeDocument('doc-1') });
+      mockedExecuteAction.mockResolvedValue({ outcome: 'verified' });
+
+      await processor.process(job({ organizationId: 'org-1', remediationJobId: 'job-1' }));
+
+      expect(mockedResolveGovernance).toHaveBeenCalledWith(expect.objectContaining({ actorUserId: 'user-real-actor' }));
+    });
+
+    it('only the job\'s own issueType is checked/resolved for — an unrelated issue present in the rescore result for a different criterion does not block resolution', async () => {
+      const jobsRepo = createFakeRemediationJobsRepo({
+        id: 'job-1',
+        organizationId: 'org-1',
+        status: 'Running',
+        payload: defaultPayload,
+        issueType: 'ReviewStatus',
+      });
+      const itemsRepo = createFakeRemediationItemsRepo([makeItem({ id: 'item-1', documentId: 'doc-1' })]);
+      wireContext(itemsRepo, jobsRepo, { 'doc-1': makeDocument('doc-1') });
+      mockedExecuteAction.mockResolvedValue({ outcome: 'verified' });
+      mockedRescoreDocument.mockResolvedValue({
+        score: 70,
+        band: 'NeedsAttention',
+        issues: [{ type: 'Freshness' } as never], // unrelated criterion still failing
+        breakdown: {} as never,
+      });
+
+      await processor.process(job({ organizationId: 'org-1', remediationJobId: 'job-1' }));
+
+      expect(mockedResolveGovernance).toHaveBeenCalledWith(expect.objectContaining({ issueType: 'ReviewStatus' }));
+    });
+
+    it('duplicate/repeated processing (a resumed invocation over an already-Succeeded item) never re-attempts governance resolution for that item', async () => {
+      const jobsRepo = createFakeRemediationJobsRepo({ id: 'job-1', organizationId: 'org-1', status: 'Running', payload: defaultPayload });
+      const itemsRepo = createFakeRemediationItemsRepo([makeItem({ id: 'item-1', documentId: 'doc-1', status: 'Succeeded' })]);
+      wireContext(itemsRepo, jobsRepo, { 'doc-1': makeDocument('doc-1') });
+
+      await processor.process(job({ organizationId: 'org-1', remediationJobId: 'job-1' }));
+
+      expect(mockedExecuteAction).not.toHaveBeenCalled();
+      expect(mockedRescoreDocument).not.toHaveBeenCalled();
+      expect(mockedResolveGovernance).not.toHaveBeenCalled();
+    });
   });
 });

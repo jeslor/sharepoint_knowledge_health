@@ -26,6 +26,8 @@ export { derivePermissionReconsentState, applyVerifiedReadPermission, applyConse
 export type { PermissionReconsentState } from './permission-state';
 export { createRemediationJobWithItems } from './remediation';
 export type { CreateRemediationJobInput, RemediationJobWithItems } from './remediation';
+export { resolveGovernanceIssueForRemediation } from './governance-resolution';
+export type { ResolveGovernanceIssueForRemediationInput, ResolveGovernanceIssueForRemediationResult } from './governance-resolution';
 
 export type {
   Organization,
