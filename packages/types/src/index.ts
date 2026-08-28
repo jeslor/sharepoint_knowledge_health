@@ -16,3 +16,4 @@ export * from './api/audit-log';
 export * from './api/notifications';
 export * from './api/sharepoint-metadata';
 export * from './api/remediation';
+export * from './api/ownership';

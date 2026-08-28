@@ -32,6 +32,7 @@ import type {
   NotificationResponse,
   OnboardingStatusResponse,
   OrganizationUserResponse,
+  OwnershipCoverageResponse,
   PaginatedResponse,
   ConfirmReviewDateMappingRequest,
   RemediationJobDetailResponse,
@@ -436,4 +437,11 @@ export function getRemediationJob(
   token: string,
 ): Promise<RemediationJobDetailResponse> {
   return apiRequest(`/organizations/${organizationId}/remediation-jobs/${jobId}`, token);
+}
+
+// ADR-0024 Phase A: the exact OwnershipCoverageResponse contract
+// apps/api/src/ownership/ownership.controller.ts implements — no query
+// parameters (a current-state snapshot, not a filtered/date-ranged view).
+export function getOwnershipCoverage(organizationId: string, token: string): Promise<OwnershipCoverageResponse> {
+  return apiRequest(`/organizations/${organizationId}/ownership-coverage`, token);
 }

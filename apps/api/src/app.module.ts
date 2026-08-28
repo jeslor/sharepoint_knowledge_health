@@ -16,6 +16,7 @@ import { AuditLogModule } from './audit-log/audit-log.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { SharePointMetadataModule } from './sharepoint-metadata/sharepoint-metadata.module';
 import { RemediationModule } from './remediation/remediation.module';
+import { OwnershipModule } from './ownership/ownership.module';
 import { requestLoggerMiddleware } from './common/request-logger.middleware';
 
 /**
@@ -83,6 +84,7 @@ export function bullConnectionOptions(): {
     NotificationsModule,
     SharePointMetadataModule,
     RemediationModule,
+    OwnershipModule,
   ],
 })
 export class AppModule implements NestModule {
