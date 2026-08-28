@@ -5,11 +5,14 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import type { DocumentHealthQuery, IssueSeverityFilter, SortDirection } from '@sph/types';
 import { DocumentHealthTable, isReviewStatusCandidate } from '@/components/documents/document-health-table';
 import { DocumentFilters, type DocumentFilterValues } from '@/components/documents/document-filters';
+import { RemediationConfirmDialog } from '@/components/documents/remediation-confirm-dialog';
 import { BulkActionToolbar } from '@/components/ui/bulk-action-toolbar';
 import { Button } from '@/components/ui/button';
 import { PageHeader } from '@/components/ui/page-header';
 import { Pagination } from '@/components/ui/pagination';
 import { LoadingState, ErrorState } from '@/components/ui/query-state';
+import { Toast } from '@/components/ui/toast';
+import { useCreateRemediationJob } from '@/lib/api/hooks/use-create-remediation-job';
 import { useDocumentHealth } from '@/lib/api/hooks/use-document-health';
 import { useSharePointSites } from '@/lib/api/hooks/use-sharepoint-sites';
 
@@ -68,10 +71,33 @@ function DocumentsPageContent(): JSX.Element {
 
   const handleClearSelection = useCallback(() => setSelectedDocumentIds(new Set()), []);
 
-  // P0-6 (confirmation dialog) replaces this body with opening the
-  // remediation confirmation flow for Array.from(selectedDocumentIds) — for
-  // now this only establishes the candidate set the dialog will consume.
-  const handleRemediateSelected = useCallback(() => {}, []);
+  // P0-6 (ADR-0022 Phase 7): the confirmation dialog + submission flow.
+  const [isRemediationDialogOpen, setIsRemediationDialogOpen] = useState(false);
+  const [remediationToast, setRemediationToast] = useState<string | undefined>();
+  const { submit: submitRemediationJob, submitting: submittingRemediationJob, submitError: remediationSubmitError } =
+    useCreateRemediationJob();
+
+  const handleRemediateSelected = useCallback(() => {
+    setIsRemediationDialogOpen(true);
+  }, []);
+
+  const handleConfirmRemediation = useCallback(
+    async (nextReviewDueAt: string) => {
+      const documentIds = Array.from(selectedDocumentIds);
+      const result = await submitRemediationJob({ issueType: 'ReviewStatus', documentIds, nextReviewDueAt });
+      // A failed submission leaves remediationSubmitError set — the dialog
+      // stays open and shows it inline (RemediationConfirmDialog), rather
+      // than closing on a call this hook itself reports as unsuccessful.
+      if (!result) return;
+
+      setIsRemediationDialogOpen(false);
+      setSelectedDocumentIds(new Set());
+      setRemediationToast(
+        `Remediation started for ${result.totalCount} document${result.totalCount === 1 ? '' : 's'}.`,
+      );
+    },
+    [selectedDocumentIds, submitRemediationJob],
+  );
 
   const updateParams = useCallback(
     (updates: Record<string, string | number | undefined>) => {
@@ -122,6 +148,16 @@ function DocumentsPageContent(): JSX.Element {
           <Pagination pagination={data.pagination} onPageChange={(page) => updateParams({ page })} />
         </>
       )}
+
+      <RemediationConfirmDialog
+        open={isRemediationDialogOpen}
+        onOpenChange={setIsRemediationDialogOpen}
+        selectedCount={selectedDocumentIds.size}
+        onConfirm={(nextReviewDueAt) => void handleConfirmRemediation(nextReviewDueAt)}
+        submitting={submittingRemediationJob}
+        submitError={remediationSubmitError}
+      />
+      {remediationToast && <Toast message={remediationToast} onDismiss={() => setRemediationToast(undefined)} />}
     </div>
   );
 }
