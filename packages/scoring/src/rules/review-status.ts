@@ -49,8 +49,11 @@ export type ReviewDateHealthState = 'Missing' | 'Overdue' | 'DueSoon' | 'Healthy
  * function exists so a UI can classify the same nextReviewDueAt value
  * into a fourth, purely informational state at read time, without the
  * scoring engine ever needing to know "soon" is a concept. Never
- * persisted; not currently wired into any API response or component
- * (deferred — see the Phase 3A-1 report).
+ * persisted, never scored, never a HealthIssue or GovernanceIssue. As of
+ * Phase 3A-1 (2026-08-19) it IS consumed: DocumentsService computes it at
+ * request time for both getDocument and listDocumentHealth, and the
+ * document detail page and health table render it via ReviewDateHealthBadge
+ * — all presentation-only, leaving the semantics above intact.
  */
 export function classifyReviewDateHealth(
   nextReviewDueAt: Date | null,
