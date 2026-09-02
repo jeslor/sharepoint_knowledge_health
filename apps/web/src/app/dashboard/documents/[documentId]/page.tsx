@@ -6,6 +6,7 @@ import { Card } from '@/components/ui/card';
 import { EmptyState, ErrorState, LoadingState } from '@/components/ui/query-state';
 import { DocumentOwnership } from '@/components/documents/document-ownership';
 import { DocumentReviewDate } from '@/components/documents/document-review-date';
+import { DocumentTaxonomyCoverage } from '@/components/documents/document-taxonomy-coverage';
 import { DocumentScoreHistory } from '@/components/documents/document-score-history';
 import { SeverityBadge } from '@/components/documents/severity-badge';
 import { TrackInGovernanceButton } from '@/components/governance/track-in-governance-button';
@@ -103,6 +104,13 @@ export default function DocumentDetailPage({ params }: DocumentDetailPageProps):
             saving={savingReviewDate}
             saveError={reviewDateError}
           />
+        </div>
+      </div>
+
+      <div id="taxonomy-coverage">
+        <h2 className="text-body-strong text-slate-700">Classification coverage</h2>
+        <div className="mt-2">
+          <DocumentTaxonomyCoverage coverage={document.taxonomyCoverage} />
         </div>
       </div>
 

@@ -38,6 +38,12 @@ describe('SharePointMetadataService', () => {
   const sharePointSites = { findFirstById: jest.fn() };
   const microsoftTenants = { findFirstById: jest.fn() };
   const sharePointReviewDateMappings = { upsertActive: jest.fn(), findManyBySite: jest.fn() };
+  const sharePointClassificationFields = {
+    upsertActive: jest.fn(),
+    findManyBySite: jest.fn(),
+    findManyActiveByLibrary: jest.fn(),
+    deleteById: jest.fn(),
+  };
   const users = { findFirstById: jest.fn() };
 
   let logSpy: jest.SpyInstance;
@@ -51,6 +57,7 @@ describe('SharePointMetadataService', () => {
       sharePointSites,
       microsoftTenants,
       sharePointReviewDateMappings,
+      sharePointClassificationFields,
       users,
     } as never);
 
@@ -550,6 +557,141 @@ describe('SharePointMetadataService', () => {
 
       expect(logSpy).not.toHaveBeenCalled();
       expect(errorSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('ADR-0025 — Taxonomy classification fields', () => {
+    const deptColumn = { id: 'col-dept', name: 'Department', displayName: 'Department' };
+    const funcColumn = { id: 'col-func', name: 'Function', displayName: 'Function' };
+    const hiddenColumn = { id: 'col-hidden', name: '_Hidden', displayName: 'Hidden', hidden: true };
+
+    describe('listClassificationCandidates', () => {
+      it('returns all non-hidden columns (merged from list + content types), deduped by id', async () => {
+        mockedListColumns.mockReturnValue(asyncGen([deptColumn, hiddenColumn]));
+        mockedListContentTypes.mockReturnValue(asyncGen([{ id: 'ct-1', name: 'Doc', columns: [funcColumn, deptColumn] }]));
+
+        const result = await service.listClassificationCandidates('org-1', 'site-1', 'list-1');
+
+        expect(result).toEqual([
+          { id: 'col-dept', name: 'Department', displayName: 'Department' },
+          { id: 'col-func', name: 'Function', displayName: 'Function' },
+        ]);
+      });
+
+      it('throws 503 when Graph column metadata cannot be read', async () => {
+        mockedListColumns.mockReturnValue(asyncGenThatThrows(new GraphThrottledError('Throttled')));
+        mockedListContentTypes.mockReturnValue(asyncGen([]));
+
+        await expect(service.listClassificationCandidates('org-1', 'site-1', 'list-1')).rejects.toThrow(
+          ServiceUnavailableException,
+        );
+      });
+    });
+
+    describe('designateClassificationField', () => {
+      beforeEach(() => {
+        // mockImplementation (not mockReturnValue): an async generator is
+        // consumed once, so a two-call test needs a fresh generator per call.
+        mockedListColumns.mockImplementation(() => asyncGen([deptColumn, funcColumn]));
+        mockedListContentTypes.mockImplementation(() => asyncGen([]));
+        sharePointClassificationFields.upsertActive.mockResolvedValue({
+          id: 'field-1',
+          siteId: 'site-1',
+          graphListId: 'list-1',
+          columnDefinitionId: 'col-dept',
+          columnDisplayNameAtConfirmation: 'Department',
+          status: 'Active',
+          staleDetectedAt: null,
+          confirmedByUserId: 'user-1',
+          confirmedAt: new Date('2026-09-08'),
+        });
+      });
+
+      it('validates the column against live columns and upserts with the live display name', async () => {
+        const result = await service.designateClassificationField('org-1', 'site-1', 'list-1', 'col-dept', 'user-1');
+
+        expect(sharePointClassificationFields.upsertActive).toHaveBeenCalledWith({
+          siteId: 'site-1',
+          graphListId: 'list-1',
+          columnDefinitionId: 'col-dept',
+          columnDisplayNameAtConfirmation: 'Department',
+          confirmedByUserId: 'user-1',
+        });
+        expect(result).toMatchObject({ id: 'field-1', columnDefinitionId: 'col-dept', status: 'Active', confirmedByDisplayName: 'Alice Admin' });
+      });
+
+      it('throws 400 and never upserts when the column is not a valid column for the library', async () => {
+        await expect(service.designateClassificationField('org-1', 'site-1', 'list-1', 'col-missing', 'user-1')).rejects.toThrow(
+          BadRequestException,
+        );
+        expect(sharePointClassificationFields.upsertActive).not.toHaveBeenCalled();
+      });
+
+      it('re-designating the same column is idempotent via upsert (no duplicate), returning the single row', async () => {
+        await service.designateClassificationField('org-1', 'site-1', 'list-1', 'col-dept', 'user-1');
+        await service.designateClassificationField('org-1', 'site-1', 'list-1', 'col-dept', 'user-1');
+        // Both calls route through upsertActive on the same (site, list, column) key.
+        expect(sharePointClassificationFields.upsertActive).toHaveBeenCalledTimes(2);
+        expect(sharePointClassificationFields.upsertActive).toHaveBeenLastCalledWith(
+          expect.objectContaining({ columnDefinitionId: 'col-dept' }),
+        );
+      });
+    });
+
+    describe('removeClassificationField', () => {
+      it('deletes a field that belongs to the site', async () => {
+        sharePointClassificationFields.findManyBySite.mockResolvedValue([{ id: 'field-1', siteId: 'site-1' }]);
+        sharePointClassificationFields.deleteById.mockResolvedValue(true);
+
+        await service.removeClassificationField('org-1', 'site-1', 'field-1');
+
+        expect(sharePointClassificationFields.deleteById).toHaveBeenCalledWith('field-1');
+      });
+
+      it('throws 404 and never deletes when the field does not belong to the site (isolation)', async () => {
+        sharePointClassificationFields.findManyBySite.mockResolvedValue([{ id: 'other-field', siteId: 'site-1' }]);
+
+        await expect(service.removeClassificationField('org-1', 'site-1', 'field-1')).rejects.toThrow(NotFoundException);
+        expect(sharePointClassificationFields.deleteById).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('listClassificationLibraries', () => {
+      it('returns each library with its designated fields, including stale state', async () => {
+        mockedListDrives.mockReturnValue(asyncGen([{ id: 'drive-1', name: 'Documents', list: { id: 'list-1' } }] as never));
+        sharePointClassificationFields.findManyBySite.mockResolvedValue([
+          {
+            id: 'field-1',
+            siteId: 'site-1',
+            graphListId: 'list-1',
+            columnDefinitionId: 'col-dept',
+            columnDisplayNameAtConfirmation: 'Department',
+            status: 'Stale',
+            staleDetectedAt: new Date('2026-09-01'),
+            confirmedByUserId: 'user-1',
+            confirmedAt: new Date('2026-08-01'),
+          },
+        ]);
+
+        const result = await service.listClassificationLibraries('org-1', 'site-1');
+
+        expect(result).toEqual([
+          {
+            graphListId: 'list-1',
+            driveId: 'drive-1',
+            name: 'Documents',
+            fields: [
+              expect.objectContaining({
+                id: 'field-1',
+                columnDisplayName: 'Department',
+                status: 'Stale',
+                staleDetectedAt: '2026-09-01T00:00:00.000Z',
+                confirmedByDisplayName: 'Alice Admin',
+              }),
+            ],
+          },
+        ]);
+      });
     });
   });
 });
