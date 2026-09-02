@@ -46,6 +46,7 @@ export type {
   AuditLog,
   Notification,
   SharePointReviewDateMapping,
+  SharePointClassificationField,
   RemediationJob,
   RemediationItem,
 } from '@prisma/client';
@@ -70,6 +71,7 @@ export {
   DiscoveryStatus,
   NotificationType,
   SharePointReviewDateMappingStatus,
+  SharePointClassificationFieldStatus,
   RemediationJobStatus,
   RemediationItemStatus,
 } from '@prisma/client';

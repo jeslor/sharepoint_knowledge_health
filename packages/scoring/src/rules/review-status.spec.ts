@@ -13,6 +13,7 @@ function baseInput(overrides: Partial<ScoringInput> = {}): ScoringInput {
     nextReviewDueAt: null,
     owners: [],
     siblingDocuments: [],
+    classificationFields: [],
     now: NOW,
     ...overrides,
   };

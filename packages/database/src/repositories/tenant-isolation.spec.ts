@@ -19,6 +19,8 @@ interface SeededOrg {
   notificationId: string;
   sharePointReviewDateMappingId: string;
   sharePointReviewDateMappingGraphListId: string;
+  sharePointClassificationFieldId: string;
+  sharePointClassificationFieldGraphListId: string;
   remediationJobId: string;
   remediationItemId: string;
   context: TenantContext;
@@ -195,6 +197,17 @@ async function seedOrganization(label: string): Promise<SeededOrg> {
     },
   });
 
+  const sharePointClassificationField = await prisma.sharePointClassificationField.create({
+    data: {
+      organizationId: organization.id,
+      siteId: site.id,
+      graphListId: `class-list-${unique}`,
+      columnDefinitionId: `class-col-${unique}`,
+      columnDisplayNameAtConfirmation: 'Department',
+      confirmedByUserId: user.id,
+    },
+  });
+
   const remediationJob = await prisma.remediationJob.create({
     data: {
       organizationId: organization.id,
@@ -232,6 +245,8 @@ async function seedOrganization(label: string): Promise<SeededOrg> {
     notificationId: notification.id,
     sharePointReviewDateMappingId: sharePointReviewDateMapping.id,
     sharePointReviewDateMappingGraphListId: sharePointReviewDateMapping.graphListId,
+    sharePointClassificationFieldId: sharePointClassificationField.id,
+    sharePointClassificationFieldGraphListId: sharePointClassificationField.graphListId,
     remediationJobId: remediationJob.id,
     remediationItemId: remediationItem.id,
     context: createTenantContext(organization.id),
@@ -538,6 +553,40 @@ describe('Cross-tenant data isolation (ADR-0001)', () => {
         graphListId: `extra-${Date.now()}`,
         columnDefinitionId: `extra-col-${Date.now()}`,
         columnDisplayNameAtConfirmation: 'Review Date',
+        confirmedByUserId: orgA.userId,
+      });
+      expect(created.organizationId).toBe(orgA.organizationId);
+    });
+  });
+
+  describe('SharePointClassificationFieldRepository (ADR-0025)', () => {
+    it('findManyActiveByLibrary never resolves another organization\'s field, even given that field\'s real siteId/graphListId', async () => {
+      const result = await orgA.context.sharePointClassificationFields.findManyActiveByLibrary(
+        orgB.siteId,
+        orgB.sharePointClassificationFieldGraphListId,
+      );
+      expect(result).toEqual([]);
+    });
+
+    it('findManyActiveByLibrary returns the row for the owning organization', async () => {
+      const result = await orgA.context.sharePointClassificationFields.findManyActiveByLibrary(
+        orgA.siteId,
+        orgA.sharePointClassificationFieldGraphListId,
+      );
+      expect(result.map((f) => f.id)).toContain(orgA.sharePointClassificationFieldId);
+    });
+
+    it('findManyBySite never includes another organization\'s field, even given that org\'s real siteId', async () => {
+      const list = await orgA.context.sharePointClassificationFields.findManyBySite(orgB.siteId);
+      expect(list.some((f) => f.id === orgB.sharePointClassificationFieldId)).toBe(false);
+    });
+
+    it('upsertActive always writes under the bound organizationId, regardless of caller input', async () => {
+      const created = await orgA.context.sharePointClassificationFields.upsertActive({
+        siteId: orgA.siteId,
+        graphListId: `extra-class-${Date.now()}`,
+        columnDefinitionId: `extra-class-col-${Date.now()}`,
+        columnDisplayNameAtConfirmation: 'Category',
         confirmedByUserId: orgA.userId,
       });
       expect(created.organizationId).toBe(orgA.organizationId);

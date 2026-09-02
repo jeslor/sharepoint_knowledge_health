@@ -1,5 +1,5 @@
 import type { Document, DocumentOwner } from '@sph/database';
-import type { DocumentOwnerInput, ScoringInput, SiblingDocumentInput } from '@sph/scoring';
+import type { ClassificationFieldInput, DocumentOwnerInput, ScoringInput, SiblingDocumentInput } from '@sph/scoring';
 
 /**
  * ADR-0022 Phase 5: extracted, unchanged, from document-collector.processor.ts's
@@ -24,6 +24,11 @@ export function buildScoringInput(
   activeByEmail: ReadonlyMap<string, boolean>,
   siblingDocuments: SiblingDocumentInput[],
   now: Date,
+  // ADR-0025: pre-resolved active classification fields for this document's
+  // library, each already flagged populated/not — same "caller pre-resolves,
+  // this function only maps" contract as owners/siblingDocuments. An empty
+  // array means the library has no classification policy (D=0 -> neutral).
+  classificationFields: ClassificationFieldInput[] = [],
 ): ScoringInput {
   const ownerInputs: DocumentOwnerInput[] = owners.map((owner) => ({
     email: owner.email,
@@ -39,6 +44,7 @@ export function buildScoringInput(
     nextReviewDueAt: document.nextReviewDueAt,
     owners: ownerInputs,
     siblingDocuments,
+    classificationFields,
     now,
   };
 }

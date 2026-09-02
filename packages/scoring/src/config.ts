@@ -3,13 +3,20 @@ import type { ScoringCriterion } from './types';
 // ADR-0002 MVP weights — named constants, not magic numbers scattered
 // through rule logic, so v2 per-organization configurability is a
 // data-source change later, not an engine rewrite.
+// ADR-0002 amendment (ADR-0025): the seventh criterion, Taxonomy (10%), is
+// added and the existing weights re-balanced so all seven still sum to
+// exactly 1.0 — Freshness 0.30->0.25 and Age 0.10->0.05 fund it, keeping
+// Freshness the dominant signal. This is a one-time, customer-visible
+// composite-score shift on the first scan after it ships (same rollout
+// note as this ADR's prior amendments). Weights remain provisional.
 export const SCORING_WEIGHTS: Record<ScoringCriterion, number> = {
-  Freshness: 0.3,
+  Freshness: 0.25,
   Ownership: 0.2,
   ReviewStatus: 0.15,
   Metadata: 0.15,
   Duplication: 0.1,
-  Age: 0.1,
+  Age: 0.05,
+  Taxonomy: 0.1,
 };
 
 export const HEALTH_BANDS = {

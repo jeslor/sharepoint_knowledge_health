@@ -15,6 +15,7 @@ import { GovernanceActivityRepository } from './repositories/governance-activity
 import { AuditLogRepository } from './repositories/audit-log-repository';
 import { NotificationRepository } from './repositories/notification-repository';
 import { SharePointReviewDateMappingRepository } from './repositories/sharepoint-review-date-mapping-repository';
+import { SharePointClassificationFieldRepository } from './repositories/sharepoint-classification-field-repository';
 import { RemediationJobRepository } from './repositories/remediation-job-repository';
 import { RemediationItemRepository } from './repositories/remediation-item-repository';
 
@@ -36,6 +37,7 @@ export interface TenantContext {
   readonly auditLogs: AuditLogRepository;
   readonly notifications: NotificationRepository;
   readonly sharePointReviewDateMappings: SharePointReviewDateMappingRepository;
+  readonly sharePointClassificationFields: SharePointClassificationFieldRepository;
   readonly remediationJobs: RemediationJobRepository;
   readonly remediationItems: RemediationItemRepository;
 }
@@ -65,6 +67,7 @@ export function createTenantContext(organizationId: string): TenantContext {
     auditLogs: new AuditLogRepository(organizationId, prisma),
     notifications: new NotificationRepository(organizationId, prisma),
     sharePointReviewDateMappings: new SharePointReviewDateMappingRepository(organizationId, prisma),
+    sharePointClassificationFields: new SharePointClassificationFieldRepository(organizationId, prisma),
     remediationJobs: new RemediationJobRepository(organizationId, prisma),
     remediationItems: new RemediationItemRepository(organizationId, prisma),
   };

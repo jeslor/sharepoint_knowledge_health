@@ -34,6 +34,20 @@ describe('listItemFields', () => {
     expect(requestedUrls).toEqual(['/sites/site-1/lists/list-1/items?$expand=fields($select=ReviewDate)']);
   });
 
+  it('selects multiple columns in one request via a comma-separated $select (ADR-0025 taxonomy coverage)', async () => {
+    const requestedUrls: string[] = [];
+    mockedCreateGraphClient.mockReturnValue({
+      api: (url: string) => {
+        requestedUrls.push(url);
+        return { get: async () => ({ value: [] }) };
+      },
+    } as unknown as Client);
+
+    await collect(listItemFields('entra-tenant-1', 'site-1', 'list-1', ['Department', 'Function', 'Region']));
+
+    expect(requestedUrls).toEqual(['/sites/site-1/lists/list-1/items?$expand=fields($select=Department,Function,Region)']);
+  });
+
   it('follows @odata.nextLink across multiple pages — this is the flat, non-N+1 sweep', async () => {
     mockedCreateGraphClient.mockReturnValue(
       fakeClient({

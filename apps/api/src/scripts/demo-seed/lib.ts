@@ -38,6 +38,7 @@ export async function scoreAndPersist(
     nextReviewDueAt,
     owners,
     siblingDocuments: siblings,
+    classificationFields: [],
     now: scoredAsOf,
   });
 
@@ -51,6 +52,7 @@ export async function scoreAndPersist(
     metadataScore: result.breakdown.Metadata,
     duplicationScore: result.breakdown.Duplication,
     ageScore: result.breakdown.Age,
+    taxonomyScore: result.breakdown.Taxonomy,
     healthBand: result.band,
     calculatedAt: scoredAsOf,
   });

@@ -1,4 +1,5 @@
 import { calculateScore } from './calculate-score';
+import { SCORING_WEIGHTS } from './config';
 import type { ScoringInput } from './types';
 
 const now = new Date('2026-07-12T00:00:00Z');
@@ -14,6 +15,7 @@ function baseInput(overrides: Partial<ScoringInput> = {}): ScoringInput {
     nextReviewDueAt: FUTURE_REVIEW_DATE,
     owners: [{ email: 'hr@example.com', isActiveUser: true }],
     siblingDocuments: [],
+    classificationFields: [],
     now,
     ...overrides,
   };
@@ -53,11 +55,46 @@ describe('calculateScore', () => {
     expect(calculateScore(input)).toEqual(calculateScore(input));
   });
 
-  it('produces a full breakdown covering all six criteria', () => {
+  it('produces a full breakdown covering all seven criteria', () => {
     const result = calculateScore(baseInput());
     expect(Object.keys(result.breakdown).sort()).toEqual(
-      ['Age', 'Duplication', 'Freshness', 'Metadata', 'Ownership', 'ReviewStatus'].sort(),
+      ['Age', 'Duplication', 'Freshness', 'Metadata', 'Ownership', 'ReviewStatus', 'Taxonomy'].sort(),
     );
+  });
+
+  it('applies the approved ADR-0025 weights, which still sum to exactly 1.0', () => {
+    const total =
+      SCORING_WEIGHTS.Freshness +
+      SCORING_WEIGHTS.Ownership +
+      SCORING_WEIGHTS.ReviewStatus +
+      SCORING_WEIGHTS.Metadata +
+      SCORING_WEIGHTS.Duplication +
+      SCORING_WEIGHTS.Age +
+      SCORING_WEIGHTS.Taxonomy;
+    expect(total).toBeCloseTo(1, 10);
+    expect(SCORING_WEIGHTS.Taxonomy).toBe(0.1);
+  });
+
+  it('lowers the composite by Taxonomy weight when classification coverage is partial', () => {
+    // One of two configured fields populated -> Taxonomy 50; everything else
+    // healthy. 100 - (100-50)*0.10 = 95.
+    const result = calculateScore(
+      baseInput({
+        classificationFields: [
+          { columnDefinitionId: 'c1', displayName: 'Department', populated: true },
+          { columnDefinitionId: 'c2', displayName: 'Function', populated: false },
+        ],
+      }),
+    );
+    expect(result.breakdown.Taxonomy).toBe(50);
+    expect(result.score).toBe(95);
+    expect(result.issues.map((i) => i.type)).toContain('Taxonomy');
+  });
+
+  it('leaves the composite unchanged when no classification fields are configured (neutral 100)', () => {
+    const result = calculateScore(baseInput({ classificationFields: [] }));
+    expect(result.breakdown.Taxonomy).toBe(100);
+    expect(result.issues.map((i) => i.type)).not.toContain('Taxonomy');
   });
 
   it('surfaces one issue per failing criterion, not just the worst one', () => {

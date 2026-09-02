@@ -37,4 +37,8 @@ export const ISSUE_GUIDANCE: Record<GovernanceIssueTypeValue, IssueGuidance> = {
     text: 'Required document metadata is incomplete or incorrect. Correct the relevant metadata in SharePoint.',
     remediation: 'external',
   },
+  Taxonomy: {
+    text: "This document is missing one or more of your organization's designated classification fields. Populate the classification columns for this document in SharePoint.",
+    remediation: 'external',
+  },
 };

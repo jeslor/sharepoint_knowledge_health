@@ -27,8 +27,20 @@ describe('buildScoringInput (ADR-0022 Phase 5 — shared with the full-scan path
       nextReviewDueAt: null,
       owners: [],
       siblingDocuments: [],
+      classificationFields: [],
       now,
     });
+  });
+
+  it('passes classificationFields through unmodified (caller pre-resolves populated flags)', () => {
+    const classificationFields = [{ columnDefinitionId: 'c1', displayName: 'Department', populated: false }];
+    const input = buildScoringInput(makeDocument(), [], new Map(), [], now, classificationFields);
+    expect(input.classificationFields).toBe(classificationFields);
+  });
+
+  it('defaults classificationFields to an empty array when omitted (D=0 -> neutral Taxonomy)', () => {
+    const input = buildScoringInput(makeDocument(), [], new Map(), [], now);
+    expect(input.classificationFields).toEqual([]);
   });
 
   it('maps an owner with a null email to isActiveUser: null (unresolvable)', () => {

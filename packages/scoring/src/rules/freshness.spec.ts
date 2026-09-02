@@ -13,6 +13,7 @@ function baseInput(overrides: Partial<ScoringInput> = {}): ScoringInput {
     nextReviewDueAt: new Date('2099-01-01'),
     owners: [],
     siblingDocuments: [],
+    classificationFields: [],
     now,
     ...overrides,
   };
