@@ -48,6 +48,11 @@ No labeled data or usage history exists to train or validate this yet. Adds sign
 
 Composite score = sum of `(sub-score × weight)` across all six criteria, producing a single 0–100 value.
 
+> **Superseded by the ADR-0025 amendment below (2026-09-08):** a seventh
+> criterion, **Taxonomy** (10%), was added and these weights re-balanced —
+> Freshness 30→25% and Document Age 10→5% — so all seven still sum to 1.0.
+> See the amendment section for the full rationale.
+
 ### Health Bands
 
 | Range   | Label            |
@@ -281,3 +286,47 @@ surface a `NeedsAttention` issue where none existed before. Expected and
 correct, not a regression — flag to customers/support as a known
 one-time scoring shift, matching this ADR's own precedent for the
 2026-07-23 amendment's rollout note.
+
+---
+
+## Amendment (2026-09-08 — seventh criterion Taxonomy + weight re-balance, per ADR-0025) — Accepted
+
+ADR-0025 (Taxonomy Quality — Classification Coverage) adds a seventh
+scoring criterion, **Taxonomy**, measuring whether a document's
+tenant-designated organizational classification columns are populated
+(coverage, not validity — see ADR-0025 for the full product decision).
+
+### Decision
+
+`ScoringCriterion` gains `Taxonomy`, and `SCORING_WEIGHTS` is re-balanced
+so all seven criteria still sum to exactly 1.0:
+
+| Criterion | Old | New |
+|---|---|---|
+| Freshness | 30% | **25%** |
+| Ownership | 20% | 20% |
+| Review Status | 15% | 15% |
+| Metadata Completeness | 15% | 15% |
+| Duplication | 10% | 10% |
+| Document Age | 10% | **5%** |
+| **Taxonomy** | — | **10%** |
+
+Freshness remains the dominant signal. Taxonomy is funded from Freshness
+and Age rather than from the governance-facing criteria (Ownership/Review
+Status/Metadata), which the product positioning weights most heavily.
+
+`taxonomyScore` is added to `HealthScore` as a **nullable** column
+(ADR-0025 decision 4): historical rows predate the criterion, so a null
+means "never evaluated," never a fabricated 100. `Taxonomy` is added to the
+`HealthIssueCriterion` enum.
+
+### Scoring impact
+
+As with this ADR's prior amendments, the first scan after this ships is a
+one-time, customer-visible composite-score step change for any organization
+that has configured classification fields (documents with incomplete
+classification newly surface a `Taxonomy` issue and a lower composite).
+Organizations with no classification fields configured are unaffected —
+Taxonomy scores a neutral 100 for them by design (ADR-0025 §3.2). Flag to
+customers/support as a known one-time scoring shift, matching the precedent
+set by the 2026-07-23 and 2026-08-13 amendments above.

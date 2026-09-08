@@ -115,6 +115,9 @@ enum HealthIssueCriterion {
   Metadata
   Duplication
   Age
+  // ADR-0025: organizational classification coverage (tenant-designated
+  // columns populated). Distinct from Metadata (intrinsic document hygiene).
+  Taxonomy
 }
 
 enum HealthIssueSeverity {
@@ -170,6 +173,49 @@ enum SharePointReviewDateMappingStatus {
   Stale
 }
 
+// ADR-0025: a tenant-designated classification column for one library.
+// Structurally mirrors SharePointReviewDateMapping (same per-library
+// column-designation shape, provenance, and Active/Stale lifecycle), but a
+// library may have MULTIPLE classification fields, so the unique key
+// includes columnDefinitionId. Identity is the stable columnDefinitionId;
+// the display name is a confirmation-time snapshot for provenance/fallback
+// only, never used to re-resolve the column (the worker re-reads the live
+// displayName from Graph, exactly as review-date sync does).
+model SharePointClassificationField {
+  id             String @id @default(cuid())
+  organizationId String
+  siteId         String
+  graphListId    String
+
+  columnDefinitionId              String
+  columnDisplayNameAtConfirmation String
+
+  status          SharePointClassificationFieldStatus @default(Active)
+  staleDetectedAt DateTime?
+
+  confirmedByUserId String
+  confirmedAt       DateTime @default(now())
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  organization    Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  site            SharePointSite @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  // Restrict — who designated a classification field is provenance, never
+  // silently lost to a user deletion (matches the review-date precedent).
+  confirmedByUser User           @relation("SharePointClassificationFieldConfirmedBy", fields: [confirmedByUserId], references: [id], onDelete: Restrict)
+
+  // Multiple classification columns per library; re-confirming the same
+  // column replaces its row rather than creating a duplicate.
+  @@unique([siteId, graphListId, columnDefinitionId])
+  @@index([organizationId])
+  @@index([siteId, graphListId, status])
+}
+
+enum SharePointClassificationFieldStatus {
+  Active
+  Stale
+}
+
 // Phase 8C: one row per recorded governance action. PascalCase to match
 // this schema's existing enum convention (every other enum here already
 // does this — not a departure, just consistency with e.g.
@@ -221,23 +267,24 @@ model Organization {
   createdAt DateTime           @default(now())
   updatedAt DateTime           @updatedAt
 
-  users                        User[]
-  microsoftTenants             MicrosoftTenant[]
-  sharePointSites              SharePointSite[]
-  documents                    Document[]
-  documentOwners               DocumentOwner[]
-  scanJobs                     ScanJob[]
-  scanSchedule                 ScanSchedule?
-  healthScores                 HealthScore[]
-  healthIssues                 HealthIssue[]
-  healthSnapshots              HealthSnapshot[]
-  governanceIssues             GovernanceIssue[]
-  governanceActivity           GovernanceActivity[]
-  auditLogs                    AuditLog[]
-  notifications                Notification[]
-  sharePointReviewDateMappings SharePointReviewDateMapping[]
-  remediationJobs              RemediationJob[]
-  remediationItems             RemediationItem[]
+  users                          User[]
+  microsoftTenants               MicrosoftTenant[]
+  sharePointSites                SharePointSite[]
+  documents                      Document[]
+  documentOwners                 DocumentOwner[]
+  scanJobs                       ScanJob[]
+  scanSchedule                   ScanSchedule?
+  healthScores                   HealthScore[]
+  healthIssues                   HealthIssue[]
+  healthSnapshots                HealthSnapshot[]
+  governanceIssues               GovernanceIssue[]
+  governanceActivity             GovernanceActivity[]
+  auditLogs                      AuditLog[]
+  notifications                  Notification[]
+  sharePointReviewDateMappings   SharePointReviewDateMapping[]
+  sharePointClassificationFields SharePointClassificationField[]
+  remediationJobs                RemediationJob[]
+  remediationItems               RemediationItem[]
 
   @@index([status])
 }
@@ -258,16 +305,17 @@ model User {
   organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   microsoftTenant MicrosoftTenant @relation("UserHomeMicrosoftTenant", fields: [microsoftTenantId], references: [id], onDelete: Restrict)
 
-  consentedMicrosoftTenants   MicrosoftTenant[]             @relation("MicrosoftTenantConsentedBy")
-  triggeredScanJobs           ScanJob[]                     @relation("ScanJobTriggeredBy")
-  approvedSharePointSites     SharePointSite[]              @relation("SharePointSiteApprovedBy")
-  assignedGovernanceIssues    GovernanceIssue[]             @relation("GovernanceIssueAssignedTo")
-  assignedDocumentOwners      DocumentOwner[]               @relation("DocumentOwnerAssignedBy")
-  governanceActivityAsActor   GovernanceActivity[]          @relation("GovernanceActivityActor")
-  auditLogEntries             AuditLog[]
-  notifications               Notification[]
-  confirmedReviewDateMappings SharePointReviewDateMapping[] @relation("SharePointReviewDateMappingConfirmedBy")
-  initiatedRemediationJobs    RemediationJob[]              @relation("RemediationJobInitiatedBy")
+  consentedMicrosoftTenants     MicrosoftTenant[]               @relation("MicrosoftTenantConsentedBy")
+  triggeredScanJobs             ScanJob[]                       @relation("ScanJobTriggeredBy")
+  approvedSharePointSites       SharePointSite[]                @relation("SharePointSiteApprovedBy")
+  assignedGovernanceIssues      GovernanceIssue[]               @relation("GovernanceIssueAssignedTo")
+  assignedDocumentOwners        DocumentOwner[]                 @relation("DocumentOwnerAssignedBy")
+  governanceActivityAsActor     GovernanceActivity[]            @relation("GovernanceActivityActor")
+  auditLogEntries               AuditLog[]
+  notifications                 Notification[]
+  confirmedReviewDateMappings   SharePointReviewDateMapping[]   @relation("SharePointReviewDateMappingConfirmedBy")
+  confirmedClassificationFields SharePointClassificationField[] @relation("SharePointClassificationFieldConfirmedBy")
+  initiatedRemediationJobs      RemediationJob[]                @relation("RemediationJobInitiatedBy")
 
   // The Entra oid claim (entraObjectId) is only unique WITHIN the Azure AD
   // tenant that issued it (ADR-0010) — Microsoft's own multi-tenant app
@@ -279,13 +327,13 @@ model User {
 
 /// One customer's connected Microsoft 365 / Azure AD tenant.
 model MicrosoftTenant {
-  id                     String                @id @default(cuid())
-  organizationId         String
-  entraTenantId          String
-  tenantName             String
-  status                 MicrosoftTenantStatus @default(PendingConsent)
-  consentGrantedAt       DateTime?
-  consentGrantedByUserId String?
+  id                               String                @id @default(cuid())
+  organizationId                   String
+  entraTenantId                    String
+  tenantName                       String
+  status                           MicrosoftTenantStatus @default(PendingConsent)
+  consentGrantedAt                 DateTime?
+  consentGrantedByUserId           String?
   // ADR-0023 §3.3: two deliberately separate, honestly-scoped fields — not
   // one shared "granted permissions" version. verifiedReadPermissionVersion
   // is real evidence, advanced only after a passing GraphConsentVerifierService
@@ -296,14 +344,14 @@ model MicrosoftTenant {
   // no manufactured historical evidence).
   verifiedReadPermissionVersion    Int?
   consentAssertedPermissionVersion Int?
-  consentAssertedAt               DateTime?
+  consentAssertedAt                DateTime?
   // ADR-0014 amendment (2026-07-20): current discovery job state only — see
   // the enum's own doc comment. Not history; ADR-0019's AuditLog owns that.
-  discoveryStatus        DiscoveryStatus       @default(NotStarted)
-  discoveryStartedAt     DateTime?
-  discoveryCompletedAt   DateTime?
-  discoveryError         String?
-  createdAt              DateTime              @default(now())
+  discoveryStatus                  DiscoveryStatus       @default(NotStarted)
+  discoveryStartedAt               DateTime?
+  discoveryCompletedAt             DateTime?
+  discoveryError                   String?
+  createdAt                        DateTime              @default(now())
 
   organization         Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   consentGrantedByUser User?        @relation("MicrosoftTenantConsentedBy", fields: [consentGrantedByUserId], references: [id], onDelete: SetNull)
@@ -344,8 +392,9 @@ model SharePointSite {
   microsoftTenant MicrosoftTenant @relation(fields: [microsoftTenantId], references: [id], onDelete: Cascade)
   approvedByUser  User?           @relation("SharePointSiteApprovedBy", fields: [approvedByUserId], references: [id], onDelete: SetNull)
 
-  documents          Document[]
-  reviewDateMappings SharePointReviewDateMapping[]
+  documents            Document[]
+  reviewDateMappings   SharePointReviewDateMapping[]
+  classificationFields SharePointClassificationField[]
 
   @@unique([microsoftTenantId, graphSiteId])
   @@index([organizationId])
@@ -554,6 +603,12 @@ model HealthScore {
   metadataScore     Int
   duplicationScore  Int
   ageScore          Int
+  // ADR-0025: nullable because historical HealthScore rows were written
+  // before the Taxonomy criterion existed — a null here means "Taxonomy was
+  // never evaluated for this scan," never "measured 100% coverage." New
+  // scans always populate it (0-100). Do NOT backfill a default; that would
+  // falsely imply Taxonomy was measured on documents it never ran against.
+  taxonomyScore     Int?
   healthBand        HealthBand
   calculatedAt      DateTime   @default(now())
 

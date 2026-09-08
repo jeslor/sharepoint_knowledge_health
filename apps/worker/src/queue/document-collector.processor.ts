@@ -8,10 +8,28 @@ import {
   type NotificationReconciliationJobPayload,
 } from '@sph/types';
 import { createTenantContext, type TenantContext, type Document, type DocumentOwner, type SharePointSite } from '@sph/database';
-import { listDrives, listDocuments, listChildren, type GraphDriveItem, GraphClientError } from '@sph/graph-client';
-import { calculateScore, type SiblingDocumentInput } from '@sph/scoring';
+import {
+  listDrives,
+  listDocuments,
+  listChildren,
+  listColumns,
+  listContentTypes,
+  listItemFields,
+  listItemDriveItemIds,
+  type GraphDriveItem,
+  type GraphColumnDefinition,
+  GraphClientError,
+} from '@sph/graph-client';
+import { calculateScore, type SiblingDocumentInput, type ClassificationFieldInput } from '@sph/scoring';
 import { syncConfirmedReviewDateMapping } from '../sharepoint-metadata/review-date-sync';
 import { buildScoringInput } from '../scoring/build-scoring-input';
+import { resolveActiveColumns, buildClassificationFieldInputs } from '../scoring/classification-coverage';
+
+async function collectAsync<T>(gen: AsyncGenerator<T>): Promise<T[]> {
+  const items: T[] = [];
+  for await (const item of gen) items.push(item);
+  return items;
+}
 
 /**
  * ADR-0015 §3 — the exact aggregate a HealthSnapshot needs, computed once
@@ -146,7 +164,13 @@ export class DocumentCollectorProcessor extends WorkerHost {
     // freshly-computed-but-unvalidated score over the last genuinely
     // successful one. Mirrors the HealthSnapshot gate a few lines below,
     // which already only fires on `status === 'Completed'`.
-    const summary = await this.scoreTenantDocuments(context, scanJobId, microsoftTenant.id, status === 'Completed');
+    const summary = await this.scoreTenantDocuments(
+      context,
+      scanJobId,
+      microsoftTenant.id,
+      microsoftTenant.entraTenantId,
+      status === 'Completed',
+    );
 
     await context.scanJobs.updateById(scanJobId, {
       status,
@@ -458,10 +482,92 @@ export class DocumentCollectorProcessor extends WorkerHost {
     });
   }
 
+  /**
+   * ADR-0025: per-library classification-coverage collection. Reads the
+   * tenant-designated columns' values for every document in each library
+   * that has classification fields, via the same flat, non-N+1 list-item
+   * sweep review-date sync uses. Resolution against live Graph columns
+   * drives the Active/Stale lifecycle: a vanished column is marked Stale
+   * (excluded from the denominator); a stale column that resolves again is
+   * re-activated. A Graph failure for one library leaves its documents
+   * unmeasured (neutral Taxonomy), never failing the scan. Libraries with no
+   * configured fields make zero Graph calls.
+   */
+  private async collectClassificationCoverage(
+    context: TenantContext,
+    entraTenantId: string,
+    documents: Document[],
+  ): Promise<Map<string, ClassificationFieldInput[]>> {
+    const coverage = new Map<string, ClassificationFieldInput[]>();
+
+    const librariesByKey = new Map<string, { siteId: string; graphListId: string; documents: Document[] }>();
+    for (const document of documents) {
+      if (!document.graphListId) continue;
+      const key = `${document.siteId}::${document.graphListId}`;
+      const entry = librariesByKey.get(key) ?? { siteId: document.siteId, graphListId: document.graphListId, documents: [] };
+      entry.documents.push(document);
+      librariesByKey.set(key, entry);
+    }
+    if (librariesByKey.size === 0) return coverage;
+
+    const siteIds = [...new Set([...librariesByKey.values()].map((library) => library.siteId))];
+    const sites = await context.sharePointSites.findMany({ where: { id: { in: siteIds } } });
+    const graphSiteIdBySiteId = new Map(sites.map((site) => [site.id, site.graphSiteId]));
+
+    for (const library of librariesByKey.values()) {
+      const allFields = await context.sharePointClassificationFields.findManyByLibrary(library.siteId, library.graphListId);
+      if (allFields.length === 0) continue; // no policy -> neutral, no Graph call
+      const graphSiteId = graphSiteIdBySiteId.get(library.siteId);
+      if (!graphSiteId) continue;
+
+      try {
+        const [columns, contentTypes] = await Promise.all([
+          collectAsync(listColumns(entraTenantId, graphSiteId, library.graphListId)),
+          collectAsync(listContentTypes(entraTenantId, graphSiteId, library.graphListId)),
+        ]);
+        const liveColumns: GraphColumnDefinition[] = [...columns, ...contentTypes.flatMap((contentType) => contentType.columns ?? [])];
+
+        const { resolved, staleIds } = resolveActiveColumns(allFields, liveColumns);
+
+        // Active/Stale lifecycle transitions, mirroring review-date sync.
+        for (const field of allFields) {
+          const isResolved = resolved.some((column) => column.fieldId === field.id);
+          if (!isResolved && field.status === 'Active') {
+            await context.sharePointClassificationFields.updateById(field.id, { status: 'Stale', staleDetectedAt: new Date() });
+          } else if (isResolved && field.status === 'Stale') {
+            await context.sharePointClassificationFields.updateById(field.id, { status: 'Active', staleDetectedAt: null });
+          }
+        }
+
+        if (resolved.length === 0) continue; // every field stale -> D=0 -> neutral
+
+        const [fieldRows, driveItemRows] = await Promise.all([
+          collectAsync(listItemFields(entraTenantId, graphSiteId, library.graphListId, resolved.map((column) => column.columnName))),
+          collectAsync(listItemDriveItemIds(entraTenantId, graphSiteId, library.graphListId)),
+        ]);
+        const graphItemIdByListItemId = new Map(driveItemRows.map((row) => [row.id, row.driveItem?.id]));
+        const fieldsByGraphItemId = new Map<string, Record<string, unknown>>();
+        for (const row of fieldRows) {
+          const graphItemId = graphItemIdByListItemId.get(row.id);
+          if (graphItemId) fieldsByGraphItemId.set(graphItemId, row.fields as Record<string, unknown>);
+        }
+
+        for (const document of library.documents) {
+          coverage.set(document.id, buildClassificationFieldInputs(resolved, fieldsByGraphItemId.get(document.graphItemId)));
+        }
+      } catch (error) {
+        this.logger.warn(`Classification coverage collection failed for library ${library.graphListId}: ${String(error)}`);
+      }
+    }
+
+    return coverage;
+  }
+
   private async scoreTenantDocuments(
     context: TenantContext,
     scanJobId: string,
     microsoftTenantId: string,
+    entraTenantId: string,
     shouldUpdateCurrentHealthScore: boolean,
   ): Promise<ScanAggregateSummary> {
     const documents = await context.documents.findMany({
@@ -493,6 +599,11 @@ export class DocumentCollectorProcessor extends WorkerHost {
       siblingsByKey.set(key, list);
     }
 
+    // ADR-0025: per-document classification coverage. Empty map entries (or a
+    // missing entry) mean the library has no active classification policy, so
+    // Taxonomy scores a neutral 100 — the common case makes zero Graph calls.
+    const classificationByDocumentId = await this.collectClassificationCoverage(context, entraTenantId, documents);
+
     let totalScore = 0;
     let criticalIssuesCount = 0;
     let warningIssuesCount = 0;
@@ -510,7 +621,14 @@ export class DocumentCollectorProcessor extends WorkerHost {
       // single-document rescore path (buildScoringInput, apps/worker/src/scoring) —
       // extracted unchanged, so this loop's behavior is identical to before.
       const result = calculateScore(
-        buildScoringInput(document, ownersByDocumentId.get(document.id) ?? [], activeByEmail, siblingsByKey.get(key) ?? [], scoringNow),
+        buildScoringInput(
+          document,
+          ownersByDocumentId.get(document.id) ?? [],
+          activeByEmail,
+          siblingsByKey.get(key) ?? [],
+          scoringNow,
+          classificationByDocumentId.get(document.id) ?? [],
+        ),
       );
 
       const healthScore = await context.healthScores.create({
@@ -523,6 +641,7 @@ export class DocumentCollectorProcessor extends WorkerHost {
         metadataScore: result.breakdown.Metadata,
         duplicationScore: result.breakdown.Duplication,
         ageScore: result.breakdown.Age,
+        taxonomyScore: result.breakdown.Taxonomy,
         healthBand: result.band,
       });
 

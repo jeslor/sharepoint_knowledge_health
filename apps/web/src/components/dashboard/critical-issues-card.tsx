@@ -15,6 +15,7 @@ const ISSUE_COPY: Record<GovernanceIssueTypeValue, { title: string; description:
   Metadata: { title: 'Documents with incomplete metadata', description: (n) => `${n} document${n === 1 ? '' : 's'} are missing key metadata` },
   Duplication: { title: 'Duplicate documents', description: (n) => `${n} document${n === 1 ? '' : 's'} appear to be duplicates` },
   Age: { title: 'Aging documents', description: (n) => `${n} document${n === 1 ? '' : 's'} have not been reviewed in a long time` },
+  Taxonomy: { title: 'Documents missing classification', description: (n) => `${n} document${n === 1 ? '' : 's'} are missing designated classification fields` },
 };
 
 // Top few issue types by open count — the highest-leverage things an

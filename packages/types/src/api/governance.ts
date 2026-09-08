@@ -8,7 +8,7 @@ export type GovernanceIssueStatusValue = 'Open' | 'InProgress' | 'Resolved';
 
 // Matches packages/database's HealthIssueCriterion — redeclared here rather
 // than imported, same rationale as IssueSeverityFilter in documents.ts.
-export type GovernanceIssueTypeValue = 'Freshness' | 'Ownership' | 'ReviewStatus' | 'Metadata' | 'Duplication' | 'Age';
+export type GovernanceIssueTypeValue = 'Freshness' | 'Ownership' | 'ReviewStatus' | 'Metadata' | 'Duplication' | 'Age' | 'Taxonomy';
 
 // Shared display labels — the single source of truth for "human-readable
 // issue type," consumed by both the backend (notification message text)
@@ -22,6 +22,7 @@ export const GOVERNANCE_ISSUE_TYPE_LABELS: Record<GovernanceIssueTypeValue, stri
   Metadata: 'Metadata',
   Duplication: 'Duplication',
   Age: 'Age',
+  Taxonomy: 'Taxonomy',
 };
 
 // Matches the terminology already established and shipped in

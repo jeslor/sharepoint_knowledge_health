@@ -6,12 +6,13 @@ import { scoreReviewStatus } from './rules/review-status';
 import { scoreMetadata } from './rules/metadata';
 import { scoreDuplication } from './rules/duplication';
 import { scoreAge } from './rules/age';
+import { scoreTaxonomy } from './rules/taxonomy';
 
 /**
- * Composes the 6 isolated rules into a weighted composite score, band, and
- * issue list (ADR-0002). Deterministic — same input always produces the
- * same output, no external state or randomness. Adding a 7th rule later is
- * mechanical: one more entry here, in the weights, and in the breakdown —
+ * Composes the 7 isolated rules into a weighted composite score, band, and
+ * issue list (ADR-0002, ADR-0025). Deterministic — same input always
+ * produces the same output, no external state or randomness. Adding a rule
+ * is mechanical: one more entry here, in the weights, and in the breakdown —
  * no existing rule needs to change.
  */
 export function calculateScore(input: ScoringInput): ScoreResult {
@@ -22,6 +23,7 @@ export function calculateScore(input: ScoringInput): ScoreResult {
     Metadata: scoreMetadata(input),
     Duplication: scoreDuplication(input),
     Age: scoreAge(input),
+    Taxonomy: scoreTaxonomy(input),
   };
 
   const breakdown: Record<ScoringCriterion, number> = {
@@ -31,6 +33,7 @@ export function calculateScore(input: ScoringInput): ScoreResult {
     Metadata: results.Metadata.score,
     Duplication: results.Duplication.score,
     Age: results.Age.score,
+    Taxonomy: results.Taxonomy.score,
   };
 
   const issues: Issue[] = Object.values(results)
@@ -43,7 +46,8 @@ export function calculateScore(input: ScoringInput): ScoreResult {
     breakdown.ReviewStatus * SCORING_WEIGHTS.ReviewStatus +
     breakdown.Metadata * SCORING_WEIGHTS.Metadata +
     breakdown.Duplication * SCORING_WEIGHTS.Duplication +
-    breakdown.Age * SCORING_WEIGHTS.Age;
+    breakdown.Age * SCORING_WEIGHTS.Age +
+    breakdown.Taxonomy * SCORING_WEIGHTS.Taxonomy;
 
   const score = Math.round(weightedTotal);
   const band: HealthBand =

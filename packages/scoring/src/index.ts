@@ -4,6 +4,7 @@ export type {
   HealthBand,
   DocumentOwnerInput,
   SiblingDocumentInput,
+  ClassificationFieldInput,
   ScoringInput,
   Issue,
   CriterionResult,
