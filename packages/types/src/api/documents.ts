@@ -34,6 +34,30 @@ export interface DocumentHealthIssueResponse {
 // packages/scoring).
 export type ReviewDateHealthState = 'Missing' | 'Overdue' | 'DueSoon' | 'Healthy';
 
+// ADR-0025: taxonomy (classification coverage) presentation state for a
+// document. Deliberately separate from `score`/`taxonomyScore` so a neutral
+// taxonomyScore of 100 for an UNCONFIGURED library is never shown as proof
+// the document is classified — `state` is the disambiguator required by the
+// D=0 decision:
+//  - notYetScored: no measured taxonomyScore yet (historical/unscored row).
+//  - notConfigured: the document's library has no active classification
+//    fields, so coverage is not measured (score is a neutral 100 by design,
+//    intentionally NOT surfaced as coverage).
+//  - measured: the library has active classification fields and coverage was
+//    evaluated; `score` carries the real 0-100 coverage.
+export type DocumentTaxonomyCoverageState = 'notYetScored' | 'notConfigured' | 'measured';
+
+export interface DocumentTaxonomyCoverage {
+  state: DocumentTaxonomyCoverageState;
+  // The measured coverage score (0-100) only when state === 'measured';
+  // null for notConfigured/notYetScored, so a caller can never mistake a
+  // neutral 100 for measured coverage.
+  score: number | null;
+  // How many active classification fields the document's library currently
+  // has (0 when notConfigured).
+  configuredFieldCount: number;
+}
+
 export interface DocumentHealthResponse {
   documentId: string;
   documentName: string;
@@ -92,6 +116,10 @@ export interface DocumentDetailResponse {
   sharePointManagedColumnDisplayName: string | null;
   // Phase 3A-1: see ReviewDateHealthState above.
   reviewDateHealth: ReviewDateHealthState;
+  // ADR-0025: taxonomy classification-coverage presentation state (see
+  // DocumentTaxonomyCoverage above). Distinguishes not-configured from a
+  // measured 100% from not-yet-scored.
+  taxonomyCoverage: DocumentTaxonomyCoverage;
   webUrl: string | null;
 }
 

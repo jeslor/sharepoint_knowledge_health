@@ -10,6 +10,7 @@ import type {
   DocumentResponse,
   DocumentReviewResponse,
   DocumentScoreHistoryResponse,
+  DocumentTaxonomyCoverage,
   PaginatedResponse,
 } from '@sph/types';
 import { GovernanceActivityService } from '../governance/governance-activity.service';
@@ -90,6 +91,22 @@ export class DocumentsService {
     const reviewDateMapping = await this.resolveReviewDateMapping(context, document);
     const sharePointManaged = reviewDateMapping?.status === 'Active';
 
+    // ADR-0025: taxonomy coverage presentation state. Derived from the
+    // library's CURRENT active classification fields plus whether a
+    // taxonomyScore was measured — so a neutral 100 (D=0 at scan time) is
+    // never shown as measured coverage, and an unscored/historical row is
+    // distinct from both.
+    const activeClassificationFields = document.graphListId
+      ? await context.sharePointClassificationFields.findManyActiveByLibrary(document.siteId, document.graphListId)
+      : [];
+    const taxonomyScoreValue = score?.taxonomyScore ?? null;
+    const taxonomyCoverage: DocumentTaxonomyCoverage =
+      taxonomyScoreValue === null
+        ? { state: 'notYetScored', score: null, configuredFieldCount: activeClassificationFields.length }
+        : activeClassificationFields.length === 0
+          ? { state: 'notConfigured', score: null, configuredFieldCount: 0 }
+          : { state: 'measured', score: taxonomyScoreValue, configuredFieldCount: activeClassificationFields.length };
+
     return {
       documentId: document.id,
       documentName: document.name,
@@ -122,6 +139,7 @@ export class DocumentsService {
       // ReviewStatus) — computed here, at request time, off the real
       // nextReviewDueAt column, never re-derived in the frontend.
       reviewDateHealth: classifyReviewDateHealth(document.nextReviewDueAt, new Date()),
+      taxonomyCoverage,
       webUrl: document.webUrl,
     };
   }

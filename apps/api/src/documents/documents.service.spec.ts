@@ -17,6 +17,7 @@ describe('DocumentsService', () => {
   const documentOwners = { findMany: jest.fn(), create: jest.fn(), deleteById: jest.fn() };
   const users = { findMany: jest.fn() };
   const sharePointReviewDateMappings = { findByLibrary: jest.fn() };
+  const sharePointClassificationFields = { findManyActiveByLibrary: jest.fn() };
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -28,6 +29,7 @@ describe('DocumentsService', () => {
       documentOwners,
       users,
       sharePointReviewDateMappings,
+      sharePointClassificationFields,
     } as never);
 
     // Sane defaults so each test only overrides what it cares about.
@@ -39,6 +41,7 @@ describe('DocumentsService', () => {
     documentOwners.findMany.mockResolvedValue([]);
     users.findMany.mockResolvedValue([]);
     sharePointReviewDateMappings.findByLibrary.mockResolvedValue(null);
+    sharePointClassificationFields.findManyActiveByLibrary.mockResolvedValue([]);
   });
 
   describe('listDocuments', () => {
@@ -131,6 +134,7 @@ describe('DocumentsService', () => {
         sharePointManaged: false,
         sharePointManagedColumnDisplayName: null,
         reviewDateHealth: 'Missing',
+        taxonomyCoverage: { state: 'notYetScored', score: null, configuredFieldCount: 0 },
         webUrl: null,
       });
     });
@@ -364,6 +368,55 @@ describe('DocumentsService', () => {
         const result = await service.getDocument('org-1', 'doc-1');
 
         expect(result?.reviewDateHealth).toBe('Healthy');
+      });
+    });
+
+    // ADR-0025: the three taxonomy presentation states must be
+    // distinguishable — a neutral 100 (unconfigured) is never shown as
+    // measured coverage, and an unscored row is distinct from both.
+    describe('taxonomyCoverage (ADR-0025)', () => {
+      it('is notYetScored when the document has no measured taxonomyScore', async () => {
+        documents.findFirstById.mockResolvedValue({ ...baseDocument, graphListId: 'list-1', currentHealthScoreId: 'score-1' });
+        sharePointSites.findMany.mockResolvedValue([{ id: 'site-1', displayName: 'Team Site' }]);
+        healthScores.findMany.mockResolvedValue([{ id: 'score-1', compositeScore: 80, healthBand: 'NeedsAttention', taxonomyScore: null, calculatedAt: new Date() }]);
+        sharePointClassificationFields.findManyActiveByLibrary.mockResolvedValue([{ id: 'f1' }]);
+
+        const result = await service.getDocument('org-1', 'doc-1');
+
+        expect(result?.taxonomyCoverage).toEqual({ state: 'notYetScored', score: null, configuredFieldCount: 1 });
+      });
+
+      it('is notConfigured when measured but the library has no active classification fields (neutral 100 never shown as coverage)', async () => {
+        documents.findFirstById.mockResolvedValue({ ...baseDocument, graphListId: 'list-1', currentHealthScoreId: 'score-1' });
+        sharePointSites.findMany.mockResolvedValue([{ id: 'site-1', displayName: 'Team Site' }]);
+        healthScores.findMany.mockResolvedValue([{ id: 'score-1', compositeScore: 90, healthBand: 'Healthy', taxonomyScore: 100, calculatedAt: new Date() }]);
+        sharePointClassificationFields.findManyActiveByLibrary.mockResolvedValue([]);
+
+        const result = await service.getDocument('org-1', 'doc-1');
+
+        expect(result?.taxonomyCoverage).toEqual({ state: 'notConfigured', score: null, configuredFieldCount: 0 });
+      });
+
+      it('is measured with the real coverage score when the library has active classification fields', async () => {
+        documents.findFirstById.mockResolvedValue({ ...baseDocument, graphListId: 'list-1', currentHealthScoreId: 'score-1' });
+        sharePointSites.findMany.mockResolvedValue([{ id: 'site-1', displayName: 'Team Site' }]);
+        healthScores.findMany.mockResolvedValue([{ id: 'score-1', compositeScore: 70, healthBand: 'NeedsAttention', taxonomyScore: 50, calculatedAt: new Date() }]);
+        sharePointClassificationFields.findManyActiveByLibrary.mockResolvedValue([{ id: 'f1' }, { id: 'f2' }]);
+
+        const result = await service.getDocument('org-1', 'doc-1');
+
+        expect(result?.taxonomyCoverage).toEqual({ state: 'measured', score: 50, configuredFieldCount: 2 });
+      });
+
+      it('is notConfigured with no library lookup when the document has no graphListId', async () => {
+        documents.findFirstById.mockResolvedValue({ ...baseDocument, graphListId: null, currentHealthScoreId: 'score-1' });
+        sharePointSites.findMany.mockResolvedValue([{ id: 'site-1', displayName: 'Team Site' }]);
+        healthScores.findMany.mockResolvedValue([{ id: 'score-1', compositeScore: 90, healthBand: 'Healthy', taxonomyScore: 100, calculatedAt: new Date() }]);
+
+        const result = await service.getDocument('org-1', 'doc-1');
+
+        expect(result?.taxonomyCoverage.state).toBe('notConfigured');
+        expect(sharePointClassificationFields.findManyActiveByLibrary).not.toHaveBeenCalled();
       });
     });
 

@@ -41,6 +41,10 @@ import type {
   ReviewDateEligibilityResponse,
   ReviewDateLibraryResponse,
   ReviewDateMappingResponse,
+  ClassificationCandidateColumn,
+  ClassificationFieldResponse,
+  ClassificationLibraryResponse,
+  DesignateClassificationFieldRequest,
   ScanComparisonResponse,
   ScanResponse,
   ScanScheduleResponse,
@@ -145,6 +149,48 @@ export function confirmReviewDateMapping(
   return apiRequest(`/organizations/${organizationId}/sharepoint-sites/${siteId}/review-date-mapping/confirm`, token, {
     method: 'POST',
     body: JSON.stringify(body),
+  });
+}
+
+// ADR-0025: Taxonomy classification-field configuration.
+export function listClassificationLibraries(
+  organizationId: string,
+  siteId: string,
+  token: string,
+): Promise<ClassificationLibraryResponse[]> {
+  return apiRequest(`/organizations/${organizationId}/sharepoint-sites/${siteId}/classification-libraries`, token);
+}
+
+export function listClassificationCandidates(
+  organizationId: string,
+  siteId: string,
+  graphListId: string,
+  token: string,
+): Promise<ClassificationCandidateColumn[]> {
+  const queryString = buildQueryString({ graphListId });
+  return apiRequest(`/organizations/${organizationId}/sharepoint-sites/${siteId}/classification-candidates${queryString}`, token);
+}
+
+export function designateClassificationField(
+  organizationId: string,
+  siteId: string,
+  body: DesignateClassificationFieldRequest,
+  token: string,
+): Promise<ClassificationFieldResponse> {
+  return apiRequest(`/organizations/${organizationId}/sharepoint-sites/${siteId}/classification-fields`, token, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+export function removeClassificationField(
+  organizationId: string,
+  siteId: string,
+  fieldId: string,
+  token: string,
+): Promise<void> {
+  return apiRequest(`/organizations/${organizationId}/sharepoint-sites/${siteId}/classification-fields/${fieldId}`, token, {
+    method: 'DELETE',
   });
 }
 

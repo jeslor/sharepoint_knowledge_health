@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
-import { createTenantContext, type SharePointReviewDateMapping } from '@sph/database';
+import { createTenantContext, type SharePointReviewDateMapping, type SharePointClassificationField } from '@sph/database';
 import { listColumns, listContentTypes, listDrives, type GraphColumnDefinition } from '@sph/graph-client';
 import { resolveReviewDateCandidates, scoreReviewDateCandidateConfidence } from '@sph/review-date-discovery';
 import type {
@@ -8,6 +8,9 @@ import type {
   ReviewDateEligibilityResponse,
   ReviewDateLibraryResponse,
   ReviewDateMappingResponse,
+  ClassificationCandidateColumn,
+  ClassificationFieldResponse,
+  ClassificationLibraryResponse,
 } from '@sph/types';
 
 async function collectAsync<T>(gen: AsyncGenerator<T>): Promise<T[]> {
@@ -156,6 +159,168 @@ export class SharePointMetadataService {
       });
     }
     return libraries;
+  }
+
+  // ---------------------------------------------------------------------
+  // ADR-0025: Taxonomy classification-field configuration. Mirrors the
+  // review-date confirm/list flow above; the key differences are that
+  // candidates are ALL non-hidden columns (no heuristic filter — the admin
+  // designates their own scheme), a library may have multiple designated
+  // fields, and removal is a real delete rather than a status flip.
+  // ---------------------------------------------------------------------
+
+  async listClassificationCandidates(
+    organizationId: string,
+    siteId: string,
+    graphListId: string,
+  ): Promise<ClassificationCandidateColumn[]> {
+    const context = createTenantContext(organizationId);
+    const columns = await this.resolveLibraryColumns(context, siteId, graphListId);
+    return columns.map((column) => ({ id: column.id, name: column.name, displayName: column.displayName }));
+  }
+
+  async listClassificationLibraries(organizationId: string, siteId: string): Promise<ClassificationLibraryResponse[]> {
+    const context = createTenantContext(organizationId);
+
+    const site = await context.sharePointSites.findFirstById(siteId);
+    if (!site) throw new NotFoundException('SharePoint site not found');
+
+    const tenant = await context.microsoftTenants.findFirstById(site.microsoftTenantId);
+    if (!tenant) throw new NotFoundException('Microsoft tenant not found');
+
+    let drives;
+    try {
+      drives = await collectAsync(listDrives(tenant.entraTenantId, site.graphSiteId, { correlationId: randomUUID() }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new ServiceUnavailableException(`Failed to read SharePoint document libraries: ${message}`);
+    }
+
+    const fields = await context.sharePointClassificationFields.findManyBySite(siteId);
+    const fieldsByListId = new Map<string, SharePointClassificationField[]>();
+    for (const field of fields) {
+      const list = fieldsByListId.get(field.graphListId) ?? [];
+      list.push(field);
+      fieldsByListId.set(field.graphListId, list);
+    }
+
+    const libraries: ClassificationLibraryResponse[] = [];
+    for (const drive of drives) {
+      const graphListId = drive.list?.id;
+      if (!graphListId) continue;
+      const libraryFields = fieldsByListId.get(graphListId) ?? [];
+      libraries.push({
+        graphListId,
+        driveId: drive.id,
+        name: drive.name,
+        fields: await Promise.all(libraryFields.map((field) => this.toClassificationFieldResponse(context, field))),
+      });
+    }
+    return libraries;
+  }
+
+  async designateClassificationField(
+    organizationId: string,
+    siteId: string,
+    graphListId: string,
+    columnDefinitionId: string,
+    confirmedByUserId: string,
+  ): Promise<ClassificationFieldResponse> {
+    const context = createTenantContext(organizationId);
+
+    // Re-validate the selection against the CURRENT live columns — never
+    // trust a client-remembered id — so the stored display-name snapshot is
+    // accurate and a vanished column can't be designated.
+    const columns = await this.resolveLibraryColumns(context, siteId, graphListId);
+    const column = columns.find((candidate) => candidate.id === columnDefinitionId);
+    if (!column) {
+      throw new BadRequestException('The selected column is not a valid column for this library.');
+    }
+
+    const field = await context.sharePointClassificationFields.upsertActive({
+      siteId,
+      graphListId,
+      columnDefinitionId: column.id,
+      columnDisplayNameAtConfirmation: column.displayName,
+      confirmedByUserId,
+    });
+
+    this.logger.log(
+      `ClassificationFieldDesignate succeeded organizationId=${organizationId} siteId=${siteId} graphListId=${graphListId} ` +
+        `columnDefinitionId=${column.id} columnDisplayName="${column.displayName}" confirmedByUserId=${confirmedByUserId}`,
+    );
+
+    return this.toClassificationFieldResponse(context, field);
+  }
+
+  async removeClassificationField(organizationId: string, siteId: string, fieldId: string): Promise<void> {
+    const context = createTenantContext(organizationId);
+
+    // Enforce site ownership as well as tenant scoping: the field must
+    // belong to this org (deleteById is org-scoped) AND to the site in the
+    // route, so a field can't be removed via another site's URL.
+    const siteFields = await context.sharePointClassificationFields.findManyBySite(siteId);
+    if (!siteFields.some((field) => field.id === fieldId)) {
+      throw new NotFoundException('Classification field not found for this site.');
+    }
+
+    const deleted = await context.sharePointClassificationFields.deleteById(fieldId);
+    if (!deleted) throw new NotFoundException('Classification field not found.');
+  }
+
+  private async toClassificationFieldResponse(
+    context: ReturnType<typeof createTenantContext>,
+    field: SharePointClassificationField,
+  ): Promise<ClassificationFieldResponse> {
+    const confirmedByUser = await context.users.findFirstById(field.confirmedByUserId);
+    return {
+      id: field.id,
+      siteId: field.siteId,
+      graphListId: field.graphListId,
+      columnDefinitionId: field.columnDefinitionId,
+      columnDisplayName: field.columnDisplayNameAtConfirmation,
+      status: field.status,
+      staleDetectedAt: field.staleDetectedAt?.toISOString() ?? null,
+      confirmedByUserId: field.confirmedByUserId,
+      confirmedByDisplayName: confirmedByUser?.displayName ?? null,
+      confirmedAt: field.confirmedAt.toISOString(),
+    };
+  }
+
+  // All non-hidden columns for a library (site + list columns merged,
+  // deduped by stable id). Unlike resolveDiscoveredCandidates, applies no
+  // review-date heuristic — classification columns are whatever the admin
+  // designates.
+  private async resolveLibraryColumns(
+    context: ReturnType<typeof createTenantContext>,
+    siteId: string,
+    graphListId: string,
+    correlationId: string = randomUUID(),
+  ): Promise<GraphColumnDefinition[]> {
+    const site = await context.sharePointSites.findFirstById(siteId);
+    if (!site) throw new NotFoundException('SharePoint site not found');
+
+    const tenant = await context.microsoftTenants.findFirstById(site.microsoftTenantId);
+    if (!tenant) throw new NotFoundException('Microsoft tenant not found');
+
+    const graphOptions = { correlationId };
+    let listColumnsResult: GraphColumnDefinition[];
+    let contentTypeColumns: GraphColumnDefinition[];
+    try {
+      listColumnsResult = await collectAsync(listColumns(tenant.entraTenantId, site.graphSiteId, graphListId, graphOptions));
+      const contentTypes = await collectAsync(listContentTypes(tenant.entraTenantId, site.graphSiteId, graphListId, graphOptions));
+      contentTypeColumns = contentTypes.flatMap((contentType) => contentType.columns ?? []);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new ServiceUnavailableException(`Failed to read SharePoint column metadata: ${message}`);
+    }
+
+    const byId = new Map<string, GraphColumnDefinition>();
+    for (const column of [...listColumnsResult, ...contentTypeColumns]) {
+      if (column.hidden === true) continue;
+      if (!byId.has(column.id)) byId.set(column.id, column);
+    }
+    return [...byId.values()];
   }
 
   // Structural, never a guess: 0 candidates is always an error regardless

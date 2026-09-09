@@ -1,10 +1,14 @@
-import { BadRequestException, Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, HttpCode, Param, Post, Query, UseGuards } from '@nestjs/common';
 import type { User } from '@sph/database';
 import type {
   ConfirmReviewDateMappingRequest,
   ReviewDateEligibilityResponse,
   ReviewDateLibraryResponse,
   ReviewDateMappingResponse,
+  ClassificationCandidateColumn,
+  ClassificationFieldResponse,
+  ClassificationLibraryResponse,
+  DesignateClassificationFieldRequest,
 } from '@sph/types';
 import { EntraJwtGuard } from '../auth/entra-jwt.guard';
 import { TenantContextGuard } from '../auth/tenant-context.guard';
@@ -69,5 +73,62 @@ export class SharePointMetadataController {
     @Param('siteId') siteId: string,
   ): Promise<ReviewDateLibraryResponse[]> {
     return this.sharePointMetadataService.listReviewDateLibraries(organizationId, siteId);
+  }
+
+  // ADR-0025: Taxonomy classification-field configuration. Read endpoints are
+  // unrestricted (inspection); mutations are Admin/GovernanceManager, the
+  // same tier as review-date confirm and owner writes.
+
+  @Get('sharepoint-sites/:siteId/classification-libraries')
+  async listClassificationLibraries(
+    @Param('id') organizationId: string,
+    @Param('siteId') siteId: string,
+  ): Promise<ClassificationLibraryResponse[]> {
+    return this.sharePointMetadataService.listClassificationLibraries(organizationId, siteId);
+  }
+
+  @Get('sharepoint-sites/:siteId/classification-candidates')
+  async listClassificationCandidates(
+    @Param('id') organizationId: string,
+    @Param('siteId') siteId: string,
+    @Query('graphListId') graphListId: string,
+  ): Promise<ClassificationCandidateColumn[]> {
+    if (!graphListId) {
+      throw new BadRequestException('graphListId is required');
+    }
+    return this.sharePointMetadataService.listClassificationCandidates(organizationId, siteId, graphListId);
+  }
+
+  @Post('sharepoint-sites/:siteId/classification-fields')
+  @UseGuards(RolesGuard)
+  @Roles('Admin', 'GovernanceManager')
+  async designateClassificationField(
+    @Param('id') organizationId: string,
+    @Param('siteId') siteId: string,
+    @CurrentUser() user: User,
+    @Body() body: DesignateClassificationFieldRequest,
+  ): Promise<ClassificationFieldResponse> {
+    if (!body?.graphListId || !body?.columnDefinitionId) {
+      throw new BadRequestException('graphListId and columnDefinitionId are required');
+    }
+    return this.sharePointMetadataService.designateClassificationField(
+      organizationId,
+      siteId,
+      body.graphListId,
+      body.columnDefinitionId,
+      user.id,
+    );
+  }
+
+  @Delete('sharepoint-sites/:siteId/classification-fields/:fieldId')
+  @UseGuards(RolesGuard)
+  @Roles('Admin', 'GovernanceManager')
+  @HttpCode(204)
+  async removeClassificationField(
+    @Param('id') organizationId: string,
+    @Param('siteId') siteId: string,
+    @Param('fieldId') fieldId: string,
+  ): Promise<void> {
+    await this.sharePointMetadataService.removeClassificationField(organizationId, siteId, fieldId);
   }
 }

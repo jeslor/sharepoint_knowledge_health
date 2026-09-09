@@ -54,6 +54,48 @@ export interface ReviewDateLibraryResponse {
 // 3A-1) covers a candidate whose name contains "review" but no
 // date-indicating word (e.g. "Document Review") — still just as
 // non-gating as every other tier; a human always confirms explicitly.
+// ADR-0025: Taxonomy classification-field configuration DTOs. A classification
+// field is a tenant-designated SharePoint column (per library) that counts
+// toward taxonomy coverage. Structurally parallel to the review-date mapping
+// DTOs above, but a library may have several, and candidates are NOT filtered
+// by any heuristic — the admin designates whichever columns are their
+// organizational classification scheme.
+
+// A column the admin can designate. id is the stable columnDefinitionId.
+export interface ClassificationCandidateColumn {
+  id: string;
+  name: string;
+  displayName: string;
+}
+
+export interface ClassificationFieldResponse {
+  id: string;
+  siteId: string;
+  graphListId: string;
+  columnDefinitionId: string;
+  columnDisplayName: string;
+  status: string; // 'Active' | 'Stale'
+  staleDetectedAt: string | null;
+  confirmedByUserId: string;
+  confirmedByDisplayName: string | null;
+  confirmedAt: string;
+}
+
+// A site's document libraries with the classification fields already
+// designated for each — mirrors ReviewDateLibraryResponse, but returns the
+// (possibly multiple) designated fields rather than a single mapping.
+export interface ClassificationLibraryResponse {
+  graphListId: string;
+  driveId: string;
+  name: string;
+  fields: ClassificationFieldResponse[];
+}
+
+export interface DesignateClassificationFieldRequest {
+  graphListId: string;
+  columnDefinitionId: string;
+}
+
 export type ReviewDateCandidateConfidence = 'high' | 'medium' | 'low' | 'ambiguous';
 
 export interface ReviewDateEligibilityColumn {
