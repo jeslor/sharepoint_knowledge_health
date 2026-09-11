@@ -29,5 +29,15 @@ export const REQUIRED_GRAPH_PERMISSIONS = {
  * whether a tenant is behind (ADR-0023 §3.4) — no separate read/write
  * version constants; the asymmetry lives entirely in which tenant-side
  * field is trusted for which claim, not in the requirement version itself.
+ *
+ * Version history:
+ *  - v1: Files.Read.All + Sites.Read.All (read-only MVP, ADR-0003).
+ *  - v2 (ADR-0003 amendment / ADR-0016 / ADR-0022 write-back MVP): adds
+ *    Sites.ReadWrite.All for review-date write-back. Every tenant that only
+ *    completed the v1 admin-consent redirect now correctly resolves as
+ *    behind (needsWriteConsentAssertion → needsReconsent) until an admin
+ *    re-consents to the enlarged set — which is exactly what gates the
+ *    write-back remediation feature from running against a tenant that has
+ *    not granted the write scope.
  */
-export const REQUIRED_PERMISSION_VERSION = 1;
+export const REQUIRED_PERMISSION_VERSION = 2;

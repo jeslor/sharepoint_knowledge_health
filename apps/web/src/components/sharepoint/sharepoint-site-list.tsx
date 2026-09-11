@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import type { SharePointSiteResponse, SharePointSiteStatusValue } from '@sph/types';
 import { EmptyState } from '@/components/ui/query-state';
-import { Button, type ButtonVariant } from '@/components/ui/button';
+import { Button, buttonClassName, type ButtonVariant } from '@/components/ui/button';
 import { SharePointSiteStatusBadge } from './sharepoint-site-status-badge';
 
 interface SharePointSiteListProps {
@@ -107,7 +107,7 @@ export function SharePointSiteList({
               </td>
               <td className="py-3">
                 {site.status === 'Approved' ? (
-                  <Link href={`/dashboard/sharepoint/${site.id}/review-dates`} className="text-slate-600 hover:text-slate-900 hover:underline">
+                  <Link href={`/dashboard/sharepoint/${site.id}/review-dates`} className={buttonClassName('secondary', 'sm')}>
                     Manage review dates
                   </Link>
                 ) : (

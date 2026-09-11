@@ -1,7 +1,7 @@
 # ADR-0025: Taxonomy Quality — Classification Coverage (V1)
 
 Date: 2026-09-08
-Status: Accepted (2026-09-08) — implemented for the scoring/collection/persistence/governance engine; the admin configuration API and UI are the remaining increment (see §9).
+Status: Accepted (2026-09-08); fully implemented (2026-09-09) — the scoring/collection/persistence/governance engine plus the admin configuration API, designation UI, and document-detail taxonomy presentation are all in place (see §9).
 
 ---
 
@@ -48,5 +48,7 @@ The new repository joins the central tenant-isolation sweep. The scoring rule is
 - **Rollout shift:** one-time composite change on first scan after deploy (flag to customers/support), matching ADR-0002's precedent.
 - **Single-document rescore** (`rescore-document.ts`, ADR-0022) does not re-measure taxonomy (compute-only, consulted per remediated criterion; Taxonomy is not a remediation target) — an accepted, documented limitation.
 
-## 9. Implementation status (2026-09-08)
-Implemented and validated: schema + migration; scoring rule + weights + composite; multi-column Graph read; database repository + tenant-isolation coverage; worker collection/join + Active/Stale lifecycle + `taxonomyScore` persistence; `@sph/types` criterion + labels; generic web governance integration (issue guidance, critical-issues card). **Remaining increment:** the admin configuration API (designate/list/remove classification fields per library) and its designation UI, plus the document-detail taxonomy badge and the "not configured vs 100% covered" presentation state — to be built next, reusing the review-date candidate/confirm pattern.
+## 9. Implementation status
+**2026-09-08 (engine):** schema + migration; scoring rule + weights + composite; multi-column Graph read; database repository + tenant-isolation coverage; worker collection/join + Active/Stale lifecycle + `taxonomyScore` persistence; `@sph/types` criterion + labels; generic web governance integration (issue guidance, critical-issues card).
+
+**2026-09-09 (product surface — completes the ADR):** the admin configuration API — `classification-libraries` (list designated fields per library), `classification-candidates` (list candidate columns), `POST classification-fields` (designate), `DELETE classification-fields/:fieldId` (remove) — reusing the review-date candidate/confirm pattern and its Admin/GovernanceManager authorization; the `ClassificationFieldManager` designation UI on the site Review Dates page; and the `DocumentTaxonomyCoverage` document-detail presentation with the three explicit states (`notConfigured` / `measured` / `notYetScored`), so a neutral 100 for an unconfigured library is never shown as measured coverage. An administrator can now configure classification fields entirely through the application, no DB/seed manipulation required.

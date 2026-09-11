@@ -69,10 +69,13 @@ describe('SharePointSiteList', () => {
     expect(screen.getByText('Never')).toBeInTheDocument();
   });
 
-  it('links to the review-dates page for an Approved site', () => {
+  it('renders a Manage review dates button linking to the review-dates page for an Approved site', () => {
     render(<SharePointSiteList sites={[site({ status: 'Approved' })]} canManage onApprove={jest.fn()} onRevoke={jest.fn()} mutatingSiteId={null} />);
 
-    expect(screen.getByRole('link', { name: 'Manage review dates' })).toHaveAttribute('href', '/dashboard/sharepoint/site-1/review-dates');
+    const link = screen.getByRole('link', { name: 'Manage review dates' });
+    expect(link).toHaveAttribute('href', '/dashboard/sharepoint/site-1/review-dates');
+    // Clearly-visible button styling (buttonClassName), not a plain text link.
+    expect(link).toHaveClass('rounded-lg');
   });
 
   it('does not link to review dates for a site that is not yet Approved', () => {
@@ -81,7 +84,7 @@ describe('SharePointSiteList', () => {
     expect(screen.queryByRole('link', { name: 'Manage review dates' })).not.toBeInTheDocument();
   });
 
-  it('still shows the review-dates link for an Approved site when canManage is false', () => {
+  it('still shows the Manage review dates button for an Approved site when canManage is false', () => {
     render(<SharePointSiteList sites={[site({ status: 'Approved' })]} canManage={false} onApprove={jest.fn()} onRevoke={jest.fn()} mutatingSiteId={null} />);
 
     expect(screen.getByRole('link', { name: 'Manage review dates' })).toBeInTheDocument();
