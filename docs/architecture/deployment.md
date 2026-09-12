@@ -41,17 +41,27 @@ requires redeploying the others.
     `handleRedirectPromise()` recognizes — keeping them as two distinct
     registered URIs avoids two different redirect-response shapes ever
     landing on the same page.
-- **API permissions** (ADR-0003), application (app-only), granted via
-  tenant-admin consent at each customer's onboarding — not delegated:
-  - `Files.Read.All`
-  - `Sites.Read.All`
-  - Deliberately **no** `Sites.ReadWrite.All` — this product only reads and
-    scores; there is no SharePoint write-back feature, and requesting
-    write scope would violate least privilege for no functional benefit.
+- **API permissions** (ADR-0003 + its amendments), application (app-only),
+  granted via tenant-admin consent at each customer's onboarding — not
+  delegated:
+  - `Files.Read.All` — read (scanning).
+  - `Sites.Read.All` — read (scanning).
+  - `Sites.ReadWrite.All` — **required for review-date write-back**
+    (ADR-0022 remediation / ADR-0016). This is the app's one SharePoint
+    write action: setting a document's mapped review-date column via
+    `PATCH .../listItem/fields`. Write-back is part of MVP (owner decision,
+    2026-09-12); `REQUIRED_PERMISSION_VERSION` is `2` (permission-state.ts),
+    so a tenant that consented before this scope was added correctly enters
+    the re-consent state (`needsReconsent`/`needsWriteConsent`) and the
+    remediation feature is gated off until an admin re-consents.
+  - Deliberately **no** `Files.ReadWrite.All` — write-back only touches
+    SharePoint list-item field values, never file content, so the file
+    write scope is not requested (least privilege).
 - One client secret (`ENTRA_CLIENT_SECRET`), rotated via Key Vault,
   consumed by `@sph/graph-client`'s MSAL client-credentials flow (used only
-  by `apps/worker` — `apps/api` only ever verifies incoming ID tokens, it
-  never acquires Graph tokens itself).
+  by `apps/worker` — both the read scans and the review-date write-back run
+  there; `apps/api` only ever verifies incoming ID tokens, it never
+  acquires Graph tokens itself).
 
 ## Required environment variables
 

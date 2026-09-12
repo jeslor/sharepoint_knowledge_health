@@ -8,6 +8,7 @@ let mockSearchParams = new URLSearchParams();
 const mockUseDocumentHealth = jest.fn();
 const mockUseSharePointSites = jest.fn();
 const mockUseCreateRemediationJob = jest.fn();
+const mockUseCurrentUser = jest.fn();
 
 jest.mock('next/navigation', () => ({
   useRouter: () => ({ push: mockPush }),
@@ -22,6 +23,9 @@ jest.mock('@/lib/api/hooks/use-sharepoint-sites', () => ({
 }));
 jest.mock('@/lib/api/hooks/use-create-remediation-job', () => ({
   useCreateRemediationJob: () => mockUseCreateRemediationJob(),
+}));
+jest.mock('@/lib/auth/current-user-context', () => ({
+  useCurrentUser: () => mockUseCurrentUser(),
 }));
 
 const eligibleDocument: DocumentHealthResponse = {
@@ -63,6 +67,7 @@ describe('DocumentsPage — P0-5 candidate selection', () => {
     });
     mockUseSharePointSites.mockReturnValue({ data: [] });
     mockUseCreateRemediationJob.mockReturnValue({ submit: jest.fn(), submitting: false, submitError: undefined });
+    mockUseCurrentUser.mockReturnValue({ user: { needsWriteConsent: false } });
   });
 
   it('renders no selection toolbar when nothing is selected', () => {
@@ -127,6 +132,17 @@ describe('DocumentsPage — P0-5 candidate selection', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: 'Select Employee Handbook.docx' }));
 
     expect(screen.getByRole('button', { name: 'Remediate review status' })).toBeInTheDocument();
+  });
+
+  it('gates the remediate action behind a write-consent notice when the tenant needs write re-consent (ADR-0022 write-back MVP)', () => {
+    mockUseCurrentUser.mockReturnValue({ user: { needsWriteConsent: true } });
+    render(<DocumentsPage />);
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select Employee Handbook.docx' }));
+
+    expect(screen.queryByRole('button', { name: 'Remediate review status' })).not.toBeInTheDocument();
+    expect(screen.getByText(/write-back is unavailable/i)).toBeInTheDocument();
+    expect(screen.getByText(/Sites\.ReadWrite\.All/)).toBeInTheDocument();
   });
 
   it('preserves a selection made on the current page when the document list is refetched (e.g. a later poll) with the same rows', () => {

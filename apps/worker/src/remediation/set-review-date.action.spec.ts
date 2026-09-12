@@ -131,7 +131,7 @@ describe('executeSetReviewDateAction (ADR-0022 Phase 3)', () => {
 
     const result = await executeSetReviewDateAction(context, makeDocument(), payload);
 
-    expect(result).toEqual({ outcome: 'verified' });
+    expect(result).toEqual({ outcome: 'verified', verifiedReviewDate: new Date('2026-12-01T00:00:00.000Z') });
     expect(mockedUpdateListItemFields).toHaveBeenCalledTimes(1);
   });
 
@@ -193,7 +193,7 @@ describe('executeSetReviewDateAction (ADR-0022 Phase 3)', () => {
       expect.anything(),
     );
     expect(mockedListItemFields).toHaveBeenCalledWith('entra-1', 'graph-site-1', 'list-1', 'RenamedReviewDate', expect.anything());
-    expect(result).toEqual({ outcome: 'verified' });
+    expect(result).toEqual({ outcome: 'verified', verifiedReviewDate: new Date('2026-12-01T00:00:00.000Z') });
   });
 
   it('6. sends the exact payload.nextReviewDueAt value in the PATCH body', async () => {
@@ -281,7 +281,7 @@ describe('executeSetReviewDateAction (ADR-0022 Phase 3)', () => {
 
     const result = await executeSetReviewDateAction(context, makeDocument(), payload); // payload has .000Z
 
-    expect(result).toEqual({ outcome: 'verified' });
+    expect(result).toEqual({ outcome: 'verified', verifiedReviewDate: new Date('2026-12-01T00:00:00.000Z') });
   });
 
   it('14. a propagated Graph error preserves the correlationId this action was given and threaded through every call', async () => {

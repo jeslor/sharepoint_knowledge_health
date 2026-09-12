@@ -17,6 +17,11 @@ export class MeController {
     const context = createTenantContext(user.organizationId);
     const [consentedTenant] = await context.microsoftTenants.findMany({ where: { status: 'Consented' }, take: 1 });
 
+    // ADR-0023 §3.4/§3.10: derived at read time from the same row already
+    // fetched above — no extra query. Both flags are false whenever there's
+    // no Consented tenant at all (nothing to reconsent).
+    const reconsent = consentedTenant ? derivePermissionReconsentState(consentedTenant) : null;
+
     return {
       id: user.id,
       role: user.role,
@@ -24,10 +29,12 @@ export class MeController {
       displayName: user.displayName,
       email: user.email,
       tenantName: consentedTenant?.tenantName ?? null,
-      // ADR-0023 §3.4/§3.10: derived at read time from the same row already
-      // fetched above — no extra query. false whenever there's no Consented
-      // tenant at all (nothing to reconsent).
-      needsReconsent: consentedTenant ? derivePermissionReconsentState(consentedTenant).needsReconsent : false,
+      needsReconsent: reconsent?.needsReconsent ?? false,
+      // ADR-0022 write-back MVP: the write-back-specific slice — gates the
+      // remediation UI so a doomed job (missing Sites.ReadWrite.All) is
+      // never submitted. The API remains the authoritative gate
+      // (RemediationService); this only drives proactive UI disabling.
+      needsWriteConsent: reconsent?.needsWriteConsentAssertion ?? false,
     };
   }
 }

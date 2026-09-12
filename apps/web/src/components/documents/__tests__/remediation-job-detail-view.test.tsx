@@ -23,9 +23,10 @@ function detail(overrides: Partial<RemediationJobDetailResponse> = {}): Remediat
     createdAt: '2026-08-01T00:00:00.000Z',
     completedAt: '2026-08-01T00:05:00.000Z',
     items: [
-      { documentId: 'doc-1', status: 'Succeeded', errorType: null, errorMessage: null, attemptCount: 1 },
+      { documentId: 'doc-1', documentName: 'Doc One.docx', status: 'Succeeded', errorType: null, errorMessage: null, attemptCount: 1 },
       {
         documentId: 'doc-2',
+        documentName: 'Doc Two.pdf',
         status: 'Failed',
         errorType: 'GraphNotFoundError',
         errorMessage: 'The item was not found',
@@ -71,8 +72,9 @@ describe('RemediationJobDetailView (P0-7)', () => {
     mockUseRemediationJob.mockReturnValue({ data: detail(), loading: false, error: undefined });
     render(<RemediationJobDetailView jobId="job-1" />);
 
-    expect(screen.getByRole('link', { name: 'doc-1' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'doc-2' })).toBeInTheDocument();
+    // ADR-0022 write-back MVP: rows now label by document name, linking by id.
+    expect(screen.getByRole('link', { name: 'Doc One.docx' })).toHaveAttribute('href', '/dashboard/documents/doc-1');
+    expect(screen.getByRole('link', { name: 'Doc Two.pdf' })).toHaveAttribute('href', '/dashboard/documents/doc-2');
     expect(screen.getByText(/GraphNotFoundError/)).toBeInTheDocument();
     expect(screen.getByText(/The item was not found/)).toBeInTheDocument();
   });

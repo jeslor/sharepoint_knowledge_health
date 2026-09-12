@@ -14,11 +14,11 @@ const STATUS_TONE: Record<RemediationItemStatusValue, BadgeTone> = {
   Skipped: 'warning',
 };
 
-// P0-7: RemediationItemResult only carries documentId (packages/types/src/
-// api/remediation.ts) — no documentName, unlike DocumentHealthResponse.
-// Rather than adding a backend field for this, each row links to the
-// existing document detail route, where the real name/context is already
-// shown; documentId itself doubles as the row's accessible label.
+// ADR-0022 write-back MVP: RemediationItemResult now carries documentName
+// (resolved server-side, tenant-scoped) so each row shows a human-readable
+// label instead of an opaque id. Falls back to the id when the document no
+// longer resolves (e.g. deleted after the job ran). Each row still links to
+// the document detail route for full context.
 export function RemediationItemList({ items }: { items: RemediationItemResult[] }): JSX.Element {
   if (items.length === 0) {
     return <EmptyState label="No items in this job." />;
@@ -39,7 +39,7 @@ export function RemediationItemList({ items }: { items: RemediationItemResult[] 
           <tr key={item.documentId} className="transition-colors duration-150 ease-premium hover:bg-slate-50">
             <td className="py-3 pr-4">
               <Link href={`/dashboard/documents/${item.documentId}`} className="text-slate-900 hover:underline">
-                {item.documentId}
+                {item.documentName ?? item.documentId}
               </Link>
             </td>
             <td className="py-3 pr-4">

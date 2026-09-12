@@ -3,6 +3,17 @@
 Date: 2026-08-20
 Status: Implemented (2026-08-21) — see §9 for exact deviations from the original design and full validation results.
 
+> **Lineage note (2026-09-12):** this ADR's re-consent model is now load-bearing
+> for the review-date write-back MVP (ADR-0022 / ADR-0003 2026-09-12 amendment).
+> `REQUIRED_PERMISSION_VERSION` moved `1 → 2` when `Sites.ReadWrite.All` became
+> required, so `derivePermissionReconsentState` now flags every v1-only tenant as
+> `needsReconsent`. The write-back feature reads the write-specific slice of this
+> exact model — `needsWriteConsentAssertion`, surfaced on `/auth/me` as
+> `needsWriteConsent` — to gate remediation (authoritatively in the API, and
+> proactively in the UI). No second consent concept was introduced; this is the
+> first consumer that acts on the write signal rather than only displaying a
+> combined banner.
+
 ---
 
 ## 1. Problem Statement
