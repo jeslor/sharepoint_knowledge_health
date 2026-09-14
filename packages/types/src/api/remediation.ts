@@ -62,6 +62,11 @@ export interface RemediationJobListQuery {
 
 export interface RemediationItemResult {
   documentId: string;
+  // ADR-0022 write-back MVP: the document's display name, resolved at read
+  // time from the tenant-scoped Document row, so the progress/detail UI can
+  // show a human-readable label instead of an opaque id. null only when the
+  // document no longer resolves (e.g. deleted after the job ran).
+  documentName: string | null;
   status: RemediationItemStatusValue;
   errorType: string | null;
   errorMessage: string | null;

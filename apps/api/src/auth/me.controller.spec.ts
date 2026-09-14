@@ -51,18 +51,34 @@ describe('MeController', () => {
       email: 'sarah@contoso.com',
       tenantName: 'Contoso Ltd.',
       needsReconsent: false,
+      needsWriteConsent: false,
     });
   });
 
-  it('returns tenantName: null and needsReconsent: false when there is no Consented Microsoft tenant', async () => {
+  it('returns tenantName: null and both reconsent signals false when there is no Consented Microsoft tenant', async () => {
     microsoftTenants.findMany.mockResolvedValue([]);
 
     const result = await controller.getMe(user());
 
     expect(result.tenantName).toBeNull();
     expect(result.needsReconsent).toBe(false);
+    expect(result.needsWriteConsent).toBe(false);
     // Nothing to derive a reconsent state from — must not be called at all.
     expect(mockedDerivePermissionReconsentState).not.toHaveBeenCalled();
+  });
+
+  it('exposes needsWriteConsent from the tenant row so the UI can gate write-back (ADR-0022 write-back MVP)', async () => {
+    const tenant = { tenantName: 'Contoso Ltd.', status: 'Consented', verifiedReadPermissionVersion: 2, consentAssertedPermissionVersion: 1 };
+    microsoftTenants.findMany.mockResolvedValue([tenant]);
+    mockedDerivePermissionReconsentState.mockReturnValue({
+      needsReadReconsent: false,
+      needsWriteConsentAssertion: true,
+      needsReconsent: true,
+    });
+
+    const result = await controller.getMe(user());
+
+    expect(result.needsWriteConsent).toBe(true);
   });
 
   it('derives needsReconsent from the connected tenant row (ADR-0023) rather than computing it inline', async () => {

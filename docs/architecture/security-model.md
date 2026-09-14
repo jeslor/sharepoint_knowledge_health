@@ -88,11 +88,17 @@ walkthrough.
 
 ## Least-privilege external access
 
-- Microsoft Graph: **application (app-only), read-only** permissions —
-  `Files.Read.All`, `Sites.Read.All` — granted via tenant-admin consent at
-  onboarding (ADR-0003). `Sites.ReadWrite.All` was explicitly evaluated and
-  rejected: there is no SharePoint write-back feature, so requesting write
-  scope would violate least privilege for zero functional benefit.
+- Microsoft Graph: **application (app-only)** permissions, granted via
+  tenant-admin consent at onboarding (ADR-0003 + 2026-09-12 amendment):
+  `Files.Read.All`, `Sites.Read.All` (read/scanning) and
+  **`Sites.ReadWrite.All`** (required for review-date write-back — ADR-0022;
+  permission version 2). Write-back is the app's single SharePoint write
+  action (setting a document's mapped review-date column via
+  `PATCH .../listItem/fields`); it is gated off (API-authoritative
+  `403`, plus a proactive UI notice) for any tenant that has not re-consented
+  to the write scope. **`Files.ReadWrite.All` is deliberately NOT requested** —
+  write-back never touches file content, only list-item field values, so the
+  file-write scope would violate least privilege for zero functional benefit.
 - Scan scope is further narrowed at the application layer: only
   `SharePointSite`s an Admin has explicitly set to `Approved` are ever
   enumerated (ADR-0014) — the Graph permission grants tenant-wide read

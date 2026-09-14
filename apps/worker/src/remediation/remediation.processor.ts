@@ -78,6 +78,24 @@ export class RemediationProcessor extends WorkerHost {
       return;
     }
 
+    // ADR-0022 write-back MVP: defense in depth. The API already restricts
+    // job creation to ReviewStatus (RemediationService), but this processor
+    // unconditionally dispatches executeSetReviewDateAction — so a job of any
+    // other issueType (a pre-existing row, or one inserted outside the API)
+    // must never reach Graph. Skip all its items and finalize, never write.
+    if (remediationJob.issueType !== 'ReviewStatus') {
+      this.logger.warn(
+        `RemediationJob ${remediationJobId} has unsupported issueType ${remediationJob.issueType} — skipping all items ` +
+          `(only ReviewStatus write-back is supported).`,
+      );
+      await context.remediationItems.markSkippedForJob(remediationJobId, {
+        errorType: 'UnsupportedIssueType',
+        errorMessage: `Remediation for issueType ${remediationJob.issueType} is not supported`,
+      });
+      await this.finalizeIfComplete(context, remediationJobId);
+      return;
+    }
+
     const payload = this.parseActionPayload(remediationJob);
     const entraTenantId = await this.resolveEntraTenantId(context);
 
@@ -155,7 +173,19 @@ export class RemediationProcessor extends WorkerHost {
 
       if (result.outcome === 'verified') {
         await context.remediationItems.updateById(item.id, { status: 'Succeeded', attemptCount: { increment: 1 } });
-        await this.tryResolveGovernance(context, remediationJob, document);
+        // ADR-0022 write-back MVP: synchronize local Document state from the
+        // verified SharePoint value BEFORE rescoring, so the ReviewStatus
+        // HealthIssue resolves immediately instead of waiting for the next
+        // full scan's sync. Strict ordering: Graph PATCH -> Graph re-read
+        // verification (both already done inside the action) -> local sync ->
+        // rescore -> governance resolution. A local-sync failure is
+        // non-fatal — the write genuinely succeeded and the item is already,
+        // correctly, Succeeded; it only defers governance resolution to the
+        // next scan (same failure-mode class as a rescoring failure).
+        const syncedDocument = await this.syncLocalReviewDate(context, document, result.verifiedReviewDate);
+        if (syncedDocument) {
+          await this.tryResolveGovernance(context, remediationJob, syncedDocument);
+        }
       } else {
         // Write succeeded, verification did not confirm it — ADR-0022
         // §13.3: stays Pending (retryable), never Failed, never Succeeded.
@@ -232,6 +262,35 @@ export class RemediationProcessor extends WorkerHost {
    * never re-derived from anything except what was captured at job-creation
    * time (ADR-0022 §8, unchanged).
    */
+  /**
+   * ADR-0022 write-back MVP: persists the verified SharePoint review date
+   * into the local Document so the immediately-following rescore reads the
+   * new value (not the stale pre-write one) and the ReviewStatus HealthIssue
+   * can actually resolve. Called ONLY after the action reported a verified
+   * write — never on a bare PATCH success or an unverified result. Sets
+   * reviewDateSource to GraphMetadata, exactly as the full-scan sync
+   * (syncConfirmedReviewDateMapping) would, since the value is now sourced
+   * from the confirmed SharePoint column. updateById is org-scoped by
+   * construction (tenant/document-scoped). Returns the updated Document, or
+   * null if the update did not persist (document vanished, or a transient DB
+   * error) — in which case the caller skips governance resolution and it
+   * self-heals on the next scan; the item's Succeeded status is unaffected.
+   */
+  private async syncLocalReviewDate(context: TenantContext, document: Document, verifiedReviewDate: Date): Promise<Document | null> {
+    try {
+      return await context.documents.updateById(document.id, {
+        nextReviewDueAt: verifiedReviewDate,
+        reviewDateSource: 'GraphMetadata',
+      });
+    } catch (error) {
+      this.logger.error(
+        `Local review-date sync failed for document ${document.id} after a verified write — governance left unresolved until next scan: ${errorMessage(error)}`,
+        errorStack(error),
+      );
+      return null;
+    }
+  }
+
   private async tryResolveGovernance(context: TenantContext, remediationJob: RemediationJob, document: Document): Promise<void> {
     let scoreResult;
     try {

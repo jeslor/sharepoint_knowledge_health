@@ -1,9 +1,10 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import {
   createRemediationJobWithItems,
   createTenantContext,
+  derivePermissionReconsentState,
   type RemediationItem,
   type RemediationJob,
   type TenantContext,
@@ -25,6 +26,15 @@ import { AuditLogService } from '../audit-log/audit-log.service';
 
 const MAX_DOCUMENT_IDS = 500;
 const DEFAULT_PAGE_SIZE = 25;
+
+// ADR-0022 write-back MVP: the ONLY remediation action that exists is
+// review-date write-back, and the worker unconditionally dispatches it
+// (executeSetReviewDateAction) regardless of issueType — so any other
+// issueType would silently attempt a review-date write for an unrelated
+// criterion. Until a genuine action registry exists (explicitly deferred),
+// job creation is restricted here to the one supported type, and the worker
+// re-guards the same invariant defensively.
+const SUPPORTED_ISSUE_TYPES: readonly string[] = ['ReviewStatus'];
 
 // Same rationale as scans.service.ts's SCAN_ENQUEUE_TIMEOUT_MS — ioredis's
 // maxRetriesPerRequest is a periodic, connection-wide retry counter, not a
@@ -64,6 +74,22 @@ export class RemediationService {
     if (!request?.issueType) {
       throw new BadRequestException('issueType is required');
     }
+    if (!SUPPORTED_ISSUE_TYPES.includes(request.issueType)) {
+      throw new BadRequestException(
+        `Unsupported remediation issueType "${request.issueType}" — the only supported write-back action is ReviewStatus.`,
+      );
+    }
+
+    // ADR-0022 write-back MVP / ADR-0023: authoritative pre-flight gate — a
+    // remediation job PATCHes SharePoint, which needs Sites.ReadWrite.All
+    // (permission version 2). If the tenant has not completed the
+    // admin-consent redirect for the current required version, every write
+    // is guaranteed to fail, so the job is rejected before any DB write or
+    // enqueue rather than producing a job of all-Failed items. The UI also
+    // gates on this (MeResponse.needsWriteConsent), but the API is the
+    // authoritative check — never relies on the UI disabling alone.
+    await this.assertWriteConsent(context);
+
     const nextReviewDueAt = this.parseReviewDate(request.nextReviewDueAt);
 
     const rawDocumentIds = request.documentIds ?? [];
@@ -202,7 +228,37 @@ export class RemediationService {
     const items = await context.remediationItems.findMany({ where: { remediationJobId } });
     const [summary] = await this.toSummaries(context, [job], items);
 
-    return { ...summary!, items: items.map((item) => this.toItemResult(item)) };
+    // ADR-0022 write-back MVP: resolve document display names in one batched,
+    // tenant-scoped query (never N+1) so the progress UI shows a readable
+    // label. A document deleted after the job ran simply resolves to null.
+    const documentIds = [...new Set(items.map((item) => item.documentId))];
+    const documents = documentIds.length > 0 ? await context.documents.findMany({ where: { id: { in: documentIds } } }) : [];
+    const documentNameById = new Map(documents.map((document) => [document.id, document.name]));
+
+    return { ...summary!, items: items.map((item) => this.toItemResult(item, documentNameById)) };
+  }
+
+  /**
+   * ADR-0022 write-back MVP / ADR-0023: rejects job creation when the
+   * connected tenant has not completed admin consent for the current
+   * required permission version (the one that includes Sites.ReadWrite.All).
+   * Uses the same first-Consented-tenant resolution the worker uses to
+   * acquire its Graph token (RemediationProcessor.resolveEntraTenantId) and
+   * the same derivePermissionReconsentState signal the /auth/me UI gate
+   * reads — one consent concept, not a second. A tenant behind on write
+   * consent gets a clear ForbiddenException naming the required scope.
+   */
+  private async assertWriteConsent(context: TenantContext): Promise<void> {
+    const [tenant] = await context.microsoftTenants.findMany({ where: { status: 'Consented' }, take: 1 });
+    if (!tenant) {
+      throw new ForbiddenException('No connected Microsoft 365 tenant — an administrator must connect and consent first.');
+    }
+    if (derivePermissionReconsentState(tenant).needsWriteConsentAssertion) {
+      throw new ForbiddenException(
+        'SharePoint write-back requires the Sites.ReadWrite.All permission. An administrator must re-consent to Microsoft 365 ' +
+          'permissions before running remediation.',
+      );
+    }
   }
 
   // Same date-format-validation semantics as documents.controller.ts's
@@ -342,9 +398,10 @@ export class RemediationService {
     return typeof raw === 'string' ? raw : null;
   }
 
-  private toItemResult(item: RemediationItem): RemediationItemResult {
+  private toItemResult(item: RemediationItem, documentNameById: Map<string, string>): RemediationItemResult {
     return {
       documentId: item.documentId,
+      documentName: documentNameById.get(item.documentId) ?? null,
       status: item.status,
       errorType: item.errorType,
       errorMessage: item.errorMessage,

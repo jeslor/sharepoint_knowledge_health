@@ -16,6 +16,7 @@ import { Toast } from '@/components/ui/toast';
 import { useCreateRemediationJob } from '@/lib/api/hooks/use-create-remediation-job';
 import { useDocumentHealth } from '@/lib/api/hooks/use-document-health';
 import { useSharePointSites } from '@/lib/api/hooks/use-sharepoint-sites';
+import { useCurrentUser } from '@/lib/auth/current-user-context';
 
 function DocumentsPageContent(): JSX.Element {
   const router = useRouter();
@@ -36,6 +37,14 @@ function DocumentsPageContent(): JSX.Element {
 
   const { data, loading, error } = useDocumentHealth(query);
   const { data: sites } = useSharePointSites();
+  const { user } = useCurrentUser();
+
+  // ADR-0022 write-back MVP: review-date remediation PATCHes SharePoint, which
+  // needs Sites.ReadWrite.All (permission version 2). When the tenant hasn't
+  // re-consented, the API rejects the job (authoritative gate) — this only
+  // prevents the user from submitting a doomed job and explains why. Not a
+  // security control: the server is.
+  const writeBackBlocked = user?.needsWriteConsent ?? false;
 
   // P0-5 (ADR-0022 Phase 7): kept local to this page rather than a new
   // global store — a plain Set survives pagination/filtering on its own
@@ -144,7 +153,14 @@ function DocumentsPageContent(): JSX.Element {
         onChange={handleFilterChange}
       />
       <BulkActionToolbar selectedCount={selectedDocumentIds.size} onClearSelection={handleClearSelection}>
-        <Button onClick={handleRemediateSelected}>Remediate review status</Button>
+        {writeBackBlocked ? (
+          <span className="text-sm text-slate-600">
+            Review-date write-back is unavailable — an administrator must grant the Microsoft 365 Sites.ReadWrite.All permission
+            (re-consent) before remediation can run.
+          </span>
+        ) : (
+          <Button onClick={handleRemediateSelected}>Remediate review status</Button>
+        )}
       </BulkActionToolbar>
       {loading && <LoadingState label="Loading documents…" />}
       {error && <ErrorState error={error} />}

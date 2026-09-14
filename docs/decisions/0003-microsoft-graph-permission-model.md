@@ -1,7 +1,11 @@
 # ADR-0003: Microsoft Graph Permission Model
 
 Date: 2026-07-11
-Status: Accepted (updated 2026-07-11 with Entra ID application tenancy model)
+Status: Accepted (updated 2026-07-11 with Entra ID application tenancy model).
+Superseded in part by the 2026-09-12 amendment below: the original "read-only,
+no `Sites.ReadWrite.All`" MVP scope no longer holds — review-date write-back is
+now an MVP feature and `Sites.ReadWrite.All` is a required scope at permission
+version 2. The read-only sections above are retained as historical context.
 
 ---
 
@@ -644,3 +648,58 @@ now have an exact mechanism, not just a description:
    right shape) are ready to be made — but still not decided by this
    investigation itself; that is deliberately the next, separate
    conversation.
+
+## Amendment (2026-09-12 — review-date write-back is now MVP; Sites.ReadWrite.All required at permission version 2)
+
+Owner decision (2026-09-12): SharePoint review-date **write-back is part of
+MVP**, not a deferred Phase 3A-2. This activates the write scope this ADR's
+2026-08-13 amendment already designed and the re-consent mechanics its
+2026-08-20 investigations validated. It supersedes the original "read-only,
+drop `Sites.ReadWrite.All`" recommendation for MVP.
+
+### Permission model (authoritative)
+
+- **Required scopes**, application (app-only), admin-consented:
+  `Files.Read.All`, `Sites.Read.All`, **`Sites.ReadWrite.All`**.
+- **`Files.ReadWrite.All` is NOT required** and must not be requested —
+  write-back only PATCHes SharePoint **list-item field values**
+  (`.../listItem/fields`), never file content. Least privilege stands, just
+  at a larger-but-still-minimal set.
+- Still app-only (never delegated); still one multi-tenant app registration.
+
+### Version + re-consent integration (ADR-0023 lineage)
+
+`REQUIRED_PERMISSION_VERSION` moves `1 → 2` (`packages/database/src/graph-permissions.ts`).
+Because `derivePermissionReconsentState` compares a tenant's recorded
+`verifiedReadPermissionVersion`/`consentAssertedPermissionVersion` against
+this constant, every tenant that only completed the v1 consent now resolves
+as behind: `needsWriteConsentAssertion → needsReconsent`. Consistent with
+this ADR's "no pre-flight probe" stance, the effective write grant is still
+not synthetically probed — the best available signal (the admin completed
+the admin-consent redirect for the current required set, which is
+all-or-nothing) is what gates the feature.
+
+### How the feature is gated (defense in depth)
+
+- **API (authoritative):** `RemediationService.createRemediationJob` rejects
+  with `403 Forbidden` when the connected tenant's `needsWriteConsentAssertion`
+  is true, before any DB write or enqueue — no doomed job is ever created.
+- **UI (proactive only):** `/auth/me` exposes `needsWriteConsent`; the
+  documents page replaces the "Remediate review status" action with a
+  "grant Sites.ReadWrite.All / re-consent" notice. Never the security
+  boundary — the API is.
+- If a write is nonetheless attempted without the grant, the first real
+  PATCH returns `403 → GraphPermissionError`, surfaced as a per-item
+  `Failed` in the existing partial-failure model — exactly as the 2026-08-13
+  amendment intended.
+
+### Scope of the write feature (unchanged, narrow)
+
+Exactly one write action exists: setting a document's mapped review-date
+column for documents an admin explicitly selected (ADR-0022). No other
+SharePoint writes are implemented; a generic action registry is deliberately
+not built yet. Docs to keep reconciled with this decision: ADR-0013 §8 (the
+`graph-client` surface is read-only except the one sanctioned
+`updateListItemFields`), ADR-0016 (its "a scope ADR-0003 declined" notes now
+resolve to "granted at v2"), `docs/architecture/deployment.md`, and
+`docs/architecture/security-model.md`.

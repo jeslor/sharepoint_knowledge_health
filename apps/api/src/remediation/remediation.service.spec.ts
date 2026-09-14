@@ -1,10 +1,17 @@
-import { BadRequestException } from '@nestjs/common';
-import { createRemediationJobWithItems, createTenantContext } from '@sph/database';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import { createRemediationJobWithItems, createTenantContext, REQUIRED_PERMISSION_VERSION } from '@sph/database';
 import type { Queue } from 'bullmq';
 import { RemediationService } from './remediation.service';
 import { AuditLogService } from '../audit-log/audit-log.service';
 
-jest.mock('@sph/database');
+// Keep derivePermissionReconsentState/REQUIRED_PERMISSION_VERSION real (the
+// write-consent pre-flight gate depends on the genuine version-comparison
+// logic), while stubbing the two DB entry points the service actually calls.
+jest.mock('@sph/database', () => ({
+  ...jest.requireActual('@sph/database'),
+  createTenantContext: jest.fn(),
+  createRemediationJobWithItems: jest.fn(),
+}));
 
 const mockedCreateContext = createTenantContext as jest.MockedFunction<typeof createTenantContext>;
 const mockedCreateJobWithItems = createRemediationJobWithItems as jest.MockedFunction<typeof createRemediationJobWithItems>;
@@ -25,6 +32,7 @@ describe('RemediationService', () => {
   const remediationItems = { markSkippedForJob: jest.fn(), findMany: jest.fn(), groupByStatusForJobs: jest.fn() };
   const remediationJobs = { updateById: jest.fn(), findMany: jest.fn(), count: jest.fn(), findFirstById: jest.fn() };
   const users = { findMany: jest.fn() };
+  const microsoftTenants = { findMany: jest.fn() };
   const queue = { add: jest.fn() };
   const auditLog = { record: jest.fn() } as unknown as jest.Mocked<AuditLogService>;
 
@@ -38,8 +46,14 @@ describe('RemediationService', () => {
       remediationItems,
       remediationJobs,
       users,
+      microsoftTenants,
     } as never);
     queue.add.mockResolvedValue(undefined); // enqueue succeeds by default
+    // Default: a fully re-consented tenant at the current required version, so
+    // the write-consent pre-flight gate passes unless a test overrides it.
+    microsoftTenants.findMany.mockResolvedValue([
+      { status: 'Consented', verifiedReadPermissionVersion: REQUIRED_PERMISSION_VERSION, consentAssertedPermissionVersion: REQUIRED_PERMISSION_VERSION },
+    ]);
     documents.findMany.mockResolvedValue([scoredDocument('doc-1'), scoredDocument('doc-2')]);
     healthIssues.findMany.mockResolvedValue([
       { healthScoreId: 'score-doc-1', criterion: 'ReviewStatus' },
@@ -69,6 +83,21 @@ describe('RemediationService', () => {
       ).rejects.toThrow(BadRequestException);
       expect(mockedCreateJobWithItems).not.toHaveBeenCalled();
     });
+
+    // ADR-0022 write-back MVP §4: the only supported write action is
+    // ReviewStatus; any other issueType is rejected at the service boundary
+    // so the worker (which unconditionally runs set-review-date) can never
+    // execute a review-date write for an unrelated criterion.
+    it.each(['Metadata', 'Ownership', 'Freshness', 'Duplication', 'Age'] as const)(
+      'rejects unsupported issueType %s before any DB write or enqueue',
+      async (issueType) => {
+        await expect(
+          service.createRemediationJob('org-1', 'user-1', 'Admin', { ...defaultRequest, issueType }),
+        ).rejects.toThrow(BadRequestException);
+        expect(mockedCreateJobWithItems).not.toHaveBeenCalled();
+        expect(queue.add).not.toHaveBeenCalled();
+      },
+    );
 
     it('throws when documentIds is empty', async () => {
       await expect(
@@ -127,6 +156,37 @@ describe('RemediationService', () => {
       expect(mockedCreateJobWithItems).toHaveBeenCalledWith(
         expect.objectContaining({ payload: { nextReviewDueAt: defaultRequest.nextReviewDueAt } }),
       );
+    });
+  });
+
+  describe('write-consent pre-flight gate (ADR-0022 write-back MVP / ADR-0023)', () => {
+    it('rejects job creation when the tenant has not consented at the current required version (needs write re-consent)', async () => {
+      microsoftTenants.findMany.mockResolvedValue([
+        // read verified, but consent asserted only at the previous version —
+        // i.e. Sites.ReadWrite.All has not been granted for version 2.
+        { status: 'Consented', verifiedReadPermissionVersion: REQUIRED_PERMISSION_VERSION, consentAssertedPermissionVersion: REQUIRED_PERMISSION_VERSION - 1 },
+      ]);
+
+      await expect(service.createRemediationJob('org-1', 'user-1', 'Admin', defaultRequest)).rejects.toThrow(ForbiddenException);
+      expect(mockedCreateJobWithItems).not.toHaveBeenCalled();
+      expect(queue.add).not.toHaveBeenCalled();
+    });
+
+    it('rejects job creation when there is no connected Microsoft tenant', async () => {
+      microsoftTenants.findMany.mockResolvedValue([]);
+
+      await expect(service.createRemediationJob('org-1', 'user-1', 'Admin', defaultRequest)).rejects.toThrow(ForbiddenException);
+      expect(mockedCreateJobWithItems).not.toHaveBeenCalled();
+      expect(queue.add).not.toHaveBeenCalled();
+    });
+
+    it('allows job creation when the tenant is consented at the current required version', async () => {
+      // microsoftTenants default (beforeEach) is already at the current
+      // version — a job is created and enqueued normally.
+      await service.createRemediationJob('org-1', 'user-1', 'Admin', defaultRequest);
+
+      expect(mockedCreateJobWithItems).toHaveBeenCalledTimes(1);
+      expect(queue.add).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -431,6 +491,12 @@ describe('RemediationService', () => {
         },
       ]);
       users.findMany.mockResolvedValue([{ id: 'user-1', displayName: 'Ada Admin' }]);
+      // ADR-0022 write-back MVP: item results resolve the document display
+      // name from a batched, tenant-scoped Document lookup.
+      documents.findMany.mockResolvedValue([
+        { id: 'doc-1', name: 'Doc One.docx' },
+        { id: 'doc-2', name: 'Doc Two.pdf' },
+      ]);
 
       const result = await service.getRemediationJob('org-1', 'job-1');
 
@@ -449,8 +515,15 @@ describe('RemediationService', () => {
         createdAt: new Date('2026-01-01T00:00:00.000Z').toISOString(),
         completedAt: new Date('2026-01-02T00:00:00.000Z').toISOString(),
         items: [
-          { documentId: 'doc-1', status: 'Succeeded', errorType: null, errorMessage: null, attemptCount: 1 },
-          { documentId: 'doc-2', status: 'Failed', errorType: 'GraphNotFoundError', errorMessage: 'The item was not found', attemptCount: 2 },
+          { documentId: 'doc-1', documentName: 'Doc One.docx', status: 'Succeeded', errorType: null, errorMessage: null, attemptCount: 1 },
+          {
+            documentId: 'doc-2',
+            documentName: 'Doc Two.pdf',
+            status: 'Failed',
+            errorType: 'GraphNotFoundError',
+            errorMessage: 'The item was not found',
+            attemptCount: 2,
+          },
         ],
       });
     });

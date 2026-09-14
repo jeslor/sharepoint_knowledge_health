@@ -5,6 +5,7 @@ import { RemediationItemList } from '../remediation-item-list';
 function item(overrides: Partial<RemediationItemResult> = {}): RemediationItemResult {
   return {
     documentId: 'doc-1',
+    documentName: null,
     status: 'Succeeded',
     errorType: null,
     errorMessage: null,
@@ -30,6 +31,17 @@ describe('RemediationItemList (P0-7)', () => {
     render(<RemediationItemList items={[item({ documentId: 'doc-42' })]} />);
 
     expect(screen.getByRole('link', { name: 'doc-42' })).toHaveAttribute('href', '/dashboard/documents/doc-42');
+  });
+
+  it('shows the document name as the row label when available, falling back to the id when not', () => {
+    render(
+      <RemediationItemList
+        items={[item({ documentId: 'doc-42', documentName: 'Expense Policy FINAL.docx' }), item({ documentId: 'doc-99', documentName: null })]}
+      />,
+    );
+
+    expect(screen.getByRole('link', { name: 'Expense Policy FINAL.docx' })).toHaveAttribute('href', '/dashboard/documents/doc-42');
+    expect(screen.getByRole('link', { name: 'doc-99' })).toHaveAttribute('href', '/dashboard/documents/doc-99');
   });
 
   it('shows an em dash for the error column when there is no error', () => {

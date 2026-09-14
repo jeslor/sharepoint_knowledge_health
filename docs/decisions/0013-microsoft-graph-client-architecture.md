@@ -169,6 +169,16 @@ function getDocument(entraTenantId: string, driveId: string, itemId: string, opt
 
 No `create`/`update`/`delete` functions exist anywhere in this module's surface — read-only is enforced by the public API shape itself, not just by the granted Graph permissions.
 
+> **Amendment (2026-09-12 — review-date write-back MVP, ADR-0022/0003):** this
+> is no longer strictly true. Exactly **one** write function now exists,
+> `updateListItemFields` (`packages/graph-client/src/documents.ts`), used only
+> by the review-date remediation action to `PATCH .../listItem/fields`. It is
+> the single, deliberate exception to the read-only surface — every other
+> function remains read-only, and no general create/update/delete capability
+> was added. The "read-only enforced by API shape" principle still holds for
+> the rest of the module; the write surface is intentionally this one narrow,
+> named function requiring `Sites.ReadWrite.All` (permission version 2).
+
 ### 9. Reusable, product-independent public API
 
 **`packages/graph-client`'s public API must be completely independent of SharePoint Knowledge Health as a product.** It should read like a general-purpose Microsoft Graph SDK wrapper that any application needing app-only, multi-tenant Graph access could use — not a module shaped around our specific scan pipeline. Concretely:

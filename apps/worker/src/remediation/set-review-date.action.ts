@@ -37,9 +37,15 @@ export interface SetReviewDateActionPayload {
  * touch that enum) — it only reports what it observed; Phase 4 owns the
  * "unverified stays Pending" decision (§13.3).
  */
-export interface SetReviewDateActionResult {
-  outcome: 'verified' | 'unverified';
-}
+export type SetReviewDateActionResult =
+  // 'verified' carries the exact review date read back from SharePoint (the
+  // value the caller must synchronize into the local Document — ADR-0022
+  // write-back MVP, so governance can resolve immediately rather than
+  // waiting for the next full scan's sync). It equals the requested value by
+  // definition of verification, but is taken from the Graph re-read so the
+  // local state mirrors what SharePoint actually persisted.
+  | { outcome: 'verified'; verifiedReviewDate: Date }
+  | { outcome: 'unverified' };
 
 /**
  * ADR-0022 §3.2's action shape (execute(context, document, payload) →
@@ -146,5 +152,6 @@ export async function executeSetReviewDateAction(
   const verified =
     rawValue !== undefined && rawValue !== null && new Date(String(rawValue)).getTime() === new Date(payload.nextReviewDueAt).getTime();
 
-  return { outcome: verified ? 'verified' : 'unverified' };
+  if (!verified) return { outcome: 'unverified' };
+  return { outcome: 'verified', verifiedReviewDate: new Date(String(rawValue)) };
 }

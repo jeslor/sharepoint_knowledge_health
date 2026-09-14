@@ -75,6 +75,18 @@ function createFakeRemediationItemsRepo(initial: FakeItemRow[]) {
       Object.assign(row, patch);
       return { ...row };
     }),
+    // ADR-0022 write-back MVP: the unsupported-issueType guard skips every
+    // Pending item in one call (mirrors the real repository method the
+    // service's enqueue-failure path also uses).
+    markSkippedForJob: jest.fn(async (_jobId: string, data: { errorType: string; errorMessage: string }) => {
+      for (const r of rows.values()) {
+        if (r.status === 'Pending') {
+          r.status = 'Skipped';
+          r.errorType = data.errorType;
+          r.errorMessage = data.errorMessage;
+        }
+      }
+    }),
     rows,
   };
 }
@@ -136,14 +148,26 @@ describe('RemediationProcessor (ADR-0022 Phase 4)', () => {
     itemsRepo: ReturnType<typeof createFakeRemediationItemsRepo>,
     jobsRepo: ReturnType<typeof createFakeRemediationJobsRepo>,
     documents: Record<string, ReturnType<typeof makeDocument> | undefined> = {},
-  ): void {
+  ) {
+    const documentsRepo = {
+      findFirstById: jest.fn(async (id: string) => documents[id] ?? null),
+      // ADR-0022 write-back MVP: the verified path syncs local state before
+      // rescoring — return the merged row so syncedDocument is truthy and
+      // governance resolution proceeds. Returned from wireContext so tests
+      // can assert whether (and with what) local sync was attempted.
+      updateById: jest.fn(async (id: string, data: Record<string, unknown>) => {
+        const doc = documents[id];
+        return doc ? { ...doc, ...data } : null;
+      }),
+    };
     mockedCreateTenantContext.mockReturnValue({
       organizationId: 'org-1',
       remediationJobs: jobsRepo,
       remediationItems: itemsRepo,
-      documents: { findFirstById: jest.fn(async (id: string) => documents[id] ?? null) },
+      documents: documentsRepo,
       microsoftTenants: { findMany: jest.fn().mockResolvedValue([{ entraTenantId: 'entra-1' }]) },
     } as never);
+    return { documentsRepo };
   }
 
   it('1. does nothing when the RemediationJob does not exist', async () => {
@@ -193,7 +217,7 @@ describe('RemediationProcessor (ADR-0022 Phase 4)', () => {
     const jobsRepo = createFakeRemediationJobsRepo({ id: 'job-1', organizationId: 'org-1', status: 'Running', payload: defaultPayload });
     const itemsRepo = createFakeRemediationItemsRepo([makeItem({ id: 'item-1', documentId: 'doc-1' })]);
     wireContext(itemsRepo, jobsRepo, { 'doc-1': makeDocument('doc-1') });
-    mockedExecuteAction.mockResolvedValue({ outcome: 'verified' });
+    mockedExecuteAction.mockResolvedValue({ outcome: 'verified', verifiedReviewDate: new Date('2026-12-01T00:00:00.000Z') });
 
     await processor.process(job({ organizationId: 'org-1', remediationJobId: 'job-1' }));
 
@@ -212,7 +236,7 @@ describe('RemediationProcessor (ADR-0022 Phase 4)', () => {
       makeItem({ id: 'item-pending', status: 'Pending', documentId: 'doc-new' }),
     ]);
     wireContext(itemsRepo, jobsRepo, { 'doc-new': makeDocument('doc-new') });
-    mockedExecuteAction.mockResolvedValue({ outcome: 'verified' });
+    mockedExecuteAction.mockResolvedValue({ outcome: 'verified', verifiedReviewDate: new Date('2026-12-01T00:00:00.000Z') });
 
     await processor.process(job({ organizationId: 'org-1', remediationJobId: 'job-1' }));
 
@@ -243,7 +267,7 @@ describe('RemediationProcessor (ADR-0022 Phase 4)', () => {
       makeItem({ id: 'item-c', documentId: 'doc-c' }),
     ]);
     wireContext(itemsRepo, jobsRepo, { 'doc-a': makeDocument('doc-a'), 'doc-b': makeDocument('doc-b'), 'doc-c': makeDocument('doc-c') });
-    mockedExecuteAction.mockResolvedValue({ outcome: 'verified' });
+    mockedExecuteAction.mockResolvedValue({ outcome: 'verified', verifiedReviewDate: new Date('2026-12-01T00:00:00.000Z') });
 
     // The "resumed" invocation — a fresh BullMQ retry of the same job after
     // the crash, reloading state fresh from Postgres rather than trusting
@@ -275,7 +299,7 @@ describe('RemediationProcessor (ADR-0022 Phase 4)', () => {
       maxConcurrent = Math.max(maxConcurrent, concurrent);
       await new Promise((resolve) => setTimeout(resolve, 5));
       concurrent -= 1;
-      return { outcome: 'verified' };
+      return { outcome: 'verified', verifiedReviewDate: new Date('2026-12-01T00:00:00.000Z') };
     });
 
     await processor.process(job({ organizationId: 'org-1', remediationJobId: 'job-1' }));
@@ -293,7 +317,7 @@ describe('RemediationProcessor (ADR-0022 Phase 4)', () => {
     wireContext(itemsRepo, jobsRepo, { 'doc-ok': makeDocument('doc-ok'), 'doc-bad': makeDocument('doc-bad') });
     mockedExecuteAction.mockImplementation(async (_ctx, document) => {
       if (document.id === 'doc-bad') throw new GraphPermissionError('Access denied');
-      return { outcome: 'verified' };
+      return { outcome: 'verified', verifiedReviewDate: new Date('2026-12-01T00:00:00.000Z') };
     });
 
     await processor.process(job({ organizationId: 'org-1', remediationJobId: 'job-1' }));
@@ -309,7 +333,7 @@ describe('RemediationProcessor (ADR-0022 Phase 4)', () => {
     const jobsRepo = createFakeRemediationJobsRepo({ id: 'job-1', organizationId: 'org-1', status: 'Running', payload: defaultPayload });
     const itemsRepo = createFakeRemediationItemsRepo([makeItem({ id: 'item-1', documentId: 'doc-1' }), makeItem({ id: 'item-2', documentId: 'doc-2' })]);
     wireContext(itemsRepo, jobsRepo, { 'doc-1': makeDocument('doc-1'), 'doc-2': makeDocument('doc-2') });
-    mockedExecuteAction.mockResolvedValue({ outcome: 'verified' });
+    mockedExecuteAction.mockResolvedValue({ outcome: 'verified', verifiedReviewDate: new Date('2026-12-01T00:00:00.000Z') });
 
     await processor.process(job({ organizationId: 'org-1', remediationJobId: 'job-1' }));
 
@@ -426,7 +450,7 @@ describe('RemediationProcessor (ADR-0022 Phase 4)', () => {
     const jobsRepo = createFakeRemediationJobsRepo({ id: 'job-1', organizationId: 'org-1', status: 'Running', payload: defaultPayload });
     const itemsRepo = createFakeRemediationItemsRepo([makeItem({ id: 'item-1', documentId: 'doc-1' })]);
     wireContext(itemsRepo, jobsRepo, { 'doc-1': makeDocument('doc-1') });
-    mockedExecuteAction.mockResolvedValue({ outcome: 'verified' });
+    mockedExecuteAction.mockResolvedValue({ outcome: 'verified', verifiedReviewDate: new Date('2026-12-01T00:00:00.000Z') });
 
     await processor.process(job({ organizationId: 'org-1', remediationJobId: 'job-1' }));
 
@@ -448,7 +472,7 @@ describe('RemediationProcessor (ADR-0022 Phase 4)', () => {
     const jobsRepo = createFakeRemediationJobsRepo({ id: 'job-1', organizationId: 'org-1', status: 'Running', payload: defaultPayload });
     const itemsRepo = createFakeRemediationItemsRepo([makeItem({ id: 'item-1', documentId: 'doc-1' })]);
     wireContext(itemsRepo, jobsRepo, { 'doc-1': makeDocument('doc-1') });
-    mockedExecuteAction.mockResolvedValue({ outcome: 'verified' });
+    mockedExecuteAction.mockResolvedValue({ outcome: 'verified', verifiedReviewDate: new Date('2026-12-01T00:00:00.000Z') });
 
     // First invocation completes the job for real.
     await processor.process(job({ organizationId: 'org-1', remediationJobId: 'job-1' }));
@@ -465,7 +489,7 @@ describe('RemediationProcessor (ADR-0022 Phase 4)', () => {
     const jobsRepo = createFakeRemediationJobsRepo({ id: 'job-1', organizationId: 'org-1', status: 'Running', payload: defaultPayload });
     const itemsRepo = createFakeRemediationItemsRepo([makeItem({ id: 'item-1', documentId: 'doc-1' })]);
     wireContext(itemsRepo, jobsRepo, { 'doc-1': makeDocument('doc-1') });
-    mockedExecuteAction.mockResolvedValue({ outcome: 'verified' });
+    mockedExecuteAction.mockResolvedValue({ outcome: 'verified', verifiedReviewDate: new Date('2026-12-01T00:00:00.000Z') });
 
     await processor.process(job({ organizationId: 'org-1', remediationJobId: 'job-1' }));
 
@@ -477,7 +501,7 @@ describe('RemediationProcessor (ADR-0022 Phase 4)', () => {
     const jobsRepo = createFakeRemediationJobsRepo({ id: 'job-1', organizationId: 'org-1', status: 'Running', payload: defaultPayload });
     const itemsRepo = createFakeRemediationItemsRepo([makeItem({ id: 'item-1', documentId: 'doc-1' })]);
     wireContext(itemsRepo, jobsRepo, { 'doc-1': makeDocument('doc-1') });
-    mockedExecuteAction.mockResolvedValue({ outcome: 'verified' });
+    mockedExecuteAction.mockResolvedValue({ outcome: 'verified', verifiedReviewDate: new Date('2026-12-01T00:00:00.000Z') });
     reconciliationQueue.add.mockRejectedValue(new Error('Redis unavailable'));
 
     await expect(processor.process(job({ organizationId: 'org-1', remediationJobId: 'job-1' }))).resolves.toBeUndefined();
@@ -505,6 +529,89 @@ describe('RemediationProcessor (ADR-0022 Phase 4)', () => {
     expect(mockedExecuteAction).not.toHaveBeenCalled();
   });
 
+  describe('local review-date synchronization (ADR-0022 write-back MVP)', () => {
+    it('a verified write syncs the local Document (nextReviewDueAt + reviewDateSource=GraphMetadata) before rescoring, so rescore uses the new date', async () => {
+      const jobsRepo = createFakeRemediationJobsRepo({ id: 'job-1', organizationId: 'org-1', status: 'Running', payload: defaultPayload });
+      const itemsRepo = createFakeRemediationItemsRepo([makeItem({ id: 'item-1', documentId: 'doc-1' })]);
+      const { documentsRepo } = wireContext(itemsRepo, jobsRepo, { 'doc-1': makeDocument('doc-1') });
+      mockedExecuteAction.mockResolvedValue({ outcome: 'verified', verifiedReviewDate: new Date('2026-12-01T00:00:00.000Z') });
+
+      await processor.process(job({ organizationId: 'org-1', remediationJobId: 'job-1' }));
+
+      expect(documentsRepo.updateById).toHaveBeenCalledWith('doc-1', {
+        nextReviewDueAt: new Date('2026-12-01T00:00:00.000Z'),
+        reviewDateSource: 'GraphMetadata',
+      });
+      // The rescore must see the SYNCED document, not the stale pre-write one.
+      expect(mockedRescoreDocument).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ id: 'doc-1', nextReviewDueAt: new Date('2026-12-01T00:00:00.000Z'), reviewDateSource: 'GraphMetadata' }),
+      );
+      expect(itemsRepo.rows.get('item-1')?.status).toBe('Succeeded');
+    });
+
+    it('an unverified write never syncs local state and never rescores', async () => {
+      const jobsRepo = createFakeRemediationJobsRepo({ id: 'job-1', organizationId: 'org-1', status: 'Running', payload: defaultPayload });
+      const itemsRepo = createFakeRemediationItemsRepo([makeItem({ id: 'item-1', documentId: 'doc-1' })]);
+      const { documentsRepo } = wireContext(itemsRepo, jobsRepo, { 'doc-1': makeDocument('doc-1') });
+      mockedExecuteAction.mockResolvedValue({ outcome: 'unverified' });
+
+      await processor.process(job({ organizationId: 'org-1', remediationJobId: 'job-1' }));
+
+      expect(documentsRepo.updateById).not.toHaveBeenCalled();
+      expect(mockedRescoreDocument).not.toHaveBeenCalled();
+      expect(itemsRepo.rows.get('item-1')?.status).toBe('Pending'); // retryable, never Succeeded
+    });
+
+    it('a failed PATCH (action throws) never syncs local state — the item is Failed, not Succeeded', async () => {
+      const jobsRepo = createFakeRemediationJobsRepo({ id: 'job-1', organizationId: 'org-1', status: 'Running', payload: defaultPayload });
+      const itemsRepo = createFakeRemediationItemsRepo([makeItem({ id: 'item-1', documentId: 'doc-1' })]);
+      const { documentsRepo } = wireContext(itemsRepo, jobsRepo, { 'doc-1': makeDocument('doc-1') });
+      mockedExecuteAction.mockRejectedValue(new GraphPermissionError('forbidden'));
+
+      await processor.process(job({ organizationId: 'org-1', remediationJobId: 'job-1' }));
+
+      expect(documentsRepo.updateById).not.toHaveBeenCalled();
+      expect(itemsRepo.rows.get('item-1')?.status).toBe('Failed');
+    });
+
+    it('a local-sync failure after a verified write leaves the item Succeeded (self-heals next scan), governance unresolved', async () => {
+      const jobsRepo = createFakeRemediationJobsRepo({ id: 'job-1', organizationId: 'org-1', status: 'Running', payload: defaultPayload });
+      const itemsRepo = createFakeRemediationItemsRepo([makeItem({ id: 'item-1', documentId: 'doc-1' })]);
+      const { documentsRepo } = wireContext(itemsRepo, jobsRepo, { 'doc-1': makeDocument('doc-1') });
+      mockedExecuteAction.mockResolvedValue({ outcome: 'verified', verifiedReviewDate: new Date('2026-12-01T00:00:00.000Z') });
+      documentsRepo.updateById.mockRejectedValueOnce(new Error('DB write failed'));
+
+      await processor.process(job({ organizationId: 'org-1', remediationJobId: 'job-1' }));
+
+      expect(itemsRepo.rows.get('item-1')?.status).toBe('Succeeded'); // the write genuinely succeeded
+      expect(mockedRescoreDocument).not.toHaveBeenCalled(); // sync failed → governance left for next scan
+    });
+  });
+
+  describe('unsupported issueType guard (ADR-0022 write-back MVP §4)', () => {
+    it('a job whose issueType is not ReviewStatus skips every item and never writes to Graph', async () => {
+      const jobsRepo = createFakeRemediationJobsRepo({
+        id: 'job-1',
+        organizationId: 'org-1',
+        status: 'Running',
+        payload: defaultPayload,
+        issueType: 'Metadata',
+      });
+      const itemsRepo = createFakeRemediationItemsRepo([makeItem({ id: 'item-1', documentId: 'doc-1' }), makeItem({ id: 'item-2', documentId: 'doc-2' })]);
+      wireContext(itemsRepo, jobsRepo, { 'doc-1': makeDocument('doc-1'), 'doc-2': makeDocument('doc-2') });
+
+      await processor.process(job({ organizationId: 'org-1', remediationJobId: 'job-1' }));
+
+      expect(mockedExecuteAction).not.toHaveBeenCalled();
+      expect(itemsRepo.rows.get('item-1')?.status).toBe('Skipped');
+      expect(itemsRepo.rows.get('item-1')?.errorType).toBe('UnsupportedIssueType');
+      expect(itemsRepo.rows.get('item-2')?.status).toBe('Skipped');
+      // Still finalizes the job so it never lingers Running.
+      expect(jobsRepo.markCompletedIfRunning).toHaveBeenCalled();
+    });
+  });
+
   describe('governance resolution (ADR-0022 §13.2, Phase 5)', () => {
     it('verified write + rescoring confirms the issue is gone → resolves governance for the matching (documentId, issueType)', async () => {
       const jobsRepo = createFakeRemediationJobsRepo({
@@ -517,7 +624,7 @@ describe('RemediationProcessor (ADR-0022 Phase 4)', () => {
       });
       const itemsRepo = createFakeRemediationItemsRepo([makeItem({ id: 'item-1', documentId: 'doc-1' })]);
       wireContext(itemsRepo, jobsRepo, { 'doc-1': makeDocument('doc-1') });
-      mockedExecuteAction.mockResolvedValue({ outcome: 'verified' });
+      mockedExecuteAction.mockResolvedValue({ outcome: 'verified', verifiedReviewDate: new Date('2026-12-01T00:00:00.000Z') });
       mockedRescoreDocument.mockResolvedValue({ score: 100, band: 'Healthy', issues: [], breakdown: {} as never });
 
       await processor.process(job({ organizationId: 'org-1', remediationJobId: 'job-1' }));
@@ -542,7 +649,7 @@ describe('RemediationProcessor (ADR-0022 Phase 4)', () => {
       });
       const itemsRepo = createFakeRemediationItemsRepo([makeItem({ id: 'item-1', documentId: 'doc-1' })]);
       wireContext(itemsRepo, jobsRepo, { 'doc-1': makeDocument('doc-1') });
-      mockedExecuteAction.mockResolvedValue({ outcome: 'verified' });
+      mockedExecuteAction.mockResolvedValue({ outcome: 'verified', verifiedReviewDate: new Date('2026-12-01T00:00:00.000Z') });
       mockedRescoreDocument.mockResolvedValue({
         score: 60,
         band: 'NeedsAttention',
@@ -573,7 +680,7 @@ describe('RemediationProcessor (ADR-0022 Phase 4)', () => {
       const jobsRepo = createFakeRemediationJobsRepo({ id: 'job-1', organizationId: 'org-1', status: 'Running', payload: defaultPayload });
       const itemsRepo = createFakeRemediationItemsRepo([makeItem({ id: 'item-1', documentId: 'doc-1' })]);
       wireContext(itemsRepo, jobsRepo, { 'doc-1': makeDocument('doc-1') });
-      mockedExecuteAction.mockResolvedValue({ outcome: 'verified' });
+      mockedExecuteAction.mockResolvedValue({ outcome: 'verified', verifiedReviewDate: new Date('2026-12-01T00:00:00.000Z') });
       mockedRescoreDocument.mockRejectedValue(new Error('rescoring boom'));
 
       await expect(processor.process(job({ organizationId: 'org-1', remediationJobId: 'job-1' }))).resolves.toBeUndefined();
@@ -586,7 +693,7 @@ describe('RemediationProcessor (ADR-0022 Phase 4)', () => {
       const jobsRepo = createFakeRemediationJobsRepo({ id: 'job-1', organizationId: 'org-1', status: 'Running', payload: defaultPayload });
       const itemsRepo = createFakeRemediationItemsRepo([makeItem({ id: 'item-1', documentId: 'doc-1' })]);
       wireContext(itemsRepo, jobsRepo, { 'doc-1': makeDocument('doc-1') });
-      mockedExecuteAction.mockResolvedValue({ outcome: 'verified' });
+      mockedExecuteAction.mockResolvedValue({ outcome: 'verified', verifiedReviewDate: new Date('2026-12-01T00:00:00.000Z') });
       mockedRescoreDocument.mockResolvedValue({ score: 100, band: 'Healthy', issues: [], breakdown: {} as never });
       mockedResolveGovernance.mockRejectedValue(new Error('DB unavailable'));
 
@@ -606,7 +713,7 @@ describe('RemediationProcessor (ADR-0022 Phase 4)', () => {
       });
       const itemsRepo = createFakeRemediationItemsRepo([makeItem({ id: 'item-1', documentId: 'doc-1' })]);
       wireContext(itemsRepo, jobsRepo, { 'doc-1': makeDocument('doc-1') });
-      mockedExecuteAction.mockResolvedValue({ outcome: 'verified' });
+      mockedExecuteAction.mockResolvedValue({ outcome: 'verified', verifiedReviewDate: new Date('2026-12-01T00:00:00.000Z') });
 
       await processor.process(job({ organizationId: 'org-1', remediationJobId: 'job-1' }));
 
@@ -623,7 +730,7 @@ describe('RemediationProcessor (ADR-0022 Phase 4)', () => {
       });
       const itemsRepo = createFakeRemediationItemsRepo([makeItem({ id: 'item-1', documentId: 'doc-1' })]);
       wireContext(itemsRepo, jobsRepo, { 'doc-1': makeDocument('doc-1') });
-      mockedExecuteAction.mockResolvedValue({ outcome: 'verified' });
+      mockedExecuteAction.mockResolvedValue({ outcome: 'verified', verifiedReviewDate: new Date('2026-12-01T00:00:00.000Z') });
       mockedRescoreDocument.mockResolvedValue({
         score: 70,
         band: 'NeedsAttention',
