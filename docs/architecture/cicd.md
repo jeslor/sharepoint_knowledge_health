@@ -86,13 +86,46 @@ documented as an alternative in §8.)
 2. Add a **federated credential**: entity = *Branch*, repo = `<org>/<repo>`,
    branch = `main` (subject `repo:<org>/<repo>:ref:refs/heads/main`), audience
    `api://AzureADTokenExchange`.
-3. RBAC on the resource group (least privilege): **AcrPush** on the registry
-   (for `az acr build`) and **Container Apps Contributor** (to update apps).
+3. RBAC for the deploy identity (two role assignments):
+   - **`Contributor` scoped to the ACR** — `az acr build` schedules an ACR
+     Tasks run (a **management-plane** action,
+     `Microsoft.ContainerRegistry/registries/scheduleRun/action`), which the
+     data-plane **AcrPush** role does **not** grant. For the MVP, assign
+     `Contributor` on the registry (simple and supported). A tighter custom
+     role — `scheduleRun/action` + `runs/read` + push — is a later hardening
+     option, not required for launch.
+   - **`Contributor` scoped to the deployment resource group** — to run
+     `az containerapp update` against the three apps. (Use a narrower
+     Container-Apps-specific role only if your tenant already has a verified
+     equivalent; `Contributor` on the RG is the guaranteed MVP choice.)
 4. Put the app's client/tenant/subscription ids into the GitHub secrets in §4.
    `azure/login@v2` + `permissions: id-token: write` then authenticates with no
    stored secret.
 
 ## 6. First-time deployment (manual, once per environment)
+
+### Bootstrap image (chicken-and-egg — read first)
+
+`az containerapp create` requires a **pullable image**, but the CD pipeline only
+builds the `sph-*` images on a push to `main` — so on a brand-new environment
+**no `sph-api`/`sph-worker`/`sph-web` image exists yet**. Resolve this one of two
+supported ways before running the `create` commands below:
+
+- **Option A (recommended — simplest):** create the three apps from a **public
+  placeholder image** (`mcr.microsoft.com/k8se/quickstart:latest`), then push to
+  `main` and let CD replace it with the real `:<sha>` image on the first deploy.
+  Substitute that image for the `$ACR.azurecr.io/sph-*:bootstrap` references
+  below.
+- **Option B:** manually build and push the `:bootstrap` images once
+  (`az acr build --registry $ACR --image sph-api:bootstrap --file apps/api/Dockerfile .`,
+  and likewise for `sph-worker`/`sph-web` — the web build needs the same
+  `--build-arg NEXT_PUBLIC_*` values as the pipeline), then create the apps
+  against those `:bootstrap` tags.
+
+Option A is simpler and avoids a second place that must know the web build args,
+so it's the recommended path.
+
+### Create the apps
 
 Store secrets in Key Vault, then create the apps. Runtime secrets are wired as
 Container Apps secrets that reference Key Vault (via the managed identity), so
@@ -139,31 +172,52 @@ az containerapp create -n sph-web -g $RG --environment $ENV \
   --cpu 0.25 --memory 0.5Gi --env-vars NODE_ENV=production
 ```
 
-**API health probes** (liveness `/health`, readiness `/health/ready`) are set on
-the API app's template — the CLI `create` flags don't cover HTTP probe paths, so
-apply this once with `az containerapp update --yaml api-probes.yaml` (or in the
-portal). Probe fragment:
+**API health probes (optional for MVP launch).** Container Apps applies **default
+TCP probes** on the ingress target port, which are **acceptable for the initial
+MVP** — the app serves traffic without any custom probe. Configuring the app's
+own HTTP probes against `/health` (liveness) and `/health/ready` (readiness — it
+checks Postgres + Redis) is a recommended hardening step, not a launch blocker.
 
-```yaml
-# api-probes.yaml (template.containers[0].probes)
-probes:
-  - type: Liveness
-    httpGet: { path: /health, port: 3001 }
-    periodSeconds: 30
-  - type: Readiness
-    httpGet: { path: /health/ready, port: 3001 }
-    periodSeconds: 15
-    failureThreshold: 3
-```
+When you do add them, configure custom HTTP probes through the **Azure portal**
+(Container App → Health probes) **or** a **complete** Container Apps YAML/ARM
+template — do **not** try to apply a partial fragment with
+`az containerapp update --yaml`, which expects a full container-app spec and
+would otherwise overwrite the rest of the app's configuration. Target
+`GET /health` and `GET /health/ready` on port `3001`.
 
-> The bootstrap image tag is a placeholder for the first create; the pipeline
-> replaces it with a SHA-tagged image on the next push to `main`.
+> The bootstrap image tag is a placeholder for the first create (see §6's
+> "Bootstrap image" note); the pipeline replaces it with a SHA-tagged image on
+> the next push to `main`.
 
 ## 7. Subsequent deployments
 
 Merge/push to **`main`** → `deploy.yml` runs automatically: validate → build 3
 SHA-tagged images → migrate → `az containerapp update --image …:<sha>` per app
 (each creates a new revision). Nothing manual.
+
+### Prerequisites — ALL must exist before the first push to `main`
+
+The pipeline assumes the environment is already provisioned. If any of these is
+missing, the corresponding job fails. Confirm each before the first deploy:
+
+- [ ] **GitHub repository variables** (§3) — every row set, **including all four
+  `NEXT_PUBLIC_*`** (the two required ones baked empty would make the web bundle
+  throw at runtime).
+- [ ] **GitHub secrets** (§4) — `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`,
+  `AZURE_SUBSCRIPTION_ID`, `DATABASE_URL`.
+- [ ] **OIDC federated credential** on the deploy app registration with subject
+  **exactly** `repo:<org>/<repo>:ref:refs/heads/main`, audience
+  `api://AzureADTokenExchange`.
+- [ ] **Azure RBAC** (§5): `Contributor` on the **ACR** (for `az acr build`) and
+  `Contributor` on the **resource group** (for `az containerapp update`).
+- [ ] **Bootstrap images / placeholder apps** (§6) — the three Container Apps
+  already created (Option A public placeholder image, or Option B pushed
+  `:bootstrap` images).
+- [ ] **Key Vault secrets** `database-url`, `redis-url`, `entra-secret` (§6).
+- [ ] **Managed identity** assigned to the apps with **Key Vault secret `get`**
+  access (so the `keyvaultref` runtime secrets resolve).
+- [ ] **Entra SPA redirect URIs** registered, matching `NEXT_PUBLIC_REDIRECT_URI`
+  and `NEXT_PUBLIC_ADMIN_CONSENT_REDIRECT_URI` (§10).
 
 ## 8. Database migration process
 
@@ -184,13 +238,22 @@ SHA-tagged images → migrate → `az containerapp update --image …:<sha>` per
 
 - Images are **immutable, SHA-tagged**, and the previous image is retained in ACR
   (do not prune aggressively).
-- App changes are **revisions** — the prior revision remains available.
-- To roll back an app to the previous revision:
+- **Primary rollback (works in any revision mode) — redeploy the previous SHA
+  image:**
+  ```bash
+  az containerapp update -n sph-api -g $RG \
+    --image <acr>.azurecr.io/sph-api:<previous-sha>
+  ```
+  Use the last-good commit SHA (from the previous successful Deploy run). This
+  creates a new revision running the old image and is the general, reliable
+  method for a single app or all three.
+- **Alternative — reactivate a prior revision (multiple-revision mode only):**
   ```bash
   az containerapp revision list -n sph-api -g $RG -o table          # find prior revision
   az containerapp revision activate -n sph-api -g $RG --revision <prior-revision>
-  # (or) az containerapp update -n sph-api -g $RG --image <acr>.azurecr.io/sph-api:<prior-sha>
   ```
+  `revision activate` applies only when the app is in **multiple**-revision mode;
+  in the default **single**-revision mode use the SHA-image rollback above.
 - **Database:** Prisma migrations are **forward-only** — there is no automatic
   DB rollback. If a migration must be undone, restore Neon to a point-in-time
   before the deploy (Neon branching/PITR) and redeploy the prior image. Design
