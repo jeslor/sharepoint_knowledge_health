@@ -1,0 +1,138 @@
+name: Deploy
+
+# Production deployment to Azure Container Apps. Runs only on pushes to the
+# production branch (main). Order is strictly gated by job `needs`:
+#   validate -> build-and-push -> migrate -> deploy
+# so images are published and the database is migrated BEFORE any new app
+# revision is activated. Migrations never run on container boot.
+on:
+  push:
+    branches: [main]
+
+# Never run two production deploys concurrently; do not cancel an in-flight
+# deploy (a half-applied rollout is worse than a queued one).
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+# OIDC: request a federated token for azure/login; no long-lived Azure secret.
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  # 1) Full CI validation — the SAME workflow that gates PRs, reused verbatim.
+  validate:
+    uses: ./.github/workflows/ci.yml
+
+  # 2) Build the three production images in ACR and tag them immutably with the
+  #    commit SHA (never `latest` as the production identifier).
+  build-and-push:
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # ACR builds server-side (no Docker daemon/registry login on the runner).
+      # Each Dockerfile needs the whole monorepo as build context (turbo prune
+      # runs inside the build), so the context is the repo root (`.`).
+      - name: Build & push API image
+        run: >-
+          az acr build
+          --registry ${{ vars.ACR_NAME }}
+          --image sph-api:${{ github.sha }}
+          --file apps/api/Dockerfile .
+
+      - name: Build & push Worker image
+        run: >-
+          az acr build
+          --registry ${{ vars.ACR_NAME }}
+          --image sph-worker:${{ github.sha }}
+          --file apps/worker/Dockerfile .
+
+      # NEXT_PUBLIC_* are inlined at BUILD time (see apps/web/Dockerfile) — they
+      # come from non-secret repository variables and are passed as build args.
+      # Changing them later requires a rebuild, not a runtime env change.
+      - name: Build & push Web image
+        run: >-
+          az acr build
+          --registry ${{ vars.ACR_NAME }}
+          --image sph-web:${{ github.sha }}
+          --file apps/web/Dockerfile
+          --build-arg NEXT_PUBLIC_API_BASE_URL=${{ vars.NEXT_PUBLIC_API_BASE_URL }}
+          --build-arg NEXT_PUBLIC_ENTRA_CLIENT_ID=${{ vars.NEXT_PUBLIC_ENTRA_CLIENT_ID }}
+          --build-arg NEXT_PUBLIC_REDIRECT_URI=${{ vars.NEXT_PUBLIC_REDIRECT_URI }}
+          --build-arg NEXT_PUBLIC_ADMIN_CONSENT_REDIRECT_URI=${{ vars.NEXT_PUBLIC_ADMIN_CONSENT_REDIRECT_URI }}
+          .
+
+  # 3) Apply Prisma migrations exactly once, from the runner, directly against
+  #    the production Neon database (internet-reachable over TLS — no temporary
+  #    Container Apps Job required). Forward-only; must succeed before rollout.
+  migrate:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Generate Prisma client
+        run: pnpm db:generate
+      - name: Apply database migrations (prisma migrate deploy)
+        # DATABASE_URL is the ONE production secret GitHub needs, and only the
+        # migration mechanism uses it. Never echoed; masked by Actions.
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: pnpm --filter @sph/database run migrate:deploy
+
+  # 4) Roll out the new image to each Container App as a NEW REVISION. Runtime
+  #    secrets (DATABASE_URL/REDIS_URL/ENTRA_CLIENT_SECRET) are configured ONCE
+  #    at app-create time as Container Apps secrets sourced from Key Vault and
+  #    are NOT touched here — the pipeline only changes the image (+ the
+  #    non-secret WEB_APP_ORIGIN on the API). The previous revision is retained
+  #    for rollback.
+  deploy:
+    needs: migrate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy API
+        run: >-
+          az containerapp update
+          --name ${{ vars.ACA_API_APP }}
+          --resource-group ${{ vars.AZURE_RESOURCE_GROUP }}
+          --image ${{ vars.ACR_NAME }}.azurecr.io/sph-api:${{ github.sha }}
+          --set-env-vars WEB_APP_ORIGIN=${{ vars.WEB_APP_ORIGIN }} NODE_ENV=production
+
+      - name: Deploy Worker
+        run: >-
+          az containerapp update
+          --name ${{ vars.ACA_WORKER_APP }}
+          --resource-group ${{ vars.AZURE_RESOURCE_GROUP }}
+          --image ${{ vars.ACR_NAME }}.azurecr.io/sph-worker:${{ github.sha }}
+
+      - name: Deploy Web
+        run: >-
+          az containerapp update
+          --name ${{ vars.ACA_WEB_APP }}
+          --resource-group ${{ vars.AZURE_RESOURCE_GROUP }}
+          --image ${{ vars.ACR_NAME }}.azurecr.io/sph-web:${{ github.sha }}

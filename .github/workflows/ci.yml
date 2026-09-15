@@ -2,8 +2,10 @@ name: CI
 
 on:
   pull_request:
-  push:
-    branches: [main]
+  # Reusable: the Deploy workflow (deploy.yml) calls this on pushes to main so
+  # the exact same validation gates production — no duplicated command set, and
+  # no double-run (the standalone push:main trigger is intentionally removed).
+  workflow_call:
 
 jobs:
   ci:

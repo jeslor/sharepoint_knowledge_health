@@ -34,7 +34,26 @@ describe('CriticalIssuesCard', () => {
     expect(items[0]).toHaveTextContent('142 documents require review scheduling');
 
     const links = screen.getAllByRole('link', { name: 'Review documents' });
-    expect(links[0]).toHaveAttribute('href', '/dashboard/governance?issueType=ReviewStatus');
+    // view=all so the drill-down matches this card's ORG-WIDE counts, instead
+    // of the governance page's default "My Issues" (view=mine) scope.
+    expect(links[0]).toHaveAttribute('href', '/dashboard/governance?issueType=ReviewStatus&view=all');
+  });
+
+  it('links every issue type to the organization-wide (view=all) governance view, filtered to that type', () => {
+    render(<CriticalIssuesCard summary={summary({ byType: { Ownership: 40, ReviewStatus: 30, Taxonomy: 20, Metadata: 10 } })} />);
+
+    const links = screen.getAllByRole('link', { name: 'Review documents' });
+    const hrefs = links.map((link) => link.getAttribute('href'));
+
+    // Every drill-down carries view=all (systemic, not Ownership-specific)...
+    expect(hrefs.every((href) => href?.includes('view=all'))).toBe(true);
+    // ...and each is scoped to its own issue type.
+    expect(hrefs).toEqual([
+      '/dashboard/governance?issueType=Ownership&view=all',
+      '/dashboard/governance?issueType=ReviewStatus&view=all',
+      '/dashboard/governance?issueType=Taxonomy&view=all',
+      '/dashboard/governance?issueType=Metadata&view=all',
+    ]);
   });
 
   it('caps the list at the top 4 issue types even when more exist', () => {

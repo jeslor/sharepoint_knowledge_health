@@ -115,18 +115,27 @@ registered on boot (`SchedulerBootstrapService`, see `worker-pipeline.md`)
 — running the worker container is sufficient; no separate Azure Scheduled
 Job / Logic App / cron trigger needs to be provisioned.
 
-## CI/CD — known gap
+## CI/CD
 
-`.github/workflows/ci.yml` currently runs install → Prisma generate →
-migrate deploy (against ephemeral Postgres/Redis service containers) →
-lint → typecheck → test, on every PR and push to `main`. It does **not**
-build images, push to ACR, or deploy to Container Apps — ADR-0006 states
-the intended shape (GitHub Actions → ACR → Container Apps, standardized
-across all three apps) but the deploy stage was never built, since it
-requires real Azure credentials this repo doesn't have configured. This is
-an accepted, documented gap for this phase — see the Phase 9 report's
-roadmap for the recommendation to build it out next, rather than attempted
-here without real credentials to validate against.
+Two workflows implement ADR-0006's intended shape (GitHub Actions → ACR →
+Container Apps) — see **`docs/architecture/cicd.md`** for the full runbook:
+
+- **`.github/workflows/ci.yml`** — validation on every PR (install → Prisma
+  generate → `migrate deploy` against ephemeral Postgres/Redis service
+  containers → lint → typecheck → test). Now a **reusable** workflow
+  (`workflow_call`) with no `push:main` trigger of its own.
+- **`.github/workflows/deploy.yml`** — on push to `main`: reuse the CI
+  validation → build the three images in ACR (immutably tagged with the
+  commit SHA) → run `prisma migrate deploy` once against Neon → roll out a new
+  Container Apps revision per app. Azure auth is via **GitHub OIDC** (no
+  long-lived secret); the worker deploys with **no ingress, min 1**; API keeps
+  its `/health` + `/health/ready` probes; `NEXT_PUBLIC_*` are passed as web
+  build args (build-time, not runtime).
+
+The Azure resources, GitHub variables/secrets, OIDC federated credential, and
+first-time `az containerapp create` commands the pipeline depends on are all
+documented in `cicd.md` and must be provisioned once (manually) before the
+first deploy. No IaC (Bicep/Terraform) is introduced — this is CI/CD only.
 
 Database migrations in production would be applied via `prisma migrate
 deploy` as an explicit deploy step (matching what CI already does against
