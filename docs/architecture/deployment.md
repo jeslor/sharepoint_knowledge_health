@@ -128,9 +128,10 @@ Container Apps) — see **`docs/architecture/cicd.md`** for the full runbook:
   validation → build the three images in ACR (immutably tagged with the
   commit SHA) → run `prisma migrate deploy` once against Neon → roll out a new
   Container Apps revision per app. Azure auth is via **GitHub OIDC** (no
-  long-lived secret); the worker deploys with **no ingress, min 1**; API keeps
-  its `/health` + `/health/ready` probes; `NEXT_PUBLIC_*` are passed as web
-  build args (build-time, not runtime).
+  long-lived secret); the worker deploys with **no ingress, min 1**; the API
+  exposes `/health` + `/health/ready` (default TCP probes are fine for MVP;
+  custom HTTP probes are an optional setup step — see `cicd.md`);
+  `NEXT_PUBLIC_*` are passed as web build args (build-time, not runtime).
 
 The Azure resources, GitHub variables/secrets, OIDC federated credential, and
 first-time `az containerapp create` commands the pipeline depends on are all
