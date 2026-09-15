@@ -28,6 +28,24 @@ COPY --from=pruner /app/out/full/ .
 # graph — it doesn't know about tsconfig.base.json, which is referenced only
 # via a relative `extends` path, so it's copied in explicitly here.
 COPY tsconfig.base.json ./tsconfig.base.json
+
+# Next.js inlines NEXT_PUBLIC_* into the CLIENT BUNDLE at BUILD time — setting
+# them as Container Apps *runtime* env later will NOT change an already-built
+# image, so they must be provided here as build args (CI passes them via
+# --build-arg from non-secret GitHub repository variables). These are public,
+# never secrets: the API's public URL, the public Entra client id, and the
+# redirect URIs. Two are required (the app throws without them:
+# msal-config.ts / api/client.ts); the two redirect URIs are optional and
+# default client-side to the current origin when unset.
+ARG NEXT_PUBLIC_API_BASE_URL
+ARG NEXT_PUBLIC_ENTRA_CLIENT_ID
+ARG NEXT_PUBLIC_REDIRECT_URI
+ARG NEXT_PUBLIC_ADMIN_CONSENT_REDIRECT_URI
+ENV NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL \
+    NEXT_PUBLIC_ENTRA_CLIENT_ID=$NEXT_PUBLIC_ENTRA_CLIENT_ID \
+    NEXT_PUBLIC_REDIRECT_URI=$NEXT_PUBLIC_REDIRECT_URI \
+    NEXT_PUBLIC_ADMIN_CONSENT_REDIRECT_URI=$NEXT_PUBLIC_ADMIN_CONSENT_REDIRECT_URI
+
 RUN pnpm turbo run db:generate --filter=@sph/web
 RUN pnpm turbo run build --filter=@sph/web
 

@@ -54,7 +54,12 @@ export function CriticalIssuesCard({ summary }: CriticalIssuesCardProps): JSX.El
                   </div>
                 </div>
                 <Link
-                  href={`/dashboard/governance?issueType=${issueType}`}
+                  // view=all so the drill-down matches this card's ORG-WIDE
+                  // counts (getSummary().byType, any assignee). Without it the
+                  // governance page defaults to view=mine and would show only
+                  // the current viewer's issues — an empty list when the
+                  // counted issues are assigned to someone else.
+                  href={`/dashboard/governance?issueType=${issueType}&view=all`}
                   className="shrink-0 whitespace-nowrap text-body-strong text-brand-600 transition-colors duration-150 ease-premium hover:text-brand-700 hover:underline"
                 >
                   Review documents
