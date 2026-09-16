@@ -9,6 +9,8 @@ on:
   push:
     branches: [main]
 
+  workflow_dispatch:
+
 # Never run two production deploys concurrently; do not cancel an in-flight
 # deploy (a half-applied rollout is worse than a queued one).
 concurrency:
