@@ -30,27 +30,37 @@ Deployment target (unchanged): Azure Container Apps (web/api/worker in one
 environment) + ACR + **Neon** Postgres + **Upstash** Redis + Entra ID/Graph +
 Key Vault. No Kubernetes, no Bicep/Terraform.
 
-## 2. Required Azure resources (create once, manually)
+## 2. Required Azure resources (create once, via the Azure Portal)
+
+Initial infrastructure is provisioned once through the **Azure Portal**;
+thereafter **GitHub Actions handles all builds and deployments**. The `az`
+commands in §6 are an equivalent CLI reference for the same resources. All
+resources are created in a single region — `<region>` (colocate with the Neon
+and Upstash regions).
 
 - Resource group.
 - **Azure Container Registry** (Basic is fine).
-- **Container Apps environment** + three apps: `web`, `api`, `worker`.
+- **Container Apps environment** + three apps: `sph-web`, `sph-api`, `sph-worker`.
 - **Key Vault** holding the three runtime secrets (see §4/§6).
-- A **user-assigned managed identity** (or the apps' system-assigned identities)
-  with **Key Vault `get` secret** permission, used by the apps to resolve
-  Key Vault secret references.
+- The **user-assigned managed identity `sph-mvp-identity`**, assigned to all
+  three Container Apps and used both to **pull images from ACR** (`AcrPull`) and
+  to **read Key Vault secrets** (`get`). The apps resolve their `keyvaultref`
+  runtime secrets through this identity.
 - An **Entra app registration for GitHub OIDC** (the deploy identity) with a
   **federated credential** for this repo/branch and RBAC (see §5).
 
-Neon and Upstash are provisioned in their own consoles; you only need their
-connection strings.
+Neon (PostgreSQL) and Upstash (Redis) are **external managed SaaS**, provisioned
+in their own consoles — not Azure resources and **not** self-hosted as Container
+Apps. You only need their connection strings: the Neon `DATABASE_URL` and the
+Upstash **standard Redis TLS** `REDIS_URL` (`rediss://…`, the Redis-protocol
+endpoint used by BullMQ — **not** the Upstash REST endpoint).
 
 ## 3. Required GitHub repository *variables* (non-secret) — `Settings → Variables`
 
 | Variable | Example | Used by |
 |---|---|---|
 | `ACR_NAME` | `sphpilotacr` | build + deploy |
-| `AZURE_RESOURCE_GROUP` | `sph-pilot-rg` | deploy |
+| `AZURE_RESOURCE_GROUP` | `sph-mvp-rg` | deploy |
 | `ACA_API_APP` | `sph-api` | deploy |
 | `ACA_WORKER_APP` | `sph-worker` | deploy |
 | `ACA_WEB_APP` | `sph-web` | deploy |
@@ -132,12 +142,13 @@ Container Apps secrets that reference Key Vault (via the managed identity), so
 the pipeline never handles them.
 
 ```bash
-RG=sph-pilot-rg; ENV=sph-pilot-env; ACR=sphpilotacr; KV=sph-pilot-kv
-MI=$(az identity show -g $RG -n sph-pilot-mi --query id -o tsv)   # user-assigned MI with KV get
+RG=sph-mvp-rg; ENV=sph-mvp-env; ACR=<acr-name>; KV=<key-vault-name>
+# user-assigned identity used for BOTH ACR pull (AcrPull) and Key Vault get:
+MI=$(az identity show -g $RG -n sph-mvp-identity --query id -o tsv)
 
 # Key Vault secrets
-az keyvault secret set --vault-name $KV --name database-url    --value "<neon prod url>"
-az keyvault secret set --vault-name $KV --name redis-url       --value "<upstash url>"
+az keyvault secret set --vault-name $KV --name database-url    --value "<neon DATABASE_URL>"
+az keyvault secret set --vault-name $KV --name redis-url       --value "<upstash rediss:// TLS URL — NOT the REST endpoint>"
 az keyvault secret set --vault-name $KV --name entra-secret    --value "<entra client secret>"
 
 # --- API: external ingress :3001, min 1, KV-backed secrets + runtime env ---
@@ -166,11 +177,19 @@ az containerapp create -n sph-worker -g $RG --environment $ENV \
              ENTRA_CLIENT_SECRET=secretref:entra-secret
 
 # --- Web: external ingress :3000, min 1 (NEXT_PUBLIC_* are baked at build) ---
+# No DATABASE_URL/REDIS_URL — the web frontend needs neither.
 az containerapp create -n sph-web -g $RG --environment $ENV \
   --image $ACR.azurecr.io/sph-web:bootstrap \
   --ingress external --target-port 3000 --min-replicas 1 --max-replicas 3 \
-  --cpu 0.25 --memory 0.5Gi --env-vars NODE_ENV=production
+  --cpu 0.25 --memory 0.5Gi --user-assigned $MI --env-vars NODE_ENV=production
 ```
+
+> **ACR image pull** for all three apps is done with the user-assigned identity
+> `sph-mvp-identity` (`$MI`), not an ACR admin username/password. Ensure the
+> identity has **`AcrPull`** on the registry and configure each app to pull with
+> it, e.g. `az containerapp registry set -n <app> -g $RG --server
+> $ACR.azurecr.io --identity $MI`. GitHub Actions authenticates to Azure via
+> OIDC separately (§5) and pushes with `az acr build`.
 
 **API health probes (optional for MVP launch).** Container Apps applies **default
 TCP probes** on the ingress target port, which are **acceptable for the initial
