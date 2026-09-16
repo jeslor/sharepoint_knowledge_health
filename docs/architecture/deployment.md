@@ -9,20 +9,28 @@ target environment must provide.
 
 ## Required infrastructure
 
+This reflects the **MVP deployment as actually provisioned**. All Azure
+resources live in one region — **`<region>`** (set to the region you
+provisioned; colocate with the Neon and Upstash regions to keep DB/Redis
+latency low).
+
 | Component | Choice | Notes |
 |---|---|---|
-| Compute | Azure Container Apps (one per app: `apps/web`, `apps/api`, `apps/worker`) | Consumption-based, KEDA-backed. `apps/worker` is intended to scale on BullMQ/Redis queue depth (a native KEDA scaler) — not yet configured as IaC in this repo, see below. |
-| Database | Azure Database for PostgreSQL — Flexible Server | Single instance, no HA/read replica at current scale (an accepted ADR-0006 tradeoff, revisit if uptime/read-load requires it). |
-| Queue/cache | Azure Cache for Redis — Standard tier | Standard (not Basic) specifically because Basic has no SLA/replication, and the scan pipeline's correctness depends on the queue. |
-| Secrets | Azure Key Vault | `ENTRA_CLIENT_SECRET` and `DATABASE_URL`/`REDIS_URL` connection strings sourced from here in production, injected as container env vars — never baked into an image. |
-| Registry | Azure Container Registry (ACR) | One registry, all three images. |
+| Compute | Azure Container Apps: `sph-web`, `sph-api`, `sph-worker` | One environment. Web/API have external ingress; **`sph-worker` runs no-ingress, min 1 replica** (its in-process BullMQ scheduler must never scale to zero). Each app pulls its image from ACR using the user-assigned managed identity **`sph-mvp-identity`**. |
+| Database | **Neon** — managed serverless PostgreSQL | External managed SaaS (not an Azure resource), reached over the public internet via TLS. Supplies `DATABASE_URL`. |
+| Queue/cache | **Upstash Redis** — managed serverless Redis | External managed SaaS (**not** self-hosted as a Container App, **not** Azure Cache for Redis). API and worker connect over the **standard Redis protocol with TLS** (`rediss://…`) for BullMQ — **not** the Upstash REST API. Supplies `REDIS_URL`. |
+| Secrets | Azure Key Vault | `ENTRA_CLIENT_SECRET`, `DATABASE_URL`, and `REDIS_URL` are stored here and referenced by the Container Apps (via `sph-mvp-identity`) as runtime secrets — never baked into an image. |
+| Registry | Azure Container Registry (ACR) | One registry, all three images. Images are pulled by the apps via **`sph-mvp-identity`**; the CI/CD pipeline pushes via **GitHub OIDC** (federated) — **no ACR admin username/password is used**. |
 | Monitoring | Azure Monitor + Application Insights | See `operations.md`. |
-| Identity | Azure Entra ID — one multi-tenant App Registration | See `security-model.md` for the trust model; requirements below. |
+| Identity (deploy/runtime) | User-assigned managed identity **`sph-mvp-identity`** | Used by the Container Apps to pull images from ACR and to read Key Vault secrets. |
+| Identity (auth) | Azure Entra ID — one multi-tenant App Registration | See `security-model.md` for the trust model; requirements below. |
 
-All three apps run in one Azure Container Apps **Environment** (ADR-0006),
-sharing that environment's virtual network, but each is an independently
-deployed container image and revision (ADR-0009) — a deploy of one never
-requires redeploying the others.
+All three apps run in one Azure Container Apps **Environment** (ADR-0006), but
+each is an independently deployed container image and revision (ADR-0009) — a
+deploy of one never requires redeploying the others. PostgreSQL (Neon) and
+Redis (Upstash) are **external** managed services reached over TLS, not
+resources inside the environment. `REDIS_URL` is provided only to `sph-api` and
+`sph-worker`; **`sph-web` does not need Redis** (it is a pure client frontend).
 
 ## Azure App Registration requirements
 
@@ -147,9 +155,9 @@ either app.
 
 - Prisma's client has no explicit `connection_limit` configured — fine at
   current scale, but each `apps/api`/`apps/worker` replica opens its own
-  pool, so `replica count × connection_limit` should be checked against
-  Postgres Flexible Server's `max_connections` before scaling replica count
-  up significantly.
+  pool, so `replica count × connection_limit` should be checked against the
+  Neon Postgres connection limit (use Neon's pooled connection string if
+  replica count grows) before scaling replica count up significantly.
 - `apps/worker`'s `WORKER_CONCURRENCY` (BullMQ concurrency) and Container
   Apps replica count are two separate scaling dimensions — increasing
   either increases concurrent Graph API calls, which are subject to
