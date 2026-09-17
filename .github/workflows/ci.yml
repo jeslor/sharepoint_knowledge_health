@@ -37,6 +37,19 @@ jobs:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/sharepoint_knowledge_health?schema=public
       REDIS_URL: redis://localhost:6379
       NODE_ENV: test
+      # `@sph/web#typecheck` dependsOn the web's own `build` (turbo.json), so
+      # `pnpm typecheck`/`pnpm test` here transitively run `next build`, which
+      # statically prerenders pages and evaluates NEXT_PUBLIC_* (msal-config /
+      # api/client throw if unset). The CI runner has no apps/web/.env.local
+      # (gitignored), so provide these for the validation build. Values are
+      # build-time-only and never deployed — the production web IMAGE is built
+      # separately in deploy.yml with the real repository variables. Use the
+      # real vars when present, else harmless placeholders so validation never
+      # breaks on an unset variable (e.g. fork PRs).
+      NEXT_PUBLIC_API_BASE_URL: ${{ vars.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:3001' }}
+      NEXT_PUBLIC_ENTRA_CLIENT_ID: ${{ vars.NEXT_PUBLIC_ENTRA_CLIENT_ID || 'ci-build-placeholder-client-id' }}
+      NEXT_PUBLIC_REDIRECT_URI: ${{ vars.NEXT_PUBLIC_REDIRECT_URI || 'http://localhost:3000' }}
+      NEXT_PUBLIC_ADMIN_CONSENT_REDIRECT_URI: ${{ vars.NEXT_PUBLIC_ADMIN_CONSENT_REDIRECT_URI || 'http://localhost:3000/connect/admin-consent-callback' }}
     steps:
       - uses: actions/checkout@v4
 
