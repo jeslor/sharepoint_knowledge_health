@@ -27,8 +27,13 @@ jobs:
   validate:
     uses: ./.github/workflows/ci.yml
 
-  # 2) Build the three production images in ACR and tag them immutably with the
-  #    commit SHA (never `latest` as the production identifier).
+  # 2) Build the three production images and push them to ACR, tagged
+  #    immutably with the commit SHA (never `latest` as the production
+  #    identifier). Built with the Docker CLI on the runner and pushed
+  #    directly, NOT `az acr build` (ACR Tasks) — ACR Tasks requests are not
+  #    permitted on this registry's current subscription tier
+  #    (TasksOperationsNotAllowed: "ACR Tasks requests for the registry ...
+  #    are not permitted"), so there is no server-side build fallback here.
   build-and-push:
     needs: validate
     runs-on: ubuntu-latest
@@ -42,37 +47,54 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      # ACR builds server-side (no Docker daemon/registry login on the runner).
-      # Each Dockerfile needs the whole monorepo as build context (turbo prune
-      # runs inside the build), so the context is the repo root (`.`).
-      - name: Build & push API image
-        run: >-
-          az acr build
-          --registry ${{ vars.ACR_NAME }}
-          --image sph-api:${{ github.sha }}
-          --file apps/api/Dockerfile .
+      # Docker-login to ACR via the Azure CLI session azure/login just
+      # established (AAD token exchange — no admin username/password).
+      # Requires the deploy identity to hold a data-plane ACR role (AcrPush
+      # or equivalent) in addition to any management-plane role it already
+      # has — see the accompanying report for what to verify/add.
+      - name: ACR login (Docker)
+        run: az acr login --name ${{ vars.ACR_NAME }}
 
-      - name: Build & push Worker image
+      # Built locally on the runner (not server-side in ACR — see job
+      # comment above). Each Dockerfile needs the whole monorepo as build
+      # context (turbo prune runs inside the build), so the context is the
+      # repo root (`.`).
+      - name: Build API image
         run: >-
-          az acr build
-          --registry ${{ vars.ACR_NAME }}
-          --image sph-worker:${{ github.sha }}
-          --file apps/worker/Dockerfile .
+          docker build
+          -f apps/api/Dockerfile
+          -t ${{ vars.ACR_NAME }}.azurecr.io/sph-api:${{ github.sha }}
+          .
+
+      - name: Push API image
+        run: docker push ${{ vars.ACR_NAME }}.azurecr.io/sph-api:${{ github.sha }}
+
+      - name: Build Worker image
+        run: >-
+          docker build
+          -f apps/worker/Dockerfile
+          -t ${{ vars.ACR_NAME }}.azurecr.io/sph-worker:${{ github.sha }}
+          .
+
+      - name: Push Worker image
+        run: docker push ${{ vars.ACR_NAME }}.azurecr.io/sph-worker:${{ github.sha }}
 
       # NEXT_PUBLIC_* are inlined at BUILD time (see apps/web/Dockerfile) — they
       # come from non-secret repository variables and are passed as build args.
       # Changing them later requires a rebuild, not a runtime env change.
-      - name: Build & push Web image
+      - name: Build Web image
         run: >-
-          az acr build
-          --registry ${{ vars.ACR_NAME }}
-          --image sph-web:${{ github.sha }}
-          --file apps/web/Dockerfile
+          docker build
+          -f apps/web/Dockerfile
+          -t ${{ vars.ACR_NAME }}.azurecr.io/sph-web:${{ github.sha }}
           --build-arg NEXT_PUBLIC_API_BASE_URL=${{ vars.NEXT_PUBLIC_API_BASE_URL }}
           --build-arg NEXT_PUBLIC_ENTRA_CLIENT_ID=${{ vars.NEXT_PUBLIC_ENTRA_CLIENT_ID }}
           --build-arg NEXT_PUBLIC_REDIRECT_URI=${{ vars.NEXT_PUBLIC_REDIRECT_URI }}
           --build-arg NEXT_PUBLIC_ADMIN_CONSENT_REDIRECT_URI=${{ vars.NEXT_PUBLIC_ADMIN_CONSENT_REDIRECT_URI }}
           .
+
+      - name: Push Web image
+        run: docker push ${{ vars.ACR_NAME }}.azurecr.io/sph-web:${{ github.sha }}
 
   # 3) Apply Prisma migrations exactly once, from the runner, directly against
   #    the production Neon database (internet-reachable over TLS — no temporary
