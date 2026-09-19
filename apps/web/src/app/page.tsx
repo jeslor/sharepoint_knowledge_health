@@ -4,6 +4,8 @@ import { useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useIsAuthenticated, useMsal } from '@azure/msal-react';
 import { InteractionStatus } from '@azure/msal-browser';
+import { AuthShell } from '@/components/auth/auth-shell';
+import { MicrosoftLogo } from '@/components/auth/microsoft-logo';
 import { SignInButton } from '@/components/auth/sign-in-button';
 import { consumeLastLoginState } from '@/lib/auth/msal-instance';
 
@@ -90,10 +92,19 @@ export default function HomePage(): JSX.Element {
   }, [isAuthenticated, inProgress, router]);
 
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center gap-4 bg-slate-50 p-8">
-      <h1 className="text-3xl font-semibold text-slate-900">SharePoint Knowledge Health</h1>
-      <p className="text-slate-600">Measure and improve Microsoft 365 knowledge quality.</p>
-      {!isAuthenticated && inProgress === InteractionStatus.None && <SignInButton />}
-    </main>
+    <AuthShell>
+      <div className="flex flex-col items-center gap-3 text-center">
+        <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-brand-50">
+          <MicrosoftLogo className="h-6 w-6" />
+        </span>
+        <h1 className="text-page-title text-slate-900">SharePoint Knowledge Health</h1>
+        <p className="text-body text-slate-600">
+          Monitor, improve, and govern the health of your Microsoft SharePoint environment.
+        </p>
+      </div>
+      {!isAuthenticated && inProgress === InteractionStatus.None && (
+        <SignInButton className="w-full justify-center" />
+      )}
+    </AuthShell>
   );
 }
