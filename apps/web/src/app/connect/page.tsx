@@ -8,6 +8,10 @@ import { requireClientId } from '@/lib/auth/msal-config';
 import { adminConsentRedirectUri, buildAdminConsentUrl, startConnectFlow } from '@/lib/auth/connect-flow';
 import { useCurrentUser } from '@/lib/auth/current-user-context';
 import { ApiError } from '@/lib/api/client';
+import { AuthShell } from '@/components/auth/auth-shell';
+import { MicrosoftLogo } from '@/components/auth/microsoft-logo';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 
 /**
  * Entry point for a brand-new organization (LAT report F1 / Phase 6 P1).
@@ -60,34 +64,33 @@ export default function ConnectPage(): JSX.Element {
   }
 
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center gap-4 bg-slate-50 p-8">
-      <h1 className="text-3xl font-semibold text-slate-900">Connect Microsoft 365</h1>
-      <p className="max-w-md text-center text-slate-600">
-        Connect your organization&apos;s Microsoft 365 tenant. A Global Administrator must
-        complete this step.
-      </p>
-      <div className="flex w-full max-w-sm flex-col gap-2">
-        <label htmlFor="tenantName" className="text-sm font-medium text-slate-700">
+    <AuthShell>
+      <div className="flex flex-col items-center gap-3 text-center">
+        <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-brand-50">
+          <MicrosoftLogo className="h-6 w-6" />
+        </span>
+        <h1 className="text-page-title text-slate-900">Connect Microsoft 365</h1>
+        <p className="max-w-sm text-body text-slate-600">
+          Connect your organization&apos;s Microsoft 365 tenant. A Global Administrator must
+          complete this step.
+        </p>
+      </div>
+      <div className="flex flex-col gap-2">
+        <label htmlFor="tenantName" className="text-body-strong text-slate-700">
           Organization name
         </label>
-        <input
+        <Input
           id="tenantName"
           type="text"
           value={tenantName}
           onChange={(event) => setTenantName(event.target.value)}
           placeholder="Acme Corporation"
           maxLength={200}
-          className="rounded-md border border-slate-300 px-3 py-2 text-sm"
         />
       </div>
-      <button
-        type="button"
-        disabled={!canConnect}
-        onClick={handleConnect}
-        className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
-      >
+      <Button disabled={!canConnect} onClick={handleConnect} className="w-full justify-center">
         Connect Microsoft 365
-      </button>
-    </main>
+      </Button>
+    </AuthShell>
   );
 }

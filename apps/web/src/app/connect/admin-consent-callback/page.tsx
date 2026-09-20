@@ -5,6 +5,9 @@ import { useSearchParams } from 'next/navigation';
 import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '@/lib/auth/msal-config';
 import { readConnectFlowTenantName, validateConnectFlowState } from '@/lib/auth/connect-flow';
+import { AuthShell } from '@/components/auth/auth-shell';
+import { MicrosoftLogo } from '@/components/auth/microsoft-logo';
+import { Button } from '@/components/ui/button';
 
 /**
  * New, dedicated redirect URI target for Microsoft's raw admin-consent
@@ -60,24 +63,28 @@ function AdminConsentCallbackContent(): JSX.Element | null {
 
     if (stateValid) {
       return (
-        <main className="flex min-h-screen flex-col items-center justify-center gap-4 bg-slate-50 p-8">
-          <h1 className="text-2xl font-semibold text-slate-900">Permission granted</h1>
-          <p className="max-w-md text-center text-slate-600">
-            Microsoft 365 admin consent was granted successfully. Sign in to confirm your identity
-            and finish connecting your organization.
-          </p>
-          <button
-            type="button"
+        <AuthShell>
+          <div className="flex flex-col items-center gap-3 text-center">
+            <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-brand-50">
+              <MicrosoftLogo className="h-6 w-6" />
+            </span>
+            <h1 className="text-page-title text-slate-900">Permission granted</h1>
+            <p className="max-w-sm text-body text-slate-600">
+              Microsoft 365 admin consent was granted successfully. Sign in to confirm your identity
+              and finish connecting your organization.
+            </p>
+          </div>
+          <Button
             onClick={() => {
               const tenantName = readConnectFlowTenantName() ?? '';
               const connectState = JSON.stringify({ kind: 'connect', tenantName });
               void instance.loginRedirect({ ...loginRequest, state: connectState });
             }}
-            className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700"
+            className="w-full justify-center"
           >
             Continue to sign-in
-          </button>
-        </main>
+          </Button>
+        </AuthShell>
       );
     }
 
@@ -87,15 +94,20 @@ function AdminConsentCallbackContent(): JSX.Element | null {
     // a terminal outcome, so a genuinely fresh revisit after completion
     // correctly lands here too).
     return (
-      <main className="flex min-h-screen flex-col items-center justify-center gap-4 bg-slate-50 p-8">
-        <h1 className="text-2xl font-semibold text-slate-900">This link has expired</h1>
-        <p className="max-w-md text-center text-slate-600">
-          We couldn&apos;t verify this connection request. Please start again.
-        </p>
-        <a href="/connect" className="text-sm font-medium text-slate-900 underline">
-          Start again
-        </a>
-      </main>
+      <AuthShell>
+        <div className="flex flex-col items-center gap-3 text-center">
+          <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-brand-50">
+            <MicrosoftLogo className="h-6 w-6" />
+          </span>
+          <h1 className="text-page-title text-slate-900">This link has expired</h1>
+          <p className="max-w-sm text-body text-slate-600">
+            We couldn&apos;t verify this connection request. Please start again.
+          </p>
+          <a href="/connect" className="text-body-strong text-brand-600 underline hover:text-brand-700">
+            Start again
+          </a>
+        </div>
+      </AuthShell>
     );
   }
 
@@ -106,29 +118,37 @@ function AdminConsentCallbackContent(): JSX.Element | null {
   // privilege-check decision, don't try to duplicate or enumerate it).
   if (error === 'access_denied') {
     return (
-      <main className="flex min-h-screen flex-col items-center justify-center gap-4 bg-slate-50 p-8">
-        <h1 className="text-2xl font-semibold text-slate-900">You cancelled the connection</h1>
-        <p className="max-w-md text-center text-slate-600">
-          {errorDescription || 'No changes were made.'}
-        </p>
-        <a href="/connect" className="text-sm font-medium text-slate-900 underline">
-          Try again
-        </a>
-      </main>
+      <AuthShell>
+        <div className="flex flex-col items-center gap-3 text-center">
+          <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-brand-50">
+            <MicrosoftLogo className="h-6 w-6" />
+          </span>
+          <h1 className="text-page-title text-slate-900">You cancelled the connection</h1>
+          <p className="max-w-sm text-body text-slate-600">{errorDescription || 'No changes were made.'}</p>
+          <a href="/connect" className="text-body-strong text-brand-600 underline hover:text-brand-700">
+            Try again
+          </a>
+        </div>
+      </AuthShell>
     );
   }
 
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center gap-4 bg-slate-50 p-8">
-      <h1 className="text-2xl font-semibold text-slate-900">Admin consent could not be completed</h1>
-      <p className="max-w-md text-center text-slate-600">
-        {errorDescription ||
-          'You may need Global Administrator privileges in your Microsoft 365 tenant to complete this step.'}
-      </p>
-      <a href="/connect" className="text-sm font-medium text-slate-900 underline">
-        Try again
-      </a>
-    </main>
+    <AuthShell>
+      <div className="flex flex-col items-center gap-3 text-center">
+        <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-brand-50">
+          <MicrosoftLogo className="h-6 w-6" />
+        </span>
+        <h1 className="text-page-title text-slate-900">Admin consent could not be completed</h1>
+        <p className="max-w-sm text-body text-slate-600">
+          {errorDescription ||
+            'You may need Global Administrator privileges in your Microsoft 365 tenant to complete this step.'}
+        </p>
+        <a href="/connect" className="text-body-strong text-brand-600 underline hover:text-brand-700">
+          Try again
+        </a>
+      </div>
+    </AuthShell>
   );
 }
 

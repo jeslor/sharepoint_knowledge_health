@@ -10,6 +10,9 @@ import { getOnboardingStatus, postConsentCallback } from '@/lib/api/endpoints';
 import { ApiError } from '@/lib/api/client';
 import { clearConnectFlow } from '@/lib/auth/connect-flow';
 import { useCurrentUser } from '@/lib/auth/current-user-context';
+import { AuthShell } from '@/components/auth/auth-shell';
+import { MicrosoftLogo } from '@/components/auth/microsoft-logo';
+import { Spinner } from '@/components/ui/spinner';
 
 type FinishingState =
   | { status: 'working' }
@@ -172,57 +175,83 @@ function ConnectFinishingContent(): JSX.Element {
 
   if (state.status === 'discovering') {
     return (
-      <main className="flex min-h-screen flex-col items-center justify-center gap-4 bg-slate-50 p-8">
-        <p className="text-slate-600">
-          {state.discoveryStatus === 'Running' ? 'Discovering your SharePoint sites…' : 'Finishing setup…'}
-        </p>
-      </main>
+      <AuthShell>
+        <div className="flex flex-col items-center gap-4 text-center">
+          <Spinner className="h-8 w-8 text-brand-600" />
+          <p className="text-body text-slate-600">
+            {state.discoveryStatus === 'Running' ? 'Discovering your SharePoint sites…' : 'Finishing setup…'}
+          </p>
+        </div>
+      </AuthShell>
     );
   }
 
   if (state.status === 'provisioned-pending') {
     return (
-      <main className="flex min-h-screen flex-col items-center justify-center gap-4 bg-slate-50 p-8">
-        <h1 className="text-2xl font-semibold text-slate-900">Almost there</h1>
-        <p className="max-w-md text-center text-slate-600">
-          Your identity was confirmed, but your organization is already connected. An administrator
-          needs to approve your account before you can continue.
-        </p>
-      </main>
+      <AuthShell>
+        <div className="flex flex-col items-center gap-3 text-center">
+          <StatusBadge />
+          <h1 className="text-page-title text-slate-900">Almost there</h1>
+          <p className="max-w-sm text-body text-slate-600">
+            Your identity was confirmed, but your organization is already connected. An administrator
+            needs to approve your account before you can continue.
+          </p>
+        </div>
+      </AuthShell>
     );
   }
 
   if (state.status === 'rejected') {
     return (
-      <main className="flex min-h-screen flex-col items-center justify-center gap-4 bg-slate-50 p-8">
-        <h1 className="text-2xl font-semibold text-slate-900">This tenant hasn&apos;t completed admin consent</h1>
-        <p className="max-w-md text-center text-slate-600">
-          Your Microsoft 365 tenant needs to complete admin consent before an organization can be
-          connected.
-        </p>
-        <a href="/connect" className="text-sm font-medium text-slate-900 underline">
-          Try again
-        </a>
-      </main>
+      <AuthShell>
+        <div className="flex flex-col items-center gap-3 text-center">
+          <StatusBadge />
+          <h1 className="text-page-title text-slate-900">This tenant hasn&apos;t completed admin consent</h1>
+          <p className="max-w-sm text-body text-slate-600">
+            Your Microsoft 365 tenant needs to complete admin consent before an organization can be
+            connected.
+          </p>
+          <a href="/connect" className="text-body-strong text-brand-600 underline hover:text-brand-700">
+            Try again
+          </a>
+        </div>
+      </AuthShell>
     );
   }
 
   if (state.status === 'error') {
     return (
-      <main className="flex min-h-screen flex-col items-center justify-center gap-4 bg-slate-50 p-8">
-        <h1 className="text-2xl font-semibold text-slate-900">Something went wrong</h1>
-        <p className="max-w-md text-center text-slate-600">{state.message}</p>
-        <a href="/connect" className="text-sm font-medium text-slate-900 underline">
-          Try again
-        </a>
-      </main>
+      <AuthShell>
+        <div className="flex flex-col items-center gap-3 text-center">
+          <StatusBadge />
+          <h1 className="text-page-title text-slate-900">Something went wrong</h1>
+          <p className="max-w-sm text-body text-slate-600">{state.message}</p>
+          <a href="/connect" className="text-body-strong text-brand-600 underline hover:text-brand-700">
+            Try again
+          </a>
+        </div>
+      </AuthShell>
     );
   }
 
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center gap-4 bg-slate-50 p-8">
-      <p className="text-slate-600">Finishing setup…</p>
-    </main>
+    <AuthShell>
+      <div className="flex flex-col items-center gap-4 text-center">
+        <Spinner className="h-8 w-8 text-brand-600" />
+        <p className="text-body text-slate-600">Finishing setup…</p>
+      </div>
+    </AuthShell>
+  );
+}
+
+// Small brand-consistent icon badge for the non-loading status branches
+// above (provisioned-pending/rejected/error) — the in-progress branches use
+// Spinner instead, since they represent an active wait, not a resolved state.
+function StatusBadge(): JSX.Element {
+  return (
+    <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-brand-50">
+      <MicrosoftLogo className="h-6 w-6" />
+    </span>
   );
 }
 
@@ -230,9 +259,12 @@ export default function ConnectFinishingPage(): JSX.Element {
   return (
     <Suspense
       fallback={
-        <main className="flex min-h-screen flex-col items-center justify-center gap-4 bg-slate-50 p-8">
-          <p className="text-slate-600">Finishing setup…</p>
-        </main>
+        <AuthShell>
+          <div className="flex flex-col items-center gap-4 text-center">
+            <Spinner className="h-8 w-8 text-brand-600" />
+            <p className="text-body text-slate-600">Finishing setup…</p>
+          </div>
+        </AuthShell>
       }
     >
       <ConnectFinishingContent />
