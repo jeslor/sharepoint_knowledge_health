@@ -1,8 +1,9 @@
 import Link from 'next/link';
-import { ShieldCheckmarkRegular } from '@fluentui/react-icons';
+import { ShieldCheckmarkRegular, QuestionCircleRegular } from '@fluentui/react-icons';
 import type { HealthSummaryResponse } from '@sph/types';
 import { Card } from '@/components/ui/card';
 import { buttonClassName } from '@/components/ui/button';
+import { Tooltip } from '@/components/ui/tooltip';
 
 // Mirrors packages/scoring/src/config.ts's HEALTH_BANDS — redeclared here
 // rather than imported (this frontend stays independent of
@@ -50,6 +51,11 @@ export function OrganizationHealthHero({ summary }: { summary: HealthSummaryResp
               <ShieldCheckmarkRegular fontSize={14} />
             </span>
             Organization Health
+            <Tooltip content="Your score reflects the health of the documents evaluated during the latest scan.">
+              <Link href="/dashboard/help/document-health" aria-label="Learn how Document Health is measured" className="text-slate-300 hover:text-brand-600">
+                <QuestionCircleRegular fontSize={16} />
+              </Link>
+            </Tooltip>
           </div>
           <div className="mt-2 flex items-baseline gap-2">
             <span className="text-[3.5rem] font-bold leading-none tracking-tight tabular-nums text-slate-900">{score ?? '—'}</span>
