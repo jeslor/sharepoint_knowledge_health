@@ -19,14 +19,18 @@ export function AppHeader({ mobileNavOpen, onToggleMobileNav }: AppHeaderProps):
   const { user } = useCurrentUser();
 
   return (
-    <header className="flex items-center justify-between border-b border-slate-200/60 bg-white px-4 py-3 sm:px-6">
-      <div className="flex items-center gap-3">
+    <header className="flex items-center justify-between gap-3 border-b border-slate-200/60 bg-white px-4 py-3 sm:px-6">
+      {/* min-w-0 lets this side actually shrink/truncate instead of forcing
+          the header (and the whole page) wider than the viewport — a plain
+          flex child with text content otherwise refuses to shrink below its
+          content's natural width. */}
+      <div className="flex min-w-0 items-center gap-3">
         <button
           type="button"
           onClick={onToggleMobileNav}
           aria-label="Toggle navigation menu"
           aria-expanded={mobileNavOpen}
-          className="rounded-md p-1.5 text-slate-600 transition-colors duration-150 ease-premium hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-600 sm:hidden"
+          className="shrink-0 rounded-md p-1.5 text-slate-600 transition-colors duration-150 ease-premium hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-600 sm:hidden"
         >
           <NavigationRegular fontSize={20} />
         </button>
@@ -44,7 +48,7 @@ export function AppHeader({ mobileNavOpen, onToggleMobileNav }: AppHeaderProps):
             target="_blank"
             rel="noopener noreferrer"
             aria-label="Open Microsoft 365 admin center"
-            className="hidden rounded-md text-slate-500 transition-colors duration-150 ease-premium hover:bg-slate-50 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-600 sm:block"
+            className="hidden shrink-0 rounded-md text-slate-500 transition-colors duration-150 ease-premium hover:bg-slate-50 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-600 sm:block"
           >
             <Image src="/images/logo_small.png" alt="Microsoft 365" width={30} height={30} />
           </a>
@@ -53,16 +57,24 @@ export function AppHeader({ mobileNavOpen, onToggleMobileNav }: AppHeaderProps):
         {/* Phase 10A.7: a small brand logomark — soft-tinted, matching the
             same icon-badge language as CardHeader/EmptyState — gives the
             product a mark of its own instead of reading as bare text next
-            to Microsoft's own icon vocabulary. */}
-        <div className="flex items-center gap-2.5 border-l border-slate-200/60 pl-3 sm:pl-4">
-          <span className="flex h-7 w-7 items-center justify-center rounded-md bg-brand-50 text-brand-600">
+            to Microsoft's own icon vocabulary. min-w-0 + truncate on the
+            text (rather than letting it wrap) is what actually fixes the
+            mobile header: a shorter label below sm: keeps one line instead
+            of "SharePoint Knowledge Health" wrapping and squeezing Sign out. */}
+        <div className="flex min-w-0 items-center gap-2.5 border-l border-slate-200/60 pl-3 sm:pl-4">
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-brand-50 text-brand-600">
             <ShieldCheckmarkRegular fontSize={16} />
           </span>
-          <span className="text-section-title text-slate-900">SharePoint Knowledge Health</span>
+          <span className="truncate text-section-title text-slate-900 sm:hidden">
+            Knowledge Health
+          </span>
+          <span className="hidden truncate text-section-title text-slate-900 sm:inline">
+            SharePoint Knowledge Health
+          </span>
         </div>
       </div>
 
-      <div className="flex items-center gap-4">
+      <div className="flex shrink-0 items-center gap-4">
         {(user?.tenantName || user?.displayName) && (
           <div className="hidden items-center gap-3 border-r border-slate-200/60 pr-4 sm:flex">
             {/* Breakpoints preserved exactly as before this pass — tenantName

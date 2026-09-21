@@ -23,6 +23,8 @@ import {
   SettingsRegular,
   SettingsFilled,
   ChevronDownRegular,
+  QuestionCircleRegular,
+  QuestionCircleFilled,
   type FluentIcon,
 } from '@fluentui/react-icons';
 import { useCurrentUser } from '@/lib/auth/current-user-context';
@@ -61,6 +63,10 @@ const GROUPS: NavGroup[] = [
       // the nav doesn't silently contradict that backend decision.
       { href: '/dashboard/audit-log', label: 'Audit log', icon: HistoryRegular, activeIcon: HistoryFilled },
       { href: '/dashboard/notifications', label: 'Notifications', icon: AlertRegular, activeIcon: AlertFilled },
+      // Available to every role (not gated to Administration below) —
+      // understanding Document Health is relevant to any org member, not
+      // just Admins.
+      { href: '/dashboard/help', label: 'Help', icon: QuestionCircleRegular, activeIcon: QuestionCircleFilled },
     ],
   },
   {

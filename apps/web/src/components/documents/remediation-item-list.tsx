@@ -2,6 +2,7 @@ import Link from 'next/link';
 import type { RemediationItemResult, RemediationItemStatusValue } from '@sph/types';
 import { Badge, type BadgeTone } from '@/components/ui/badge';
 import { EmptyState } from '@/components/ui/query-state';
+import { TableScrollContainer } from '@/components/ui/table-scroll-container';
 
 // Pending here means "still queued/being processed" (ADR-0022 §13.3 — a
 // write that succeeds but can't yet be verified also stays Pending,
@@ -25,40 +26,48 @@ export function RemediationItemList({ items }: { items: RemediationItemResult[] 
   }
 
   return (
-    <table className="w-full border-collapse text-left text-sm">
-      <thead>
-        <tr className="border-b border-slate-200/60 text-slate-500">
-          <th className="py-2.5 pr-4 font-medium">Document</th>
-          <th className="py-2.5 pr-4 font-medium">Status</th>
-          <th className="py-2.5 pr-4 font-medium">Attempts</th>
-          <th className="py-2.5 pr-4 font-medium">Error</th>
-        </tr>
-      </thead>
-      <tbody>
-        {items.map((item) => (
-          <tr key={item.documentId} className="transition-colors duration-150 ease-premium hover:bg-slate-50">
-            <td className="py-3 pr-4">
-              <Link href={`/dashboard/documents/${item.documentId}`} className="text-slate-900 hover:underline">
-                {item.documentName ?? item.documentId}
-              </Link>
-            </td>
-            <td className="py-3 pr-4">
-              <Badge tone={STATUS_TONE[item.status]}>{item.status}</Badge>
-            </td>
-            <td className="py-3 pr-4 text-slate-600">{item.attemptCount}</td>
-            <td className="py-3 pr-4 text-slate-600">
-              {item.errorType ? (
-                <span title={item.errorMessage ?? undefined}>
-                  {item.errorType}
-                  {item.errorMessage ? `: ${item.errorMessage}` : ''}
-                </span>
-              ) : (
-                '—'
-              )}
-            </td>
+    <TableScrollContainer>
+      <table className="w-full min-w-[560px] border-collapse text-left text-sm">
+        <thead>
+          <tr className="border-b border-slate-200/60 text-slate-500">
+            <th className="py-2.5 pr-4 font-medium">Document</th>
+            <th className="py-2.5 pr-4 font-medium">Status</th>
+            <th className="py-2.5 pr-4 font-medium">Attempts</th>
+            <th className="py-2.5 pr-4 font-medium">Error</th>
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {items.map((item) => (
+            <tr
+              key={item.documentId}
+              className="transition-colors duration-150 ease-premium hover:bg-slate-50"
+            >
+              <td className="py-3 pr-4">
+                <Link
+                  href={`/dashboard/documents/${item.documentId}`}
+                  className="text-slate-900 hover:underline"
+                >
+                  {item.documentName ?? item.documentId}
+                </Link>
+              </td>
+              <td className="py-3 pr-4">
+                <Badge tone={STATUS_TONE[item.status]}>{item.status}</Badge>
+              </td>
+              <td className="py-3 pr-4 text-slate-600">{item.attemptCount}</td>
+              <td className="py-3 pr-4 text-slate-600">
+                {item.errorType ? (
+                  <span title={item.errorMessage ?? undefined}>
+                    {item.errorType}
+                    {item.errorMessage ? `: ${item.errorMessage}` : ''}
+                  </span>
+                ) : (
+                  '—'
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </TableScrollContainer>
   );
 }
