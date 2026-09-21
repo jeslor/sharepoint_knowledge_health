@@ -18,7 +18,13 @@ interface DocumentOwnershipProps {
 
 // ADR-0016 §4.2: source distinguishes worker-owned (GraphMetadata, display
 // only) from governance-API-owned (ManualAssignment, removable here).
-export function DocumentOwnership({ owners, canManage, onAssign, onRemove, saving }: DocumentOwnershipProps): JSX.Element {
+export function DocumentOwnership({
+  owners,
+  canManage,
+  onAssign,
+  onRemove,
+  saving,
+}: DocumentOwnershipProps): JSX.Element {
   const [displayName, setDisplayName] = useState('');
   const [email, setEmail] = useState('');
 
@@ -35,11 +41,17 @@ export function DocumentOwnership({ owners, canManage, onAssign, onRemove, savin
       ) : (
         <ul className="space-y-2">
           {owners.map((owner) => (
-            <li key={owner.id} className="flex items-center justify-between rounded-lg border border-slate-200/60 p-3 text-sm">
+            <li
+              key={owner.id}
+              className="flex items-center justify-between rounded-lg border border-slate-200/60 p-3 text-sm"
+            >
               <div>
-                <span className="font-medium text-slate-900">{owner.displayName ?? owner.email ?? 'Unknown'}</span>{' '}
+                <span className="font-medium text-slate-900">
+                  {owner.displayName ?? owner.email ?? 'Unknown'}
+                </span>{' '}
                 <span className="text-xs text-slate-500">
-                  ({owner.ownerType}, {owner.source === 'ManualAssignment' ? 'manually assigned' : 'from SharePoint'})
+                  ({owner.ownerType},{' '}
+                  {owner.source === 'ManualAssignment' ? 'manually assigned' : 'from SharePoint'})
                 </span>
               </div>
               {canManage && owner.source === 'ManualAssignment' && (
@@ -61,12 +73,27 @@ export function DocumentOwnership({ owners, canManage, onAssign, onRemove, savin
       {canManage ? (
         <CommandBar>
           <Field label="Name">
-            <Input type="text" value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
+            <Input
+              type="text"
+              value={displayName}
+              onChange={(event) => setDisplayName(event.target.value)}
+            />
           </Field>
           <Field label="Email">
             <Input type="email" value={email} onChange={(event) => setEmail(event.target.value)} />
           </Field>
-          <Button size="sm" disabled={saving || (!displayName && !email)} onClick={handleAssign}>
+          {/* col-span-2: CommandBar's mobile grid is 2 columns — without
+              this, a bare action button (not wrapped in Field, so it's a
+              third grid item) lands alone in the first cell of its own
+              row, leaving an empty cell beside it instead of spanning full
+              width. sm: and up reverts to CommandBar's normal flex-wrap
+              row, where col-span has no effect. */}
+          <Button
+            size="sm"
+            disabled={saving || (!displayName && !email)}
+            onClick={handleAssign}
+            className="col-span-2 sm:col-span-1"
+          >
             {saving ? 'Saving…' : 'Assign owner'}
           </Button>
         </CommandBar>
@@ -77,7 +104,8 @@ export function DocumentOwnership({ owners, canManage, onAssign, onRemove, savin
         // information above stays visible either way — this doesn't gate
         // anything, it only explains the existing, unchanged boundary.
         <p className="text-sm text-slate-500">
-          Setting the owner requires Admin or Governance Manager permissions. Please contact your administrator.
+          Setting the owner requires Admin or Governance Manager permissions. Please contact your
+          administrator.
         </p>
       )}
     </div>

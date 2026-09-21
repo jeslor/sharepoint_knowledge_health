@@ -4,6 +4,7 @@ import Link from 'next/link';
 import type { SharePointSiteResponse, SharePointSiteStatusValue } from '@sph/types';
 import { EmptyState } from '@/components/ui/query-state';
 import { Button, buttonClassName, type ButtonVariant } from '@/components/ui/button';
+import { TableScrollContainer } from '@/components/ui/table-scroll-container';
 import { SharePointSiteStatusBadge } from './sharepoint-site-status-badge';
 
 interface SharePointSiteListProps {
@@ -38,9 +39,18 @@ interface RowAction {
 // means only its props change across a status transition — letting the
 // transition classes already on Button (transition-[color,background-
 // color,border-color,transform]) animate the change instead of cutting.
-function rowAction(site: SharePointSiteResponse, onApprove: (id: string) => void, onRevoke: (id: string) => void): RowAction | null {
+function rowAction(
+  site: SharePointSiteResponse,
+  onApprove: (id: string) => void,
+  onRevoke: (id: string) => void,
+): RowAction | null {
   const ACTIONS: Record<SharePointSiteStatusValue, RowAction> = {
-    Discovered: { label: 'Approve', savingLabel: 'Approving…', variant: 'secondary', onClick: () => onApprove(site.id) },
+    Discovered: {
+      label: 'Approve',
+      savingLabel: 'Approving…',
+      variant: 'secondary',
+      onClick: () => onApprove(site.id),
+    },
     Approved: {
       label: 'Revoke',
       savingLabel: 'Revoking…',
@@ -48,7 +58,12 @@ function rowAction(site: SharePointSiteResponse, onApprove: (id: string) => void
       className: 'text-red-700 hover:bg-red-50 hover:underline',
       onClick: () => onRevoke(site.id),
     },
-    Removed: { label: 'Re-approve', savingLabel: 'Approving…', variant: 'secondary', onClick: () => onApprove(site.id) },
+    Removed: {
+      label: 'Re-approve',
+      savingLabel: 'Approving…',
+      variant: 'secondary',
+      onClick: () => onApprove(site.id),
+    },
   };
   return ACTIONS[site.status] ?? null;
 }
@@ -70,63 +85,79 @@ export function SharePointSiteList({
   // Phase 10A.6: whitespace-driven rows (no per-row border) + hover
   // feedback (previously missing here, per the original audit).
   return (
-    <table className="w-full text-left text-sm">
-      <thead>
-        <tr className="border-b border-slate-200/60 text-xs uppercase tracking-wide text-slate-500">
-          <th className="py-2.5">Site</th>
-          <th className="py-2.5">Status</th>
-          <th className="py-2.5">Last scanned</th>
-          <th className="py-2.5">Review dates</th>
-          {canManage && <th className="py-2.5">Actions</th>}
-        </tr>
-      </thead>
-      <tbody>
-        {sites.map((site) => {
-          const saving = mutatingSiteId === site.id;
-          const action = rowAction(
-            site,
-            (id) => void onApprove(id),
-            (id) => void onRevoke(id),
-          );
-          const isExiting = exitingSiteIds?.has(site.id) ?? false;
-          return (
-            <tr
-              key={site.id}
-              className={`transition-[opacity,background-color] duration-200 ease-premium hover:bg-slate-50 ${isExiting ? 'opacity-0' : ''}`}
-            >
-              <td className="py-3">
-                <a href={site.siteUrl} target="_blank" rel="noreferrer" className="font-medium text-slate-900 hover:underline">
-                  {site.displayName}
-                </a>
-              </td>
-              <td className="py-3">
-                <SharePointSiteStatusBadge status={site.status} />
-              </td>
-              <td className="py-3 text-slate-600">
-                {site.lastScannedAt ? new Date(site.lastScannedAt).toLocaleString() : 'Never'}
-              </td>
-              <td className="py-3">
-                {site.status === 'Approved' ? (
-                  <Link href={`/dashboard/sharepoint/${site.id}/review-dates`} className={buttonClassName('secondary', 'sm')}>
-                    Manage review dates
-                  </Link>
-                ) : (
-                  <span className="text-slate-400">—</span>
-                )}
-              </td>
-              {canManage && (
+    <TableScrollContainer>
+      <table className="w-full min-w-[640px] text-left text-sm">
+        <thead>
+          <tr className="border-b border-slate-200/60 text-xs uppercase tracking-wide text-slate-500">
+            <th className="py-2.5">Site</th>
+            <th className="py-2.5">Status</th>
+            <th className="py-2.5">Last scanned</th>
+            <th className="py-2.5">Review dates</th>
+            {canManage && <th className="py-2.5">Actions</th>}
+          </tr>
+        </thead>
+        <tbody>
+          {sites.map((site) => {
+            const saving = mutatingSiteId === site.id;
+            const action = rowAction(
+              site,
+              (id) => void onApprove(id),
+              (id) => void onRevoke(id),
+            );
+            const isExiting = exitingSiteIds?.has(site.id) ?? false;
+            return (
+              <tr
+                key={site.id}
+                className={`transition-[opacity,background-color] duration-200 ease-premium hover:bg-slate-50 ${isExiting ? 'opacity-0' : ''}`}
+              >
                 <td className="py-3">
-                  {action && (
-                    <Button variant={action.variant} size="sm" disabled={saving} onClick={action.onClick} className={action.className}>
-                      {saving ? action.savingLabel : action.label}
-                    </Button>
+                  <a
+                    href={site.siteUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="font-medium text-slate-900 hover:underline"
+                  >
+                    {site.displayName}
+                  </a>
+                </td>
+                <td className="py-3">
+                  <SharePointSiteStatusBadge status={site.status} />
+                </td>
+                <td className="py-3 text-slate-600">
+                  {site.lastScannedAt ? new Date(site.lastScannedAt).toLocaleString() : 'Never'}
+                </td>
+                <td className="py-3">
+                  {site.status === 'Approved' ? (
+                    <Link
+                      href={`/dashboard/sharepoint/${site.id}/review-dates`}
+                      className={buttonClassName('secondary', 'sm')}
+                    >
+                      Manage review dates
+                    </Link>
+                  ) : (
+                    <span className="text-slate-400">—</span>
                   )}
                 </td>
-              )}
-            </tr>
-          );
-        })}
-      </tbody>
-    </table>
+                {canManage && (
+                  <td className="py-3">
+                    {action && (
+                      <Button
+                        variant={action.variant}
+                        size="sm"
+                        disabled={saving}
+                        onClick={action.onClick}
+                        className={action.className}
+                      >
+                        {saving ? action.savingLabel : action.label}
+                      </Button>
+                    )}
+                  </td>
+                )}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </TableScrollContainer>
   );
 }

@@ -62,7 +62,11 @@ describe('RemediationJobsPage (P0-7 — history)', () => {
 
     render(<RemediationJobsPage />);
 
-    expect(screen.getByText('Ada Admin')).toBeInTheDocument();
+    // Responsive fix (mobile audit): RemediationJobList renders both a
+    // mobile card list and a desktop table at once in jsdom (CSS
+    // `hidden`/`lg:block` picks one — jsdom never evaluates that media
+    // query), so this text is now duplicated by design.
+    expect(screen.getAllByText('Ada Admin').length).toBeGreaterThan(0);
   });
 
   it('shows the empty state when there are no jobs', () => {
@@ -86,7 +90,11 @@ describe('RemediationJobsPage (P0-7 — history)', () => {
   });
 
   it('shows an error state when the fetch fails', () => {
-    mockUseRemediationJobs.mockReturnValue({ data: undefined, loading: false, error: new Error('Network error') });
+    mockUseRemediationJobs.mockReturnValue({
+      data: undefined,
+      loading: false,
+      error: new Error('Network error'),
+    });
 
     render(<RemediationJobsPage />);
 

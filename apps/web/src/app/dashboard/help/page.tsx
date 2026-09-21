@@ -41,8 +41,14 @@ const TOPICS: Topic[] = [
     icon: TargetArrowRegular,
     links: [
       { label: 'The seven health criteria', href: '/dashboard/help/document-health#evaluate' },
-      { label: 'How the composite score is calculated', href: '/dashboard/help/document-health#score' },
-      { label: 'What Healthy, Needs Attention, and Requires Review mean', href: '/dashboard/help/document-health#score' },
+      {
+        label: 'How the composite score is calculated',
+        href: '/dashboard/help/document-health#score',
+      },
+      {
+        label: 'What Healthy, Needs Attention, and Requires Review mean',
+        href: '/dashboard/help/document-health#score',
+      },
     ],
   },
   {
@@ -82,11 +88,14 @@ export default function HelpPage(): JSX.Element {
           <div>
             <h2 className="text-page-title text-slate-900">Understand Document Health</h2>
             <p className="mt-1 max-w-xl text-body text-slate-600">
-              Walk through how your SharePoint content is discovered, scanned, evaluated, and scored — and exactly
-              what to do to improve it.
+              See how your SharePoint content is discovered, scanned, evaluated, and scored, then
+              find out exactly what to do to improve it.
             </p>
           </div>
-          <Link href="/dashboard/help/document-health" className={buttonClassName('primary', 'md', 'shrink-0')}>
+          <Link
+            href="/dashboard/help/document-health"
+            className={buttonClassName('primary', 'md', 'shrink-0')}
+          >
             Start the guide
             <ArrowRightRegular fontSize={16} />
           </Link>

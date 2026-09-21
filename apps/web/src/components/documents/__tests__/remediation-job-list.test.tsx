@@ -26,15 +26,22 @@ describe('RemediationJobList (P0-7)', () => {
     expect(screen.getByText('No remediation jobs yet.')).toBeInTheDocument();
   });
 
-  it.each(['Running', 'Completed'])('renders the real %s status value as a badge, not an invented label', (status) => {
-    render(<RemediationJobList jobs={[job({ status: status as 'Running' | 'Completed' })]} />);
-    const [row] = screen.getAllByRole('row').slice(1);
-    expect(row).toBeDefined();
-    expect(row && within(row).getByText(status)).toBeInTheDocument();
-  });
+  it.each(['Running', 'Completed'])(
+    'renders the real %s status value as a badge, not an invented label',
+    (status) => {
+      render(<RemediationJobList jobs={[job({ status: status as 'Running' | 'Completed' })]} />);
+      const [row] = screen.getAllByRole('row').slice(1);
+      expect(row).toBeDefined();
+      expect(row && within(row).getByText(status)).toBeInTheDocument();
+    },
+  );
 
   it('renders initiator, total/succeeded/failed/skipped counts, and timestamps in the documented column order', () => {
-    render(<RemediationJobList jobs={[job({ totalCount: 10, succeededCount: 6, failedCount: 3, skippedCount: 1 })]} />);
+    render(
+      <RemediationJobList
+        jobs={[job({ totalCount: 10, succeededCount: 6, failedCount: 3, skippedCount: 1 })]}
+      />,
+    );
 
     const [row] = screen.getAllByRole('row').slice(1);
     expect(row).toBeDefined();
@@ -70,6 +77,14 @@ describe('RemediationJobList (P0-7)', () => {
   it('links each row to its detail page', () => {
     render(<RemediationJobList jobs={[job({ id: 'job-42' })]} />);
 
-    expect(screen.getByRole('link', { name: 'View' })).toHaveAttribute('href', '/dashboard/documents/remediation-jobs/job-42');
+    // Responsive fix (mobile audit): the mobile card list renders its own
+    // "View" link too (both it and the desktop table exist in jsdom at
+    // once) — getAllByRole confirms every rendered "View" link points at
+    // the same real route rather than picking one arbitrarily.
+    const links = screen.getAllByRole('link', { name: 'View' });
+    expect(links.length).toBeGreaterThan(0);
+    for (const link of links) {
+      expect(link).toHaveAttribute('href', '/dashboard/documents/remediation-jobs/job-42');
+    }
   });
 });
