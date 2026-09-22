@@ -1,5 +1,6 @@
 import { prisma } from './client';
 import { OrganizationRepository } from './repositories/organization-repository';
+import { OrganizationEntitlementRepository } from './repositories/organization-entitlement-repository';
 import { UserRepository } from './repositories/user-repository';
 import { MicrosoftTenantRepository } from './repositories/microsoft-tenant-repository';
 import { SharePointSiteRepository } from './repositories/sharepoint-site-repository';
@@ -22,6 +23,7 @@ import { RemediationItemRepository } from './repositories/remediation-item-repos
 export interface TenantContext {
   readonly organizationId: string;
   readonly organization: OrganizationRepository;
+  readonly entitlement: OrganizationEntitlementRepository;
   readonly users: UserRepository;
   readonly microsoftTenants: MicrosoftTenantRepository;
   readonly sharePointSites: SharePointSiteRepository;
@@ -52,6 +54,7 @@ export function createTenantContext(organizationId: string): TenantContext {
   return {
     organizationId,
     organization: new OrganizationRepository(organizationId, prisma),
+    entitlement: new OrganizationEntitlementRepository(organizationId, prisma),
     users: new UserRepository(organizationId, prisma),
     microsoftTenants: new MicrosoftTenantRepository(organizationId, prisma),
     sharePointSites: new SharePointSiteRepository(organizationId, prisma),

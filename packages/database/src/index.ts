@@ -28,6 +28,12 @@ export { createRemediationJobWithItems } from './remediation';
 export type { CreateRemediationJobInput, RemediationJobWithItems } from './remediation';
 export { resolveGovernanceIssueForRemediation } from './governance-resolution';
 export type { ResolveGovernanceIssueForRemediationInput, ResolveGovernanceIssueForRemediationResult } from './governance-resolution';
+export { tryConsumeDocumentSlot, releaseDocumentSlot, NoEntitlementError } from './entitlement';
+export type { EntitlementDbClient, DocumentSlotResult } from './entitlement';
+export { backfillOrganizationEntitlements, DEFAULT_TRIAL_DOCUMENT_LIMIT } from './entitlement-backfill';
+export type { EntitlementBackfillResult } from './entitlement-backfill';
+export { createDocumentWithQuota, markDocumentRemovedAndReleaseSlot } from './document-lifecycle';
+export type { CreateDocumentWithQuotaInput, CreateDocumentWithQuotaResult, MarkDocumentRemovedResult } from './document-lifecycle';
 
 export type {
   Organization,
@@ -49,6 +55,7 @@ export type {
   SharePointClassificationField,
   RemediationJob,
   RemediationItem,
+  OrganizationEntitlement,
 } from '@prisma/client';
 
 export {
@@ -74,4 +81,5 @@ export {
   SharePointClassificationFieldStatus,
   RemediationJobStatus,
   RemediationItemStatus,
+  OrganizationPlanType,
 } from '@prisma/client';

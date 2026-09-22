@@ -7,7 +7,15 @@ import {
   type ScanJobPayload,
   type NotificationReconciliationJobPayload,
 } from '@sph/types';
-import { createTenantContext, type TenantContext, type Document, type DocumentOwner, type SharePointSite } from '@sph/database';
+import {
+  createTenantContext,
+  createDocumentWithQuota,
+  markDocumentRemovedAndReleaseSlot,
+  type TenantContext,
+  type Document,
+  type DocumentOwner,
+  type SharePointSite,
+} from '@sph/database';
 import {
   listDrives,
   listDocuments,
@@ -45,6 +53,16 @@ interface ScanAggregateSummary {
   criticalIssuesCount: number;
   warningIssuesCount: number;
 }
+
+/**
+ * Trial entitlement enforcement (packages/database's document-lifecycle.ts):
+ * `'limitReached'` means the item was genuinely new but the organization's
+ * OrganizationEntitlement had no slot available — no Document was created.
+ * Distinct from a per-item technical failure (see upsertDocument's callers),
+ * since it must stop further enumeration rather than just being logged and
+ * skipped.
+ */
+type UpsertDocumentResult = { outcome: 'created' | 'updated'; document: Document } | { outcome: 'limitReached' };
 
 /**
  * The Document Collector (ADR-0004, ADR-0013, ADR-0014): consumes a queued
@@ -123,6 +141,12 @@ export class DocumentCollectorProcessor extends WorkerHost {
     let documentsScanned = 0;
     let documentsFailed = 0;
     let sitesCompleted = 0;
+    // Trial entitlement enforcement: once true, the organization's
+    // OrganizationEntitlement had no slot left for a genuinely new
+    // document. Sticky for the rest of this scan — once known exhausted,
+    // there's no reason to keep attempting (and immediately losing) more
+    // reservations against remaining sites.
+    let quotaExhausted = false;
     const errors: string[] = [];
 
     for (const site of approvedSites) {
@@ -131,6 +155,9 @@ export class DocumentCollectorProcessor extends WorkerHost {
       try {
         const result = await this.collectSite(context, microsoftTenant.entraTenantId, site, (count) => (documentsScanned += count));
         documentsFailed += result.itemFailures;
+        if (result.quotaExhausted) {
+          quotaExhausted = true;
+        }
         await context.sharePointSites.updateById(site.id, { lastScannedAt: new Date() });
       } catch (error) {
         documentsFailed += 1;
@@ -146,6 +173,14 @@ export class DocumentCollectorProcessor extends WorkerHost {
 
       sitesCompleted += 1;
       await context.scanJobs.updateById(scanJobId, { sitesCompleted });
+
+      if (quotaExhausted) {
+        // Stop visiting further sites this scan. Remaining sites' existing
+        // Active documents are untouched — reconciliation never ran for a
+        // site that was never visited, so nothing is incorrectly marked
+        // Removed. They're picked up again on the next scheduled scan.
+        break;
+      }
     }
 
     await context.scanJobs.updateById(scanJobId, { currentSiteName: null });
@@ -178,6 +213,12 @@ export class DocumentCollectorProcessor extends WorkerHost {
       documentsScanned,
       documentsFailed,
       errorSummary: errors.length > 0 ? errors.slice(0, 20).join('; ') : null,
+      // Additive to status, never a replacement for it: a scan that stops
+      // early because the trial limit was reached is still a successful,
+      // Completed scan — see the `status` computation above, which quota
+      // exhaustion never affects (quota-skipped items increment neither
+      // documentsScanned nor documentsFailed).
+      limitReached: quotaExhausted,
     });
 
     // ADR-0015 §3: snapshot only a genuinely successful scan — a Failed
@@ -215,12 +256,13 @@ export class DocumentCollectorProcessor extends WorkerHost {
     entraTenantId: string,
     site: SharePointSite,
     onDocumentPersisted: (count: number) => void,
-  ): Promise<{ itemFailures: number }> {
+  ): Promise<{ itemFailures: number; quotaExhausted: boolean }> {
     // Every file-item id Graph reports for this site, regardless of whether
     // persisting it succeeds — reconciliation below must be based on what
     // Graph told us exists, never on what we managed to write.
     const seenGraphItemIds = new Set<string>();
     let itemFailures = 0;
+    let quotaExhausted = false;
 
     // ADR-0020 §4: a folder-expansion failure isolates to that folder (the
     // rest of the traversal continues) but means seenGraphItemIds can no
@@ -230,10 +272,13 @@ export class DocumentCollectorProcessor extends WorkerHost {
     // ever implicitly true (a listDrives/listDocuments failure threw out of
     // this whole method, skipping reconciliation below entirely); now that
     // a folder failure no longer aborts the method, it must be tracked
-    // explicitly instead.
+    // explicitly instead. Trial entitlement enforcement extends this same
+    // rule again: stopping enumeration early because the quota is
+    // exhausted also leaves seenGraphItemIds incomplete, for the same
+    // reason — reconciliation must never run against a partial picture.
     let enumerationComplete = true;
 
-    for await (const drive of listDrives(entraTenantId, site.graphSiteId)) {
+    driveLoop: for await (const drive of listDrives(entraTenantId, site.graphSiteId)) {
       for await (const item of this.walkDrive(entraTenantId, drive.id, (folderId, error) => {
         itemFailures += 1;
         enumerationComplete = false;
@@ -247,7 +292,19 @@ export class DocumentCollectorProcessor extends WorkerHost {
         seenGraphItemIds.add(item.id);
 
         try {
-          await this.upsertDocument(context, site.id, item, drive.list?.id);
+          const result = await this.upsertDocument(context, site.id, item, drive.list?.id);
+          if (result.outcome === 'limitReached') {
+            // Trial quota exhausted on a genuinely new item — not a
+            // technical failure (don't count it in itemFailures, don't log
+            // it as an error). Stop pulling further items for this site:
+            // every subsequent new item would just repeat the same
+            // rejected reservation attempt "as soon as practical" per the
+            // entitlement requirement, and existing documents can still be
+            // rescanned on the next scan.
+            quotaExhausted = true;
+            enumerationComplete = false;
+            break driveLoop;
+          }
           onDocumentPersisted(1);
         } catch (error) {
           itemFailures += 1;
@@ -287,7 +344,7 @@ export class DocumentCollectorProcessor extends WorkerHost {
       await this.reconcileRemovedDocuments(context, site.id, seenGraphItemIds);
     }
 
-    return { itemFailures };
+    return { itemFailures, quotaExhausted };
   }
 
   /**
@@ -367,7 +424,20 @@ export class DocumentCollectorProcessor extends WorkerHost {
     const activeDocuments = await context.documents.findMany({ where: { siteId, status: 'Active' } });
     for (const document of activeDocuments) {
       if (!seenGraphItemIds.has(document.graphItemId)) {
-        await context.documents.updateById(document.id, { status: 'Removed' });
+        // Trial entitlement enforcement: the Active -> Removed transition
+        // and the entitlement slot release happen atomically together
+        // (document-lifecycle.ts's markDocumentRemovedAndReleaseSlot) —
+        // the counter-decrement counterpart to createDocumentWithQuota in
+        // upsertDocument above. `released: false` means this document was
+        // already Removed (or otherwise didn't transition) by the time
+        // this ran — nothing new happened, so there's nothing to notify.
+        // `null` means it no longer exists under this organizationId at
+        // all (defense-in-depth — activeDocuments was already scoped to
+        // this tenant, so this should be unreachable in practice).
+        const result = await markDocumentRemovedAndReleaseSlot(context.organizationId, document.id);
+        if (!result?.released) {
+          continue;
+        }
 
         // Phase D.2 review fix: the Removed transition above has already
         // committed and must never be rolled back by a notification
@@ -423,12 +493,20 @@ export class DocumentCollectorProcessor extends WorkerHost {
     }
   }
 
+  /**
+   * `{ outcome: 'created' | 'updated' }`: a real Document row, exactly as
+   * before. `{ outcome: 'limitReached' }`: the item was genuinely new, but
+   * the organization's entitlement had no slot available — no Document
+   * was created, and the caller (collectSite) must stop pulling further
+   * items for this site rather than treat this as a per-item technical
+   * failure.
+   */
   private async upsertDocument(
     context: TenantContext,
     siteId: string,
     item: GraphDriveItem,
     graphListId: string | undefined,
-  ): Promise<Document> {
+  ): Promise<UpsertDocumentResult> {
     const [existing] = await context.documents.findMany({ where: { siteId, graphItemId: item.id }, take: 1 });
 
     const data = {
@@ -450,12 +528,25 @@ export class DocumentCollectorProcessor extends WorkerHost {
       ...(graphListId !== undefined ? { graphListId } : {}),
     };
 
-    const document = existing
-      ? ((await context.documents.updateById(existing.id, data)) ?? existing)
-      : await context.documents.create(data);
+    if (existing) {
+      // Rescanning an already-known document never touches the
+      // entitlement — this is the update branch, not the create branch.
+      const document = (await context.documents.updateById(existing.id, data)) ?? existing;
+      await this.syncOwner(context, document.id, item);
+      return { outcome: 'updated', document };
+    }
 
-    await this.syncOwner(context, document.id, item);
-    return document;
+    // Genuinely new document: entitlement.ts/document-lifecycle.ts's
+    // createDocumentWithQuota reserves one slot and creates the Document
+    // in a single transaction — they succeed or fail together (Phase 2
+    // architecture evaluation's own requirement).
+    const result = await createDocumentWithQuota({ organizationId: context.organizationId, ...data });
+    if (result.outcome === 'limitReached') {
+      return { outcome: 'limitReached' };
+    }
+
+    await this.syncOwner(context, result.document.id, item);
+    return { outcome: 'created', document: result.document };
   }
 
   // ADR-0016 §4.2: source partitions ownership writes between this worker

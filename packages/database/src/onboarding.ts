@@ -59,6 +59,20 @@ export async function provisionOrganizationFromConsent(
       data: { name: tenantName },
     });
 
+    // Every organization must have an entitlement row (entitlement.ts's
+    // tryConsumeDocumentSlot fails closed — throws — if one is missing)
+    // — created here, in the same transaction as the organization itself,
+    // so a brand-new org is never observable in a state where it exists
+    // but has no entitlement. Defaults (Trial, 2000, 0) come from the
+    // schema; currentDocumentCount: 0 is correct here specifically
+    // because a just-bootstrapped organization genuinely has zero
+    // documents yet — contrast with backfill-organization-entitlements.ts,
+    // which must read each existing organization's real current count
+    // instead of assuming zero.
+    await tx.organizationEntitlement.create({
+      data: { organizationId: organization.id },
+    });
+
     const microsoftTenant = await tx.microsoftTenant.create({
       data: {
         organizationId: organization.id,

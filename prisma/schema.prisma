@@ -16,6 +16,17 @@ enum OrganizationStatus {
   Suspended
 }
 
+// ADR-0001 / ADR-0007's own deferred "future plan gating" note: "a future
+// Organization.planLimits field or a separate Plan entity." Two values only
+// — this MVP has exactly one paid tier's worth of distinction to make
+// (Trial vs. not), not a generalized plan catalog. Standard is a placeholder
+// for whatever the first real paid plan turns out to be; nothing currently
+// reads or writes it.
+enum OrganizationPlanType {
+  Trial
+  Standard
+}
+
 enum UserRole {
   Admin
   // Phase 8A / ADR-0016 §4.6: scoped to governance only (issues, document
@@ -285,8 +296,39 @@ model Organization {
   sharePointClassificationFields SharePointClassificationField[]
   remediationJobs                RemediationJob[]
   remediationItems               RemediationItem[]
+  entitlement                    OrganizationEntitlement?
 
   @@index([status])
+}
+
+/// Per-organization plan type and document-usage tracking (ADR-0001's and
+/// ADR-0007's own deferred "future plan gating" notes on Organization/
+/// ScanJob: "a future Organization.planLimits field or a separate Plan
+/// entity... an additive migration, not a redesign of existing tables").
+/// One row per organization — optional from Organization's side (like
+/// ScanSchedule) so creating an Organization never requires one to exist
+/// simultaneously; a data migration backfills one for every organization
+/// that predates this model, and new organizations get one at bootstrap
+/// (provisionOrganizationFromConsent).
+///
+/// currentDocumentCount is a maintained counter, not a live COUNT(*) —
+/// this is deliberate: a live count-then-compare-then-write is exactly the
+/// non-atomic pattern that lets two concurrent callers both succeed at
+/// consuming the same last slot. See entitlement.ts's tryConsumeDocumentSlot/
+/// releaseDocumentSlot for the atomic conditional-UPDATE this counter design
+/// depends on, and document-lifecycle.ts for how the scan worker
+/// (document-collector.processor.ts) consumes/releases slots atomically
+/// alongside the Document row's own create / Active->Removed transition.
+model OrganizationEntitlement {
+  id                   String               @id @default(cuid())
+  organizationId       String               @unique
+  planType             OrganizationPlanType @default(Trial)
+  documentLimit        Int                  @default(2000)
+  currentDocumentCount Int                  @default(0)
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 }
 
 /// A person who signs into the dashboard. Belongs to exactly one Organization.
@@ -554,6 +596,17 @@ model ScanJob {
   totalSites      Int?
   sitesCompleted  Int     @default(0)
   currentSiteName String?
+
+  // Entitlement enforcement (trial quota, packages/database's entitlement.ts):
+  // true when this scan stopped creating new documents at some point because
+  // the organization's OrganizationEntitlement.documentLimit was reached —
+  // additive to the existing Completed/Failed/Cancelled status set, never a
+  // new ScanJobStatus value. A scan that hit the limit is still a genuine
+  // success (status stays 'Completed'): everything discovered up to the
+  // limit was persisted and scored correctly, the scan just couldn't add
+  // more. Default false preserves the existing meaning for every row that
+  // predates this field.
+  limitReached Boolean @default(false)
 
   organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   microsoftTenant MicrosoftTenant @relation(fields: [microsoftTenantId], references: [id], onDelete: Cascade)
