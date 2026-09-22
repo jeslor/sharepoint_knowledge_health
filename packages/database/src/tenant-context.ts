@@ -1,5 +1,6 @@
 import { prisma } from './client';
 import { OrganizationRepository } from './repositories/organization-repository';
+import { OrganizationEntitlementRepository } from './repositories/organization-entitlement-repository';
 import { UserRepository } from './repositories/user-repository';
 import { MicrosoftTenantRepository } from './repositories/microsoft-tenant-repository';
 import { SharePointSiteRepository } from './repositories/sharepoint-site-repository';
@@ -18,10 +19,12 @@ import { SharePointReviewDateMappingRepository } from './repositories/sharepoint
 import { SharePointClassificationFieldRepository } from './repositories/sharepoint-classification-field-repository';
 import { RemediationJobRepository } from './repositories/remediation-job-repository';
 import { RemediationItemRepository } from './repositories/remediation-item-repository';
+import { UpgradeRequestRepository } from './repositories/upgrade-request-repository';
 
 export interface TenantContext {
   readonly organizationId: string;
   readonly organization: OrganizationRepository;
+  readonly entitlement: OrganizationEntitlementRepository;
   readonly users: UserRepository;
   readonly microsoftTenants: MicrosoftTenantRepository;
   readonly sharePointSites: SharePointSiteRepository;
@@ -40,6 +43,7 @@ export interface TenantContext {
   readonly sharePointClassificationFields: SharePointClassificationFieldRepository;
   readonly remediationJobs: RemediationJobRepository;
   readonly remediationItems: RemediationItemRepository;
+  readonly upgradeRequests: UpgradeRequestRepository;
 }
 
 /**
@@ -52,6 +56,7 @@ export function createTenantContext(organizationId: string): TenantContext {
   return {
     organizationId,
     organization: new OrganizationRepository(organizationId, prisma),
+    entitlement: new OrganizationEntitlementRepository(organizationId, prisma),
     users: new UserRepository(organizationId, prisma),
     microsoftTenants: new MicrosoftTenantRepository(organizationId, prisma),
     sharePointSites: new SharePointSiteRepository(organizationId, prisma),
@@ -70,5 +75,6 @@ export function createTenantContext(organizationId: string): TenantContext {
     sharePointClassificationFields: new SharePointClassificationFieldRepository(organizationId, prisma),
     remediationJobs: new RemediationJobRepository(organizationId, prisma),
     remediationItems: new RemediationItemRepository(organizationId, prisma),
+    upgradeRequests: new UpgradeRequestRepository(organizationId, prisma),
   };
 }

@@ -29,6 +29,8 @@ import {
 } from '@fluentui/react-icons';
 import { useCurrentUser } from '@/lib/auth/current-user-context';
 import { useUnreadNotificationCount } from '@/lib/api/hooks/use-unread-notification-count';
+import { useUsage } from '@/lib/api/hooks/use-usage';
+import { UsageIndicator } from './usage-indicator';
 
 interface NavLink {
   href: string;
@@ -179,6 +181,7 @@ export function DashboardNav({ mobileOpen, onCloseMobile }: DashboardNavProps): 
   const isAdmin = user?.role === 'Admin';
   const pathname = usePathname();
   const { data: unreadCount } = useUnreadNotificationCount();
+  const { data: usage, loading: usageLoading, error: usageError } = useUsage();
 
   const groups = GROUPS.filter((group) => !group.adminOnly || isAdmin).map((group) => ({
     ...group,
@@ -206,8 +209,11 @@ export function DashboardNav({ mobileOpen, onCloseMobile }: DashboardNavProps): 
           content ever exceeds viewport height (e.g. more groups/icons
           added later) — it never causes the header or main content to move.
           overflow-x-hidden: never a horizontal scrollbar. */}
-      <aside className="hidden w-60 shrink-0 overflow-x-hidden overflow-y-auto border-r border-slate-200/60 bg-white p-4 sm:block">
+      <aside className="hidden w-60 shrink-0 overflow-x-hidden overflow-y-auto border-r border-slate-200/60 bg-white p-4 sm:flex sm:flex-col sm:justify-between">
         <NavGroups groups={groups} pathname={pathname} expanded={expanded} onToggleGroup={toggleGroup} />
+        <div className="mt-6">
+          <UsageIndicator usage={usage} loading={usageLoading} error={usageError} />
+        </div>
       </aside>
 
       {/* Always mounted (Phase 10A.3) so slide-in-left/fade-in can actually
@@ -225,6 +231,9 @@ export function DashboardNav({ mobileOpen, onCloseMobile }: DashboardNavProps): 
           }`}
         >
           <NavGroups groups={groups} pathname={pathname} expanded={expanded} onToggleGroup={toggleGroup} onNavigate={onCloseMobile} />
+          <div className="mt-6">
+            <UsageIndicator usage={usage} loading={usageLoading} error={usageError} />
+          </div>
         </nav>
       </div>
     </>

@@ -58,6 +58,14 @@ describe('Organization onboarding (ADR-0012 Acceptance Criteria)', () => {
       // Criterion 3: first admin gets role Admin, status Active, no approval step.
       expect(user?.role).toBe('Admin');
       expect(user?.status).toBe('Active');
+
+      // Entitlement foundation: every newly-bootstrapped organization gets
+      // a Trial entitlement in the same transaction — never observable
+      // without one.
+      const entitlement = await prisma.organizationEntitlement.findUnique({ where: { organizationId: org!.id } });
+      expect(entitlement?.planType).toBe('Trial');
+      expect(entitlement?.documentLimit).toBe(2000);
+      expect(entitlement?.currentDocumentCount).toBe(0);
     });
 
     it('backfills MicrosoftTenant.consentGrantedByUserId to the created User after creation', async () => {

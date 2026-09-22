@@ -1,4 +1,4 @@
-import { createTenantContext } from '@sph/database';
+import { createTenantContext, createDocumentWithQuota, markDocumentRemovedAndReleaseSlot } from '@sph/database';
 import { listDrives, listDocuments, listChildren, GraphTransientError, type GraphDrive, type GraphDriveItem } from '@sph/graph-client';
 import type { Job } from 'bullmq';
 import type { ScanJobPayload } from '@sph/types';
@@ -10,6 +10,10 @@ jest.mock('@sph/graph-client');
 jest.mock('../sharepoint-metadata/review-date-sync');
 
 const mockedCreateContext = createTenantContext as jest.MockedFunction<typeof createTenantContext>;
+const mockedCreateDocumentWithQuota = createDocumentWithQuota as jest.MockedFunction<typeof createDocumentWithQuota>;
+const mockedMarkDocumentRemovedAndReleaseSlot = markDocumentRemovedAndReleaseSlot as jest.MockedFunction<
+  typeof markDocumentRemovedAndReleaseSlot
+>;
 const mockedListDrives = listDrives as jest.MockedFunction<typeof listDrives>;
 const mockedListDocuments = listDocuments as jest.MockedFunction<typeof listDocuments>;
 const mockedListChildren = listChildren as jest.MockedFunction<typeof listChildren>;
@@ -44,6 +48,7 @@ describe('DocumentCollectorProcessor', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockedCreateContext.mockReturnValue({
+      organizationId: 'org-1',
       scanJobs,
       microsoftTenants,
       sharePointSites,
@@ -67,6 +72,30 @@ describe('DocumentCollectorProcessor', () => {
     governanceIssues.findMany.mockResolvedValue([]);
     reconciliationQueue.add.mockResolvedValue(undefined);
     mockedSyncConfirmedReviewDateMapping.mockResolvedValue(undefined);
+
+    // Trial entitlement enforcement (Phase 3): by default, creation always
+    // finds a slot and removal always releases one — individual tests
+    // override these to exercise the limitReached / already-Removed paths.
+    mockedCreateDocumentWithQuota.mockImplementation(async (input) => ({
+      outcome: 'created',
+      document: {
+        id: `doc-${input.graphItemId}`,
+        siteId: input.siteId,
+        graphItemId: input.graphItemId,
+        name: input.name,
+        path: input.path,
+        fileType: input.fileType,
+        webUrl: input.webUrl,
+        sizeBytes: input.sizeBytes,
+        sourceCreatedAt: input.sourceCreatedAt,
+        sourceModifiedAt: input.sourceModifiedAt,
+        graphListId: input.graphListId,
+      } as never,
+    }));
+    mockedMarkDocumentRemovedAndReleaseSlot.mockImplementation(async (_organizationId, documentId) => ({
+      document: { id: documentId, status: 'Removed' } as never,
+      released: true,
+    }));
   });
 
   it('returns early without touching the tenant when the ScanJob no longer exists', async () => {
@@ -139,24 +168,22 @@ describe('DocumentCollectorProcessor', () => {
     it('skips folder items (no `file` facet) and persists only real documents', async () => {
       mockedListDocuments.mockReturnValue(asyncGen([folderItem, fileItem]));
       documents.findMany.mockResolvedValue([]); // no existing document for the item lookup, and empty for scoring pass
-      documents.create.mockResolvedValue({ id: 'doc-1', siteId: 'site-1', graphItemId: 'item-1' });
 
       await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
 
-      expect(documents.create).toHaveBeenCalledTimes(1);
-      expect(documents.create).toHaveBeenCalledWith(
-        expect.objectContaining({ graphItemId: 'item-1', name: 'Employee Handbook.docx', sizeBytes: BigInt(2048) }),
+      expect(mockedCreateDocumentWithQuota).toHaveBeenCalledTimes(1);
+      expect(mockedCreateDocumentWithQuota).toHaveBeenCalledWith(
+        expect.objectContaining({ organizationId: 'org-1', graphItemId: 'item-1', name: 'Employee Handbook.docx', sizeBytes: BigInt(2048) }),
       );
     });
 
     it('persists Graph driveItem.webUrl on document creation', async () => {
       mockedListDocuments.mockReturnValue(asyncGen([fileItem]));
       documents.findMany.mockResolvedValue([]);
-      documents.create.mockResolvedValue({ id: 'doc-1', siteId: 'site-1', graphItemId: 'item-1' });
 
       await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
 
-      expect(documents.create).toHaveBeenCalledWith(
+      expect(mockedCreateDocumentWithQuota).toHaveBeenCalledWith(
         expect.objectContaining({ webUrl: 'https://x/Employee Handbook.docx' }),
       );
     });
@@ -181,21 +208,19 @@ describe('DocumentCollectorProcessor', () => {
       mockedListDrives.mockReturnValue(asyncGen([{ ...drive, list: { id: 'list-1' } }]));
       mockedListDocuments.mockReturnValue(asyncGen([fileItem]));
       documents.findMany.mockResolvedValue([]);
-      documents.create.mockResolvedValue({ id: 'doc-1', siteId: 'site-1', graphItemId: 'item-1' });
 
       await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
 
-      expect(documents.create).toHaveBeenCalledWith(expect.objectContaining({ graphListId: 'list-1' }));
+      expect(mockedCreateDocumentWithQuota).toHaveBeenCalledWith(expect.objectContaining({ graphListId: 'list-1' }));
     });
 
     it('omits graphListId on create when the drive has no associated list (leaves it null, not a special case)', async () => {
       mockedListDocuments.mockReturnValue(asyncGen([fileItem])); // drive (no `list`) set in outer beforeEach
       documents.findMany.mockResolvedValue([]);
-      documents.create.mockResolvedValue({ id: 'doc-1', siteId: 'site-1', graphItemId: 'item-1' });
 
       await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
 
-      const createCall = documents.create.mock.calls[0]?.[0];
+      const createCall = mockedCreateDocumentWithQuota.mock.calls[0]?.[0];
       expect(createCall).not.toHaveProperty('graphListId');
     });
 
@@ -218,7 +243,10 @@ describe('DocumentCollectorProcessor', () => {
       documents.findMany.mockImplementation(async ({ where }: { where: Record<string, unknown> }) =>
         'graphItemId' in where ? [] : [],
       );
-      documents.create.mockResolvedValue({ id: 'doc-1', siteId: 'site-1', graphItemId: 'item-1' });
+      mockedCreateDocumentWithQuota.mockResolvedValue({
+        outcome: 'created',
+        document: { id: 'doc-1', siteId: 'site-1', graphItemId: 'item-1' } as never,
+      });
 
       await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
 
@@ -261,7 +289,7 @@ describe('DocumentCollectorProcessor', () => {
 
       await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
 
-      expect(documents.create).not.toHaveBeenCalled();
+      expect(mockedCreateDocumentWithQuota).not.toHaveBeenCalled();
       expect(documents.updateById).toHaveBeenCalledWith(
         'doc-1',
         expect.objectContaining({ graphItemId: 'item-1' }),
@@ -294,14 +322,14 @@ describe('DocumentCollectorProcessor', () => {
       documents.findMany.mockImplementation(async ({ where }: { where: Record<string, unknown> }) =>
         'graphItemId' in where ? [] : [],
       );
-      documents.create.mockImplementation(async (data: { graphItemId: string }) => {
-        if (data.graphItemId === 'item-2') throw new Error('unique constraint violation');
-        return { id: 'doc-1', siteId: 'site-1', graphItemId: data.graphItemId };
+      mockedCreateDocumentWithQuota.mockImplementation(async (input) => {
+        if (input.graphItemId === 'item-2') throw new Error('unique constraint violation');
+        return { outcome: 'created', document: { id: 'doc-1', siteId: 'site-1', graphItemId: input.graphItemId } as never };
       });
 
       await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
 
-      expect(documents.create).toHaveBeenCalledTimes(2); // both attempted
+      expect(mockedCreateDocumentWithQuota).toHaveBeenCalledTimes(2); // both attempted
       const finalUpdate = scanJobs.updateById.mock.calls.at(-1);
       expect(finalUpdate?.[1]).toEqual(
         expect.objectContaining({ documentsScanned: 1, documentsFailed: 1, status: 'Completed' }),
@@ -317,11 +345,10 @@ describe('DocumentCollectorProcessor', () => {
         if ('siteId' in where) return [staleDocument]; // reconciliation's active-document listing
         return []; // scoreTenantDocuments
       });
-      documents.create.mockResolvedValue({ id: 'doc-1', siteId: 'site-1', graphItemId: 'item-1' });
 
       await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
 
-      expect(documents.updateById).toHaveBeenCalledWith('doc-stale', { status: 'Removed' });
+      expect(mockedMarkDocumentRemovedAndReleaseSlot).toHaveBeenCalledWith('org-1', 'doc-stale');
     });
 
     describe('removed-document governance signal (ADR-0021 §3.4)', () => {
@@ -334,7 +361,6 @@ describe('DocumentCollectorProcessor', () => {
           if ('siteId' in where) return [staleDocument];
           return [];
         });
-        documents.create.mockResolvedValue({ id: 'doc-1', siteId: 'site-1', graphItemId: 'item-1' });
       });
 
       it('notifies the assignee of an Open/InProgress GovernanceIssue on a document that was just removed', async () => {
@@ -384,6 +410,17 @@ describe('DocumentCollectorProcessor', () => {
         expect(notifications.create).not.toHaveBeenCalled();
       });
 
+      it('does not notify assignees when the document was already Removed (markDocumentRemovedAndReleaseSlot reports released: false)', async () => {
+        governanceIssues.findMany.mockResolvedValue([
+          { id: 'issue-1', documentId: 'doc-stale', issueType: 'Freshness', status: 'Open', assignedUserId: 'user-1' },
+        ]);
+        mockedMarkDocumentRemovedAndReleaseSlot.mockResolvedValue({ document: staleDocument as never, released: false });
+
+        await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+        expect(notifications.create).not.toHaveBeenCalled();
+      });
+
       // Phase D.2 review fix (Issue 2): a notification failure must never
       // roll back the document's Removed transition, must never stop
       // remaining processing (other issues on the same document, or other
@@ -397,7 +434,7 @@ describe('DocumentCollectorProcessor', () => {
 
           await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
 
-          expect(documents.updateById).toHaveBeenCalledWith('doc-stale', { status: 'Removed' });
+          expect(mockedMarkDocumentRemovedAndReleaseSlot).toHaveBeenCalledWith('org-1', 'doc-stale');
         });
 
         it('still attempts a second issue on the same document after the first issue\'s notification fails', async () => {
@@ -429,8 +466,8 @@ describe('DocumentCollectorProcessor', () => {
 
           await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
 
-          expect(documents.updateById).toHaveBeenCalledWith('doc-stale', { status: 'Removed' });
-          expect(documents.updateById).toHaveBeenCalledWith('doc-stale-2', { status: 'Removed' });
+          expect(mockedMarkDocumentRemovedAndReleaseSlot).toHaveBeenCalledWith('org-1', 'doc-stale');
+          expect(mockedMarkDocumentRemovedAndReleaseSlot).toHaveBeenCalledWith('org-1', 'doc-stale-2');
           expect(notifications.create).toHaveBeenCalledWith(expect.objectContaining({ governanceIssueId: 'issue-2' }));
         });
 
@@ -469,7 +506,7 @@ describe('DocumentCollectorProcessor', () => {
 
       await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
 
-      expect(documents.updateById).not.toHaveBeenCalledWith(expect.anything(), { status: 'Removed' });
+      expect(mockedMarkDocumentRemovedAndReleaseSlot).not.toHaveBeenCalled();
     });
 
     describe('recursive folder traversal (ADR-0020)', () => {
@@ -527,11 +564,6 @@ describe('DocumentCollectorProcessor', () => {
         documents.findMany.mockImplementation(async ({ where }: { where: Record<string, unknown> }) =>
           'graphItemId' in where ? [] : [],
         );
-        documents.create.mockImplementation(async (data: { graphItemId: string }) => ({
-          id: `doc-${data.graphItemId}`,
-          siteId: 'site-1',
-          graphItemId: data.graphItemId,
-        }));
       });
 
       it('discovers and persists a document nested one level deep in a subfolder', async () => {
@@ -544,7 +576,7 @@ describe('DocumentCollectorProcessor', () => {
         await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
 
         expect(mockedListChildren).toHaveBeenCalledWith('entra-1', 'drive-1', 'folder-1');
-        expect(documents.create).toHaveBeenCalledWith(expect.objectContaining({ graphItemId: 'item-nested' }));
+        expect(mockedCreateDocumentWithQuota).toHaveBeenCalledWith(expect.objectContaining({ graphItemId: 'item-nested' }));
       });
 
       it('recurses through multiple levels of nesting, not just one extra level', async () => {
@@ -563,7 +595,7 @@ describe('DocumentCollectorProcessor', () => {
 
         expect(mockedListChildren).toHaveBeenCalledWith('entra-1', 'drive-1', 'folder-1');
         expect(mockedListChildren).toHaveBeenCalledWith('entra-1', 'drive-1', 'folder-2');
-        expect(documents.create).toHaveBeenCalledWith(expect.objectContaining({ graphItemId: 'item-deep' }));
+        expect(mockedCreateDocumentWithQuota).toHaveBeenCalledWith(expect.objectContaining({ graphItemId: 'item-deep' }));
       });
 
       it('never expands a remoteItem-faceted folder — the ADR-0014 trust-boundary proof', async () => {
@@ -572,7 +604,7 @@ describe('DocumentCollectorProcessor', () => {
         await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
 
         expect(mockedListChildren).not.toHaveBeenCalled();
-        expect(documents.create).not.toHaveBeenCalled();
+        expect(mockedCreateDocumentWithQuota).not.toHaveBeenCalled();
       });
 
       it('never persists a remoteItem-faceted file, even though it carries a normal file facet', async () => {
@@ -580,7 +612,7 @@ describe('DocumentCollectorProcessor', () => {
 
         await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
 
-        expect(documents.create).not.toHaveBeenCalled();
+        expect(mockedCreateDocumentWithQuota).not.toHaveBeenCalled();
       });
 
       it('expands a folder only once even if Graph reports it twice (visited-set defense-in-depth)', async () => {
@@ -617,9 +649,9 @@ describe('DocumentCollectorProcessor', () => {
         await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
 
         // The good folder's file still gets persisted despite the bad folder's failure.
-        expect(documents.create).toHaveBeenCalledWith(expect.objectContaining({ graphItemId: 'item-good' }));
+        expect(mockedCreateDocumentWithQuota).toHaveBeenCalledWith(expect.objectContaining({ graphItemId: 'item-good' }));
         // Reconciliation must not run against an incomplete picture (ADR-0004, extended by ADR-0020 §4).
-        expect(documents.updateById).not.toHaveBeenCalledWith(expect.anything(), { status: 'Removed' });
+        expect(mockedMarkDocumentRemovedAndReleaseSlot).not.toHaveBeenCalled();
         const finalUpdate = scanJobs.updateById.mock.calls.at(-1);
         expect(finalUpdate?.[1]).toEqual(expect.objectContaining({ documentsFailed: 1 }));
       });
@@ -686,11 +718,10 @@ describe('DocumentCollectorProcessor', () => {
       };
       mockedListDocuments.mockReturnValue(asyncGen([fileItem]));
       documents.findMany.mockResolvedValue([]);
-      documents.create.mockResolvedValue({ id: 'doc-1', siteId: 'site-1', graphItemId: 'item-1' });
 
       await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
 
-      expect(documents.create).toHaveBeenCalledWith(expect.objectContaining({ graphItemId: 'item-1' }));
+      expect(mockedCreateDocumentWithQuota).toHaveBeenCalledWith(expect.objectContaining({ graphItemId: 'item-1' }));
     });
   });
 
@@ -881,9 +912,9 @@ describe('DocumentCollectorProcessor', () => {
         if ('siteId' in where) return []; // reconciliation — nothing stale
         return [createdDoc]; // scoring pass
       });
-      documents.create.mockImplementation(async (data: { graphItemId: string }) => {
-        if (data.graphItemId === 'item-bad') throw new Error('unique constraint violation');
-        return createdDoc;
+      mockedCreateDocumentWithQuota.mockImplementation(async (input) => {
+        if (input.graphItemId === 'item-bad') throw new Error('unique constraint violation');
+        return { outcome: 'created', document: createdDoc as never };
       });
       healthScores.create.mockResolvedValue({ id: 'score-new' });
 
@@ -1009,6 +1040,118 @@ describe('DocumentCollectorProcessor', () => {
 
       const finalUpdate = scanJobs.updateById.mock.calls.at(-1);
       expect(finalUpdate?.[1]).toEqual(expect.objectContaining({ status: 'Completed' }));
+    });
+  });
+
+  // Phase 3: authoritative trial quota enforcement at the point documents
+  // are actually persisted. Concurrency and real-transaction-rollback
+  // behavior are covered in packages/database's document-lifecycle.spec.ts
+  // (real Postgres) — these tests only cover how the worker reacts to the
+  // discriminated result createDocumentWithQuota/markDocumentRemovedAndReleaseSlot
+  // report back.
+  describe('trial quota enforcement (Phase 3)', () => {
+    const drive: GraphDrive = { id: 'drive-1', name: 'Documents', webUrl: 'https://x/drive', driveType: 'documentLibrary' };
+
+    function fileItem(id: string): GraphDriveItem {
+      return {
+        id,
+        name: `${id}.docx`,
+        webUrl: `https://x/${id}.docx`,
+        size: 100,
+        createdDateTime: '2026-01-01T00:00:00.000Z',
+        lastModifiedDateTime: '2026-01-01T00:00:00.000Z',
+        file: { mimeType: 'application/msword' },
+        parentReference: { driveId: 'drive-1', path: '/drives/drive-1/root:' },
+      };
+    }
+
+    beforeEach(() => {
+      scanJobs.findFirstById.mockResolvedValue({ id: 'scan-1', microsoftTenantId: 'tenant-1' });
+      microsoftTenants.findFirstById.mockResolvedValue({ id: 'tenant-1', entraTenantId: 'entra-1' });
+      mockedListDrives.mockReturnValue(asyncGen([drive]));
+      documents.findMany.mockImplementation(async ({ where }: { where: Record<string, unknown> }) =>
+        'graphItemId' in where ? [] : [],
+      );
+    });
+
+    it('does not create a Document, and does not count it as an item failure, when createDocumentWithQuota reports limitReached', async () => {
+      sharePointSites.findMany.mockResolvedValue([{ id: 'site-1', graphSiteId: 'graph-site-1', displayName: 'Team Site' }]);
+      mockedListDocuments.mockReturnValue(asyncGen([fileItem('item-1')]));
+      mockedCreateDocumentWithQuota.mockResolvedValue({ outcome: 'limitReached', currentDocumentCount: 2000, documentLimit: 2000 });
+
+      await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+      const finalUpdate = scanJobs.updateById.mock.calls.at(-1);
+      expect(finalUpdate?.[1]).toEqual(
+        expect.objectContaining({ status: 'Completed', documentsScanned: 0, documentsFailed: 0, limitReached: true }),
+      );
+    });
+
+    it('stops pulling further items for a site once the quota is exhausted, rather than repeating the rejected reservation for every remaining item', async () => {
+      sharePointSites.findMany.mockResolvedValue([{ id: 'site-1', graphSiteId: 'graph-site-1', displayName: 'Team Site' }]);
+      mockedListDocuments.mockReturnValue(asyncGen([fileItem('item-1'), fileItem('item-2'), fileItem('item-3')]));
+      mockedCreateDocumentWithQuota.mockResolvedValueOnce({ outcome: 'limitReached', currentDocumentCount: 2000, documentLimit: 2000 });
+
+      await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+      expect(mockedCreateDocumentWithQuota).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not run removed-document reconciliation for a site whose enumeration stopped early due to the quota (an incomplete picture)', async () => {
+      const staleDocument = { id: 'doc-stale', siteId: 'site-1', graphItemId: 'item-deleted', status: 'Active' };
+      sharePointSites.findMany.mockResolvedValue([{ id: 'site-1', graphSiteId: 'graph-site-1', displayName: 'Team Site' }]);
+      mockedListDocuments.mockReturnValue(asyncGen([fileItem('item-1')]));
+      documents.findMany.mockImplementation(async ({ where }: { where: Record<string, unknown> }) => {
+        if ('graphItemId' in where) return [];
+        if ('siteId' in where) return [staleDocument]; // would be reconciled (incorrectly) if this ran
+        return [];
+      });
+      mockedCreateDocumentWithQuota.mockResolvedValue({ outcome: 'limitReached', currentDocumentCount: 2000, documentLimit: 2000 });
+
+      await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+      expect(mockedMarkDocumentRemovedAndReleaseSlot).not.toHaveBeenCalled();
+    });
+
+    it('stops visiting further sites in the same scan once the quota is known exhausted', async () => {
+      const siteA = { id: 'site-a', graphSiteId: 'graph-a', displayName: 'Site A' };
+      const siteB = { id: 'site-b', graphSiteId: 'graph-b', displayName: 'Site B' };
+      sharePointSites.findMany.mockResolvedValue([siteA, siteB]);
+      mockedListDocuments.mockReturnValue(asyncGen([fileItem('item-1')]));
+      mockedCreateDocumentWithQuota.mockResolvedValue({ outcome: 'limitReached', currentDocumentCount: 2000, documentLimit: 2000 });
+
+      await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+      expect(sharePointSites.updateById).toHaveBeenCalledTimes(1);
+      expect(sharePointSites.updateById).toHaveBeenCalledWith('site-a', expect.objectContaining({ lastScannedAt: expect.any(Date) }));
+      const currentSiteNameCalls = scanJobs.updateById.mock.calls
+        .map(([, data]) => data)
+        .filter((data) => 'currentSiteName' in data);
+      expect(currentSiteNameCalls).not.toContainEqual({ currentSiteName: 'Site B' });
+    });
+
+    it('reports limitReached: false on a normal scan that never hits the quota', async () => {
+      sharePointSites.findMany.mockResolvedValue([{ id: 'site-1', graphSiteId: 'graph-site-1', displayName: 'Team Site' }]);
+      mockedListDocuments.mockReturnValue(asyncGen([fileItem('item-1')]));
+
+      await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+      const finalUpdate = scanJobs.updateById.mock.calls.at(-1);
+      expect(finalUpdate?.[1]).toEqual(expect.objectContaining({ limitReached: false }));
+    });
+
+    it('a normal enumeration failure (no quota involvement) still behaves exactly as before — status Failed, limitReached: false', async () => {
+      sharePointSites.findMany.mockResolvedValue([{ id: 'site-1', graphSiteId: 'graph-site-1', displayName: 'Team Site' }]);
+      mockedListDrives.mockReturnValue(
+        (async function* (): AsyncGenerator<GraphDrive> {
+          throw new GraphTransientError('Graph unavailable');
+        })(),
+      );
+
+      await processor.process(job({ organizationId: 'org-1', scanJobId: 'scan-1' }));
+
+      const finalUpdate = scanJobs.updateById.mock.calls.at(-1);
+      expect(finalUpdate?.[1]).toEqual(expect.objectContaining({ status: 'Failed', limitReached: false }));
     });
   });
 

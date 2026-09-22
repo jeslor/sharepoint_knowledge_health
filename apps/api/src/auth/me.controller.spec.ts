@@ -24,11 +24,13 @@ function user(overrides: Partial<User> = {}): User {
 
 describe('MeController', () => {
   const microsoftTenants = { findMany: jest.fn() };
+  const organization = { get: jest.fn() };
   const controller = new MeController();
 
   beforeEach(() => {
     jest.clearAllMocks();
-    mockedCreateContext.mockReturnValue({ microsoftTenants } as never);
+    mockedCreateContext.mockReturnValue({ microsoftTenants, organization } as never);
+    organization.get.mockResolvedValue({ id: 'org-1', name: 'Contoso Corp' });
     mockedDerivePermissionReconsentState.mockReturnValue({
       needsReadReconsent: false,
       needsWriteConsentAssertion: false,
@@ -36,7 +38,7 @@ describe('MeController', () => {
     });
   });
 
-  it('returns the user identity plus the connected tenant name', async () => {
+  it('returns the user identity plus the connected tenant name and the organization name', async () => {
     microsoftTenants.findMany.mockResolvedValue([{ tenantName: 'Contoso Ltd.' }]);
 
     const result = await controller.getMe(user());
@@ -49,10 +51,23 @@ describe('MeController', () => {
       organizationId: 'org-1',
       displayName: 'Sarah Kim',
       email: 'sarah@contoso.com',
+      organizationName: 'Contoso Corp',
       tenantName: 'Contoso Ltd.',
       needsReconsent: false,
       needsWriteConsent: false,
     });
+  });
+
+  // Phase 6: organizationName feeds the "Request an upgrade" dialog's
+  // display-only context — must never crash /auth/me even in the
+  // structurally-unexpected case of a missing Organization row.
+  it('falls back to an empty organizationName rather than throwing if the organization row is somehow missing', async () => {
+    microsoftTenants.findMany.mockResolvedValue([]);
+    organization.get.mockResolvedValue(null);
+
+    const result = await controller.getMe(user());
+
+    expect(result.organizationName).toBe('');
   });
 
   it('returns tenantName: null and both reconsent signals false when there is no Consented Microsoft tenant', async () => {

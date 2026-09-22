@@ -19,6 +19,18 @@ export interface ScanResponse {
   totalSites: number | null;
   sitesCompleted: number;
   currentSiteName: string | null;
+  // Phase 4 (trial entitlement): true when this scan stopped creating new
+  // documents at some point because the organization's trial document
+  // limit was reached (ScanJob.limitReached). Additive to status, never a
+  // replacement for it — a scan with limitReached: true is still
+  // status: 'Completed', not an error. documentsScanned/documentsFailed
+  // above retain their existing meaning and are NOT a measure of quota
+  // usage — see UsageResponse.currentDocumentCount for that. Optional
+  // (rather than required) purely so this addition stays backward
+  // compatible with existing structurally-typed consumers/fixtures that
+  // predate it — the real API response always populates it as a genuine
+  // boolean (scans.service.ts's toScanResponse).
+  limitReached?: boolean;
 }
 
 export interface TriggerScanRequest {

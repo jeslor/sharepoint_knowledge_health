@@ -42,6 +42,7 @@ function meResponse(overrides: Partial<MeResponse> = {}): MeResponse {
     organizationId: 'org-1',
     displayName: 'Admin',
     email: 'admin@example.com',
+    organizationName: 'Acme Corporation',
     tenantName: 'Acme Corporation',
     ...overrides,
   };

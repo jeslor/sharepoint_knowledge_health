@@ -15,7 +15,10 @@ export class MeController {
   @UseGuards(EntraJwtGuard, TenantContextGuard)
   async getMe(@CurrentUser() user: User): Promise<MeResponse> {
     const context = createTenantContext(user.organizationId);
-    const [consentedTenant] = await context.microsoftTenants.findMany({ where: { status: 'Consented' }, take: 1 });
+    const [consentedTenant, organization] = await Promise.all([
+      context.microsoftTenants.findMany({ where: { status: 'Consented' }, take: 1 }).then(([tenant]) => tenant),
+      context.organization.get(),
+    ]);
 
     // ADR-0023 §3.4/§3.10: derived at read time from the same row already
     // fetched above — no extra query. Both flags are false whenever there's
@@ -28,6 +31,10 @@ export class MeController {
       organizationId: user.organizationId,
       displayName: user.displayName,
       email: user.email,
+      // Referential integrity guarantees this organization exists for any
+      // authenticated user (User.organizationId is a required FK) — the
+      // fallback is defensive only, never expected to trigger.
+      organizationName: organization?.name ?? '',
       tenantName: consentedTenant?.tenantName ?? null,
       needsReconsent: reconsent?.needsReconsent ?? false,
       // ADR-0022 write-back MVP: the write-back-specific slice — gates the

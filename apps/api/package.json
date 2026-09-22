@@ -11,7 +11,8 @@
     "test": "jest",
     "clean": "rm -rf dist coverage .turbo",
     "demo:seed": "dotenv -e ../../.env -- ts-node -P tsconfig.json src/scripts/demo-seed/seed.ts",
-    "demo:reset": "dotenv -e ../../.env -- ts-node -P tsconfig.json src/scripts/demo-seed/reset.ts"
+    "demo:reset": "dotenv -e ../../.env -- ts-node -P tsconfig.json src/scripts/demo-seed/reset.ts",
+    "backfill:entitlements": "dotenv -e ../../.env -- ts-node -P tsconfig.json src/scripts/backfill-organization-entitlements.ts"
   },
   "dependencies": {
     "@nestjs/bullmq": "^10.2.0",

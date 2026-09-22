@@ -3,6 +3,7 @@
 import { use } from 'react';
 import { ScanComparisonCard } from '@/components/scans/scan-comparison-card';
 import { ScanStatusBadge } from '@/components/scans/scan-status-badge';
+import { ScanLimitReachedNotice } from '@/components/scans/scan-limit-reached-notice';
 import { ErrorState, LoadingState } from '@/components/ui/query-state';
 import { useScan } from '@/lib/api/hooks/use-scan';
 import { useScanComparison } from '@/lib/api/hooks/use-scan-comparison';
@@ -51,6 +52,8 @@ export default function ScanDetailPage({ params }: ScanDetailPageProps): JSX.Ele
           )}
         </dl>
       </div>
+
+      {scan.limitReached && <ScanLimitReachedNotice documentsScanned={scan.documentsScanned} />}
 
       <div>
         <h2 className="text-section-title text-slate-900">Comparison to previous scan</h2>

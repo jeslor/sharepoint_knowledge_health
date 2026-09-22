@@ -15,6 +15,7 @@ function user(overrides: Partial<MeResponse> = {}): MeResponse {
     organizationId: 'org-1',
     displayName: 'Sarah Kim',
     email: 'sarah@contoso.com',
+    organizationName: 'Contoso Corp',
     tenantName: 'Contoso Ltd.',
     needsReconsent: false,
     ...overrides,

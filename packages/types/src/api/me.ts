@@ -9,6 +9,12 @@ export interface MeResponse {
   // already exist (User.displayName/email, MicrosoftTenant.tenantName).
   displayName: string;
   email: string;
+  // Phase 6: Organization.name (this application's own tenant record) —
+  // distinct from tenantName below, which is the connected Microsoft 365
+  // tenant's name. Added for the "Request an upgrade" dialog's contextual
+  // "Organization: {name}" line; display-only, never trusted as an
+  // authorization input anywhere.
+  organizationName: string;
   // null only if the organization somehow has no Consented tenant at the
   // moment /auth/me is called — structurally rare (TenantContextGuard
   // already requires one to provision a user), but not impossible (e.g. the

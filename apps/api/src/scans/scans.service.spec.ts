@@ -181,13 +181,116 @@ describe('ScansService', () => {
       await expect(service.getScan('org-1', 'scan-missing')).rejects.toThrow(NotFoundException);
     });
 
-    it('returns the scan job when found', async () => {
-      const scanJob = { id: 'scan-1', status: 'Running' };
+    it('returns the mapped ScanResponse when found — never the raw Prisma ScanJob', async () => {
+      const scanJob = {
+        id: 'scan-1',
+        microsoftTenantId: 'tenant-1',
+        triggeredByUserId: 'user-1',
+        triggerSource: 'Manual',
+        status: 'Running',
+        startedAt: new Date('2026-07-01T00:00:00.000Z'),
+        completedAt: null,
+        documentsScanned: 5,
+        documentsFailed: 0,
+        errorSummary: null,
+        createdAt: new Date('2026-07-01T00:00:00.000Z'),
+        totalSites: 3,
+        sitesCompleted: 1,
+        currentSiteName: 'Team Site',
+        limitReached: false,
+      };
       scanJobs.findFirstById.mockResolvedValue(scanJob);
 
       const result = await service.getScan('org-1', 'scan-1');
 
-      expect(result).toBe(scanJob);
+      expect(result).toEqual({
+        id: 'scan-1',
+        microsoftTenantId: 'tenant-1',
+        triggeredByUserId: 'user-1',
+        triggerSource: 'Manual',
+        status: 'Running',
+        startedAt: '2026-07-01T00:00:00.000Z',
+        completedAt: null,
+        documentsScanned: 5,
+        documentsFailed: 0,
+        errorSummary: null,
+        createdAt: '2026-07-01T00:00:00.000Z',
+        totalSites: 3,
+        sitesCompleted: 1,
+        currentSiteName: 'Team Site',
+        limitReached: false,
+      });
+    });
+
+    // Phase 4: the scan-result contract must clearly distinguish "completed
+    // normally" from "completed but the trial limit was reached" without
+    // treating quota exhaustion as an error — status stays 'Completed'.
+    it('reports limitReached: true on a scan that completed after the trial quota was exhausted', async () => {
+      const scanJob = {
+        id: 'scan-1',
+        microsoftTenantId: 'tenant-1',
+        triggeredByUserId: null,
+        triggerSource: 'Scheduled',
+        status: 'Completed',
+        startedAt: new Date('2026-07-01T00:00:00.000Z'),
+        completedAt: new Date('2026-07-01T00:05:00.000Z'),
+        documentsScanned: 2000,
+        documentsFailed: 0,
+        errorSummary: null,
+        createdAt: new Date('2026-07-01T00:00:00.000Z'),
+        totalSites: 3,
+        sitesCompleted: 2,
+        currentSiteName: null,
+        limitReached: true,
+      };
+      scanJobs.findFirstById.mockResolvedValue(scanJob);
+
+      const result = await service.getScan('org-1', 'scan-1');
+
+      expect(result.status).toBe('Completed');
+      expect(result.limitReached).toBe(true);
+    });
+
+    // Phase 4: a scan that failed for genuine (non-quota) reasons must
+    // retain its existing failure semantics — limitReached is independent
+    // of, never a reinterpretation of, status/documentsFailed/errorSummary.
+    it('a Failed scan (no quota involvement) still reports its existing failure semantics, with limitReached: false', async () => {
+      const scanJob = {
+        id: 'scan-1',
+        microsoftTenantId: 'tenant-1',
+        triggeredByUserId: 'user-1',
+        triggerSource: 'Manual',
+        status: 'Failed',
+        startedAt: new Date('2026-07-01T00:00:00.000Z'),
+        completedAt: new Date('2026-07-01T00:01:00.000Z'),
+        documentsScanned: 0,
+        documentsFailed: 1,
+        errorSummary: 'Site enumeration failed',
+        createdAt: new Date('2026-07-01T00:00:00.000Z'),
+        totalSites: 1,
+        sitesCompleted: 1,
+        currentSiteName: null,
+        limitReached: false,
+      };
+      scanJobs.findFirstById.mockResolvedValue(scanJob);
+
+      const result = await service.getScan('org-1', 'scan-1');
+
+      expect(result.status).toBe('Failed');
+      expect(result.documentsFailed).toBe(1);
+      expect(result.errorSummary).toBe('Site enumeration failed');
+      expect(result.limitReached).toBe(false);
+    });
+
+    // Cross-tenant: a scanJobId belonging to another organization must
+    // never be distinguishable from a nonexistent one — findFirstById is
+    // already organizationId-scoped (ScanJobRepository), so this never
+    // leaks whether the ScanJob exists under a different tenant.
+    it('throws the same NotFoundException for a scanJobId belonging to another organization as for a nonexistent one', async () => {
+      scanJobs.findFirstById.mockResolvedValue(null);
+
+      await expect(service.getScan('org-1', 'scan-belongs-to-org-2')).rejects.toThrow(NotFoundException);
+      expect(mockedCreateContext).toHaveBeenCalledWith('org-1');
     });
   });
 
@@ -207,6 +310,7 @@ describe('ScansService', () => {
         totalSites: 3,
         sitesCompleted: 3,
         currentSiteName: null,
+        limitReached: false,
       };
       scanJobs.findMany.mockResolvedValue([scanJob]);
 
@@ -229,8 +333,36 @@ describe('ScansService', () => {
           totalSites: 3,
           sitesCompleted: 3,
           currentSiteName: null,
+          limitReached: false,
         },
       ]);
+    });
+
+    // Phase 4: listScans shares toScanResponse with getScan — a scan in
+    // the list that hit the trial limit must surface it too.
+    it('surfaces limitReached: true for a listed scan that completed after the trial quota was exhausted', async () => {
+      scanJobs.findMany.mockResolvedValue([
+        {
+          id: 'scan-4',
+          microsoftTenantId: 'tenant-1',
+          triggeredByUserId: 'user-1',
+          status: 'Completed',
+          startedAt: new Date('2026-07-01T00:00:00.000Z'),
+          completedAt: new Date('2026-07-01T00:10:00.000Z'),
+          documentsScanned: 1500,
+          documentsFailed: 0,
+          errorSummary: null,
+          createdAt: new Date('2026-07-01T00:00:00.000Z'),
+          totalSites: 4,
+          sitesCompleted: 2,
+          currentSiteName: null,
+          limitReached: true,
+        },
+      ]);
+
+      const [result] = await service.listScans('org-1');
+
+      expect(result).toEqual(expect.objectContaining({ status: 'Completed', limitReached: true }));
     });
 
     it('maps a Running scan\'s in-progress fields through unchanged', async () => {

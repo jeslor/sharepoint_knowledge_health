@@ -16,6 +16,17 @@ enum OrganizationStatus {
   Suspended
 }
 
+// ADR-0001 / ADR-0007's own deferred "future plan gating" note: "a future
+// Organization.planLimits field or a separate Plan entity." Two values only
+// — this MVP has exactly one paid tier's worth of distinction to make
+// (Trial vs. not), not a generalized plan catalog. Standard is a placeholder
+// for whatever the first real paid plan turns out to be; nothing currently
+// reads or writes it.
+enum OrganizationPlanType {
+  Trial
+  Standard
+}
+
 enum UserRole {
   Admin
   // Phase 8A / ADR-0016 §4.6: scoped to governance only (issues, document
@@ -285,8 +296,40 @@ model Organization {
   sharePointClassificationFields SharePointClassificationField[]
   remediationJobs                RemediationJob[]
   remediationItems               RemediationItem[]
+  entitlement                    OrganizationEntitlement?
+  upgradeRequests                UpgradeRequest[]
 
   @@index([status])
+}
+
+/// Per-organization plan type and document-usage tracking (ADR-0001's and
+/// ADR-0007's own deferred "future plan gating" notes on Organization/
+/// ScanJob: "a future Organization.planLimits field or a separate Plan
+/// entity... an additive migration, not a redesign of existing tables").
+/// One row per organization — optional from Organization's side (like
+/// ScanSchedule) so creating an Organization never requires one to exist
+/// simultaneously; a data migration backfills one for every organization
+/// that predates this model, and new organizations get one at bootstrap
+/// (provisionOrganizationFromConsent).
+///
+/// currentDocumentCount is a maintained counter, not a live COUNT(*) —
+/// this is deliberate: a live count-then-compare-then-write is exactly the
+/// non-atomic pattern that lets two concurrent callers both succeed at
+/// consuming the same last slot. See entitlement.ts's tryConsumeDocumentSlot/
+/// releaseDocumentSlot for the atomic conditional-UPDATE this counter design
+/// depends on, and document-lifecycle.ts for how the scan worker
+/// (document-collector.processor.ts) consumes/releases slots atomically
+/// alongside the Document row's own create / Active->Removed transition.
+model OrganizationEntitlement {
+  id                   String               @id @default(cuid())
+  organizationId       String               @unique
+  planType             OrganizationPlanType @default(Trial)
+  documentLimit        Int                  @default(2000)
+  currentDocumentCount Int                  @default(0)
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 }
 
 /// A person who signs into the dashboard. Belongs to exactly one Organization.
@@ -316,6 +359,7 @@ model User {
   confirmedReviewDateMappings   SharePointReviewDateMapping[]   @relation("SharePointReviewDateMappingConfirmedBy")
   confirmedClassificationFields SharePointClassificationField[] @relation("SharePointClassificationFieldConfirmedBy")
   initiatedRemediationJobs      RemediationJob[]                @relation("RemediationJobInitiatedBy")
+  upgradeRequests               UpgradeRequest[]                @relation("UpgradeRequestRequestedBy")
 
   // The Entra oid claim (entraObjectId) is only unique WITHIN the Azure AD
   // tenant that issued it (ADR-0010) — Microsoft's own multi-tenant app
@@ -554,6 +598,17 @@ model ScanJob {
   totalSites      Int?
   sitesCompleted  Int     @default(0)
   currentSiteName String?
+
+  // Entitlement enforcement (trial quota, packages/database's entitlement.ts):
+  // true when this scan stopped creating new documents at some point because
+  // the organization's OrganizationEntitlement.documentLimit was reached —
+  // additive to the existing Completed/Failed/Cancelled status set, never a
+  // new ScanJobStatus value. A scan that hit the limit is still a genuine
+  // success (status stays 'Completed'): everything discovered up to the
+  // limit was persisted and scored correctly, the scan just couldn't add
+  // more. Default false preserves the existing meaning for every row that
+  // predates this field.
+  limitReached Boolean @default(false)
 
   organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   microsoftTenant MicrosoftTenant @relation(fields: [microsoftTenantId], references: [id], onDelete: Cascade)
@@ -894,4 +949,46 @@ model RemediationItem {
   @@unique([remediationJobId, documentId])
   @@index([organizationId, status])
   @@index([remediationJobId, status])
+}
+
+// Phase 6 (trial upgrade UX): tracks human follow-up on a submitted
+// request, never delivery/enforcement state — email success/failure is a
+// separate concern (apps/api's EmailService), and there is deliberately no
+// enforcement meaning attached to any of these values (a Pending request
+// never blocks or unblocks anything; the worker's entitlement layer is
+// unaffected). Pending is where every request starts and stays until a
+// human on our side updates it — no automated transition exists yet.
+enum UpgradeRequestStatus {
+  Pending
+  Contacted
+  Completed
+}
+
+/// A human-assisted "please upgrade our trial capacity" request (Phase 6) —
+/// intentionally not a billing/subscription record. Exists so a request is
+/// never silently lost even if the notification email fails to send (the
+/// row is written before the email attempt — see UpgradeRequestService) and
+/// so a future admin view has something to read; no such view exists yet.
+/// message is optional and user-supplied (length-validated by the API, not
+/// here) — every other field is derived server-side from the authenticated
+/// session/tenant context, never trusted from the client.
+model UpgradeRequest {
+  id                String               @id @default(cuid())
+  organizationId    String
+  requestedByUserId String
+  message           String?
+  status            UpgradeRequestStatus @default(Pending)
+  createdAt         DateTime             @default(now())
+
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  // Restrict, matching RemediationJob.initiatedByUserId/ScanJob.triggeredByUserId's
+  // precedent — who asked for this must never be silently lost to a user
+  // deletion.
+  requestedByUser User         @relation("UpgradeRequestRequestedBy", fields: [requestedByUserId], references: [id], onDelete: Restrict)
+
+  @@index([organizationId, createdAt])
+  // Backs the short-window duplicate-submission guard
+  // (upgrade-request.service.ts) — "has this user already requested an
+  // upgrade in the last N seconds," without a generic rate-limiting layer.
+  @@index([requestedByUserId, createdAt])
 }

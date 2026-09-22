@@ -4,6 +4,7 @@ import { EmptyState } from '@/components/ui/query-state';
 import { JobStatusCard } from '@/components/ui/job-status-card';
 import { Spinner } from '@/components/ui/spinner';
 import { TableScrollContainer } from '@/components/ui/table-scroll-container';
+import { Badge } from '@/components/ui/badge';
 import { ScanStatusBadge } from './scan-status-badge';
 
 function formatTimestamp(iso: string | null): string {
@@ -27,6 +28,14 @@ function isActive(scan: ScanResponse): boolean {
   return scan.status === 'Queued' || scan.status === 'Running';
 }
 
+// Phase 5: a quick, glanceable signal in the list — the full explanation
+// (existing documents remain available, Upgrade CTA) lives on the scan
+// detail page, not duplicated here per row.
+function LimitReachedBadge({ scan }: { scan: ScanResponse }): JSX.Element | null {
+  if (!scan.limitReached) return null;
+  return <Badge tone="warning">Trial limit reached</Badge>;
+}
+
 export function ScanList({ scans }: { scans: ScanResponse[] }): JSX.Element {
   if (scans.length === 0) {
     return <EmptyState label="No scans have been run yet." />;
@@ -41,7 +50,12 @@ export function ScanList({ scans }: { scans: ScanResponse[] }): JSX.Element {
         {scans.map((scan) => (
           <li key={scan.id}>
             <JobStatusCard
-              statusBadge={<ScanStatusBadge status={scan.status} />}
+              statusBadge={
+                <span className="inline-flex items-center gap-2">
+                  <ScanStatusBadge status={scan.status} />
+                  <LimitReachedBadge scan={scan} />
+                </span>
+              }
               active={isActive(scan)}
               viewHref={`/dashboard/scans/${scan.id}`}
               fields={[
@@ -83,7 +97,10 @@ export function ScanList({ scans }: { scans: ScanResponse[] }): JSX.Element {
                   className={`transition-colors duration-150 ease-premium hover:bg-slate-50 ${isActive(scan) ? 'bg-brand-50/40' : ''}`}
                 >
                   <td className="py-3 pr-4">
-                    <ScanStatusBadge status={scan.status} />
+                    <span className="inline-flex items-center gap-2">
+                      <ScanStatusBadge status={scan.status} />
+                      <LimitReachedBadge scan={scan} />
+                    </span>
                   </td>
                   <td className="py-3 pr-4 text-slate-600">
                     <span className="inline-flex items-center gap-2">

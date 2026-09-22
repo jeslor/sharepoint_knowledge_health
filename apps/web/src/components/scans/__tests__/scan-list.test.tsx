@@ -27,6 +27,7 @@ function scan(overrides: Partial<ScanResponse> = {}): ScanResponse {
     totalSites: 3,
     sitesCompleted: 3,
     currentSiteName: null,
+    limitReached: false,
     ...overrides,
   };
 }
@@ -48,6 +49,23 @@ describe('ScanList', () => {
       expect(row && within(row).getByText(status)).toBeInTheDocument();
     },
   );
+
+  // Phase 5
+  describe('trial limit-reached badge', () => {
+    it('shows no badge for a normal completed scan (limitReached: false)', () => {
+      render(<ScanList scans={[scan({ status: 'Completed', limitReached: false })]} />);
+      expect(withinTable().queryByText('Trial limit reached')).not.toBeInTheDocument();
+    });
+
+    it('shows a badge next to the status for a scan that reached the trial limit', () => {
+      render(<ScanList scans={[scan({ status: 'Completed', limitReached: true })]} />);
+      expect(withinTable().getByText('Trial limit reached')).toBeInTheDocument();
+      // Still rendered with its real Completed status — never as Failed.
+      const [row] = screen.getAllByRole('row').slice(1);
+      expect(row).toBeDefined();
+      expect(row && within(row).getByText('Completed')).toBeInTheDocument();
+    });
+  });
 
   it('renders documentsScanned, documentsFailed, and errorSummary for a failed scan', () => {
     render(

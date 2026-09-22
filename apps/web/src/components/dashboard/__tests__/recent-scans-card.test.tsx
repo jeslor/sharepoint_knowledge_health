@@ -18,6 +18,7 @@ function scan(overrides: Partial<ScanResponse> = {}): ScanResponse {
     totalSites: 5,
     sitesCompleted: 5,
     currentSiteName: null,
+    limitReached: false,
     ...overrides,
   };
 }
@@ -40,5 +41,19 @@ describe('RecentScansCard', () => {
     render(<RecentScansCard scans={[scan()]} />);
     expect(screen.getByRole('link', { name: 'View details' })).toHaveAttribute('href', '/dashboard/scans/scan-1');
     expect(screen.getByRole('link', { name: 'View all' })).toHaveAttribute('href', '/dashboard/scans');
+  });
+
+  // Phase 5: a normal completed scan (limitReached: false) must render
+  // exactly as before — no trial messaging appears unless the backend says so.
+  it('shows no trial-limit badge for a normal completed scan', () => {
+    render(<RecentScansCard scans={[scan({ limitReached: false })]} />);
+    expect(screen.queryByText('Trial limit reached')).not.toBeInTheDocument();
+  });
+
+  it('shows a trial-limit badge next to the status when the most recent scan reached the trial limit', () => {
+    render(<RecentScansCard scans={[scan({ limitReached: true })]} />);
+    expect(screen.getByText('Trial limit reached')).toBeInTheDocument();
+    // Still shown as a normal Completed scan, never as a failure.
+    expect(screen.getByText('Completed')).toBeInTheDocument();
   });
 });

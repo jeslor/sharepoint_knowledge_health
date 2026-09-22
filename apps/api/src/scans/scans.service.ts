@@ -33,6 +33,7 @@ function toScanResponse(scanJob: ScanJob): ScanResponse {
     totalSites: scanJob.totalSites,
     sitesCompleted: scanJob.sitesCompleted,
     currentSiteName: scanJob.currentSiteName,
+    limitReached: scanJob.limitReached,
   };
 }
 
@@ -155,11 +156,11 @@ export class ScansService {
     return this.triggerScan(organizationId, onlyTenant.id, triggeredByUserId);
   }
 
-  async getScan(organizationId: string, scanJobId: string): Promise<ScanJob> {
+  async getScan(organizationId: string, scanJobId: string): Promise<ScanResponse> {
     const context = createTenantContext(organizationId);
     const scanJob = await context.scanJobs.findFirstById(scanJobId);
     if (!scanJob) throw new NotFoundException('Scan job not found');
-    return scanJob;
+    return toScanResponse(scanJob);
   }
 
   async listScans(organizationId: string): Promise<ScanResponse[]> {

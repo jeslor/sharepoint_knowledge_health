@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { ScanObjectRegular } from '@fluentui/react-icons';
 import type { ScanResponse } from '@sph/types';
 import { Card, CardHeader } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
 import { ScanStatusBadge } from '@/components/scans/scan-status-badge';
 import { EmptyState } from '@/components/ui/query-state';
 
@@ -34,7 +35,10 @@ export function RecentScansCard({ scans }: { scans: ScanResponse[] }): JSX.Eleme
         <EmptyState label="No scans have been run yet." />
       ) : (
         <div className="flex flex-wrap items-center gap-x-8 gap-y-2 text-body text-slate-600">
-          <ScanStatusBadge status={latest.status} />
+          <span className="inline-flex items-center gap-2">
+            <ScanStatusBadge status={latest.status} />
+            {latest.limitReached && <Badge tone="warning">Trial limit reached</Badge>}
+          </span>
           <span>
             <span className="text-caption text-slate-500">Duration</span>{' '}
             {formatDuration(latest.startedAt, latest.completedAt)}
