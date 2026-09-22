@@ -1,4 +1,4 @@
-import { EmailService, EmailNotConfiguredError } from './email.service';
+import { EmailService, EmailNotConfiguredError, EmailDeliveryError } from './email.service';
 
 describe('EmailService (Phase 6)', () => {
   const originalFetch = global.fetch;
@@ -71,16 +71,60 @@ describe('EmailService (Phase 6)', () => {
       await expect(service.send({ to: 'hi@jeslor.com', subject: 'Subject', text: 'Body' })).resolves.toBeUndefined();
     });
 
-    it('throws a clean error (no provider response body leaked) when the provider rejects the request', async () => {
+    it('throws EmailDeliveryError (no API key leaked) when the provider rejects the request', async () => {
       global.fetch = jest
         .fn()
         .mockResolvedValue({ ok: false, status: 422, text: () => Promise.resolve('{"message":"Invalid from address","internal_id":"req_abc123"}') }) as unknown as typeof fetch;
 
       const error = await service.send({ to: 'hi@jeslor.com', subject: 'Subject', text: 'Body' }).catch((e: unknown) => e);
 
-      expect(error).toBeInstanceOf(Error);
-      expect((error as Error).message).not.toContain('req_abc123');
-      expect((error as Error).message).not.toContain('re_test_key');
+      expect(error).toBeInstanceOf(EmailDeliveryError);
+      expect((error as EmailDeliveryError).status).toBe(422);
+      expect((error as EmailDeliveryError).providerMessage).toContain('Invalid from address');
+      expect((error as EmailDeliveryError).message).not.toContain('req_abc123');
+      expect((error as EmailDeliveryError).providerMessage).not.toContain('re_test_key');
+    });
+
+    // Root-cause regression: exactly the real-world failure this shape was
+    // built to surface — Resend rejects an unverified sender domain with a
+    // 403 and a small JSON body naming the offending domain.
+    it('surfaces a 403 unverified-sender-domain rejection with its status and message intact', async () => {
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: false,
+        status: 403,
+        text: () =>
+          Promise.resolve(
+            '{"statusCode":403,"message":"The jeslor.com domain is not verified. Please, add and verify your domain on https://resend.com/domains","name":"validation_error"}',
+          ),
+      }) as unknown as typeof fetch;
+
+      const error = await service.send({ to: 'hi@jeslor.com', subject: 'Subject', text: 'Body' }).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(EmailDeliveryError);
+      expect((error as EmailDeliveryError).status).toBe(403);
+      expect((error as EmailDeliveryError).providerMessage).toContain('domain is not verified');
+    });
+
+    it('caps an excessively long provider response body before it ever reaches a log line', async () => {
+      const hugeBody = 'x'.repeat(10_000);
+      global.fetch = jest.fn().mockResolvedValue({ ok: false, status: 500, text: () => Promise.resolve(hugeBody) }) as unknown as typeof fetch;
+
+      const error = await service.send({ to: 'hi@jeslor.com', subject: 'Subject', text: 'Body' }).catch((e: unknown) => e);
+
+      expect((error as EmailDeliveryError).providerMessage.length).toBeLessThanOrEqual(500);
+    });
+
+    it('redacts anything bearer-token-shaped in the provider response body, defensively', async () => {
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: false,
+        status: 401,
+        text: () => Promise.resolve('{"message":"Unauthorized, saw Bearer re_test_key in request"}'),
+      }) as unknown as typeof fetch;
+
+      const error = await service.send({ to: 'hi@jeslor.com', subject: 'Subject', text: 'Body' }).catch((e: unknown) => e);
+
+      expect((error as EmailDeliveryError).providerMessage).not.toContain('re_test_key');
+      expect((error as EmailDeliveryError).providerMessage).toContain('[redacted]');
     });
 
     it('propagates a network-level failure (fetch itself rejects)', async () => {

@@ -21,6 +21,29 @@ export class EmailNotConfiguredError extends Error {
   }
 }
 
+// Carries the provider's HTTP status and a sanitized response body — lets
+// a caller (upgrade-request.service.ts) log a single structured line with
+// the exact failure shape (e.g. status=403 for an unverified sender)
+// instead of a flat string. `providerMessage` is capped and stripped of
+// anything header/token-shaped before it ever reaches a log line — Resend
+// error bodies are small structured JSON ({statusCode, message, name}),
+// never contain the API key, but this stays defensive regardless.
+export class EmailDeliveryError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly providerMessage: string,
+  ) {
+    super(`Email provider returned HTTP ${status}`);
+    this.name = 'EmailDeliveryError';
+  }
+}
+
+const MAX_LOGGED_PROVIDER_BODY_LENGTH = 500;
+
+function sanitizeProviderBody(body: string): string {
+  return body.replace(/bearer\s+\S+/gi, 'Bearer [redacted]').slice(0, MAX_LOGGED_PROVIDER_BODY_LENGTH);
+}
+
 /**
  * Phase 6: this application's first email dependency — see the "email
  * infrastructure" search this phase's report documents (no SMTP/
@@ -73,10 +96,12 @@ export class EmailService {
       // provider-specific detail that has no business reaching an API
       // client (this codebase's existing convention: ErrorState-style
       // caller-facing messages never include internal implementation
-      // detail). Never logs apiKey/from.
-      const body = await response.text().catch(() => '');
-      this.logger.error(`Resend rejected the email request (HTTP ${response.status}): ${body}`);
-      throw new Error(`Email provider returned HTTP ${response.status}`);
+      // detail). Never logs apiKey/from — sanitizeProviderBody strips
+      // anything bearer-token-shaped defensively.
+      const rawBody = await response.text().catch(() => '');
+      const sanitized = sanitizeProviderBody(rawBody);
+      this.logger.error(`Resend rejected the email request (HTTP ${response.status}): ${sanitized}`);
+      throw new EmailDeliveryError(response.status, sanitized);
     }
   }
 }

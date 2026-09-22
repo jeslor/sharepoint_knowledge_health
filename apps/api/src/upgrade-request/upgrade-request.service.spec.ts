@@ -7,7 +7,7 @@ import {
   DUPLICATE_SUBMISSION_WINDOW_MS,
   buildUpgradeRequestEmail,
 } from './upgrade-request.service';
-import { EmailService } from '../email/email.service';
+import { EmailService, EmailDeliveryError, EmailNotConfiguredError } from '../email/email.service';
 
 jest.mock('@sph/database');
 
@@ -132,6 +132,46 @@ describe('UpgradeRequestService (Phase 6)', () => {
       const message = (error as ServiceUnavailableException).message;
       expect(message).not.toContain('re_live_abc123');
       expect(message).not.toContain('req_xyz');
+    });
+
+    // Root-cause diagnosis regression: a flat prose log line made "Resend
+    // rejected the sender domain" indistinguishable from any other failure
+    // without re-reading source. These structured fields are what an
+    // operator actually greps for.
+    it('logs a structured upgrade_email_failed line with status/error_type/organizationId/requestId when Resend rejects the request', async () => {
+      emailService.send.mockRejectedValue(
+        new EmailDeliveryError(403, 'The jeslor.com domain is not verified. Please, add and verify your domain on https://resend.com/domains'),
+      );
+      const logSpy = jest.spyOn((service as unknown as { logger: { error: jest.Mock } }).logger, 'error');
+
+      await service.requestUpgrade('org-1', user(), undefined).catch(() => undefined);
+
+      expect(logSpy).toHaveBeenCalledWith(
+        expect.stringMatching(
+          /^upgrade_email_failed provider=resend status=403 error_type=provider_rejected organizationId=org-1 requestId=req-1 detail=.*domain is not verified/,
+        ),
+      );
+    });
+
+    it('logs error_type=not_configured (distinct from a provider rejection) when EMAIL_API_KEY\\/EMAIL_FROM are unset', async () => {
+      emailService.send.mockRejectedValue(new EmailNotConfiguredError());
+      const logSpy = jest.spyOn((service as unknown as { logger: { error: jest.Mock } }).logger, 'error');
+
+      await service.requestUpgrade('org-1', user(), undefined).catch(() => undefined);
+
+      expect(logSpy).toHaveBeenCalledWith(
+        expect.stringContaining('upgrade_email_failed provider=resend status=n/a error_type=not_configured organizationId=org-1 requestId=req-1'),
+      );
+    });
+
+    it('never logs the API key or provider auth header, even on failure', async () => {
+      emailService.send.mockRejectedValue(new EmailDeliveryError(401, 'Unauthorized'));
+      const logSpy = jest.spyOn((service as unknown as { logger: { error: jest.Mock } }).logger, 'error');
+
+      await service.requestUpgrade('org-1', user(), undefined).catch(() => undefined);
+
+      const loggedText = logSpy.mock.calls.map((call) => String(call[0])).join('\n');
+      expect(loggedText).not.toMatch(/bearer\s+re_/i);
     });
   });
 

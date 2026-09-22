@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { createTenantContext, type Organization, type UpgradeRequest, type User } from '@sph/database';
 import type { RequestUpgradeResponse, UsageResponse } from '@sph/types';
-import { EmailService } from '../email/email.service';
+import { EmailDeliveryError, EmailNotConfiguredError, EmailService } from '../email/email.service';
 import { toUsageResponse } from '../usage/usage.service';
 
 // Fixed business destination, not environment configuration — unlike
@@ -134,10 +134,27 @@ export class UpgradeRequestService {
     try {
       await this.emailService.send({ to: UPGRADE_REQUEST_RECIPIENT, subject, text });
     } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      this.logger.error(
-        `Failed to send upgrade-request email for UpgradeRequest ${created.id} (organization ${organizationId}): ${detail}`,
-      );
+      // Structured, greppable fields (status/error_type/organizationId/
+      // requestId) — a flat prose string was previously the only trace of
+      // *why* delivery failed, which made a real diagnosis (e.g. "Resend
+      // rejected the sender domain") indistinguishable from any other
+      // failure without re-reading source. Never includes the API key,
+      // access tokens, or SharePoint content — EmailDeliveryError's own
+      // providerMessage is already sanitized/capped by EmailService.
+      if (error instanceof EmailDeliveryError) {
+        this.logger.error(
+          `upgrade_email_failed provider=resend status=${error.status} error_type=provider_rejected organizationId=${organizationId} requestId=${created.id} detail=${error.providerMessage}`,
+        );
+      } else if (error instanceof EmailNotConfiguredError) {
+        this.logger.error(
+          `upgrade_email_failed provider=resend status=n/a error_type=not_configured organizationId=${organizationId} requestId=${created.id}`,
+        );
+      } else {
+        const detail = error instanceof Error ? error.message : String(error);
+        this.logger.error(
+          `upgrade_email_failed provider=resend status=n/a error_type=unknown organizationId=${organizationId} requestId=${created.id} detail=${detail}`,
+        );
+      }
       // The UpgradeRequest row above already committed — not silently
       // lost — but the user must never be told "sent" when delivery
       // didn't actually succeed.
