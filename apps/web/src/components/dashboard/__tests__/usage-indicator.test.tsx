@@ -2,6 +2,21 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import type { UsageResponse } from '@sph/types';
 import { UsageIndicator } from '../usage-indicator';
 
+// RequestUpgradeDialog's own hook-driven form/success/error behavior is
+// thoroughly covered by request-upgrade-dialog.test.tsx — mocked here to a
+// minimal stand-in so this file only tests UsageIndicator's own wiring
+// (does the CTA render, does it open the dialog, does the sidebar react to
+// a successful request).
+jest.mock('../request-upgrade-dialog', () => ({
+  RequestUpgradeDialog: ({ open, onOpenChange, onSuccess }: { open: boolean; onOpenChange: (open: boolean) => void; onSuccess?: () => void }) =>
+    open ? (
+      <div role="dialog" aria-label="Request an upgrade">
+        <button onClick={() => onOpenChange(false)}>Cancel</button>
+        <button onClick={onSuccess}>Simulate success</button>
+      </div>
+    ) : null,
+}));
+
 function usage(overrides: Partial<UsageResponse> = {}): UsageResponse {
   return {
     planType: 'Trial',
@@ -108,20 +123,35 @@ describe('UsageIndicator (Phase 5)', () => {
       expect(screen.queryByText(/error/i)).not.toBeInTheDocument();
     });
 
-    it('renders the Upgrade CTA at the limit-reached state', () => {
+    it('renders the "Request an upgrade" CTA at the limit-reached state, never the old placeholder "Upgrade" label', () => {
       render(<UsageIndicator usage={atLimit} loading={false} error={undefined} />);
-      expect(screen.getByRole('button', { name: 'Upgrade' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Request an upgrade' })).toBeInTheDocument();
     });
 
-    it('opens the limit-reached dialog when the Upgrade CTA is clicked, and it can be closed again', () => {
+    it('opens the request-upgrade dialog when the CTA is clicked, and it can be closed again via Cancel', () => {
       render(<UsageIndicator usage={atLimit} loading={false} error={undefined} />);
 
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-      fireEvent.click(screen.getByRole('button', { name: 'Upgrade' }));
-      expect(screen.getByRole('dialog', { name: 'Trial document limit reached' })).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Request an upgrade' }));
+      expect(screen.getByRole('dialog', { name: 'Request an upgrade' })).toBeInTheDocument();
 
-      fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+
+    it('does not automatically open the dialog just because the organization is at 100% — the user must initiate it', () => {
+      render(<UsageIndicator usage={atLimit} loading={false} error={undefined} />);
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+
+    it('shows "Upgrade request sent" in the sidebar after a successful request, replacing the CTA', () => {
+      render(<UsageIndicator usage={atLimit} loading={false} error={undefined} />);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Request an upgrade' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Simulate success' }));
+
+      expect(screen.getByText('Upgrade request sent')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Request an upgrade' })).not.toBeInTheDocument();
     });
 
     it('never trusts a re-derived limit condition — renders limitReached purely from the backend field, even if the percentage math would disagree', () => {

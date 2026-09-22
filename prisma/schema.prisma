@@ -297,6 +297,7 @@ model Organization {
   remediationJobs                RemediationJob[]
   remediationItems               RemediationItem[]
   entitlement                    OrganizationEntitlement?
+  upgradeRequests                UpgradeRequest[]
 
   @@index([status])
 }
@@ -358,6 +359,7 @@ model User {
   confirmedReviewDateMappings   SharePointReviewDateMapping[]   @relation("SharePointReviewDateMappingConfirmedBy")
   confirmedClassificationFields SharePointClassificationField[] @relation("SharePointClassificationFieldConfirmedBy")
   initiatedRemediationJobs      RemediationJob[]                @relation("RemediationJobInitiatedBy")
+  upgradeRequests               UpgradeRequest[]                @relation("UpgradeRequestRequestedBy")
 
   // The Entra oid claim (entraObjectId) is only unique WITHIN the Azure AD
   // tenant that issued it (ADR-0010) — Microsoft's own multi-tenant app
@@ -947,4 +949,46 @@ model RemediationItem {
   @@unique([remediationJobId, documentId])
   @@index([organizationId, status])
   @@index([remediationJobId, status])
+}
+
+// Phase 6 (trial upgrade UX): tracks human follow-up on a submitted
+// request, never delivery/enforcement state — email success/failure is a
+// separate concern (apps/api's EmailService), and there is deliberately no
+// enforcement meaning attached to any of these values (a Pending request
+// never blocks or unblocks anything; the worker's entitlement layer is
+// unaffected). Pending is where every request starts and stays until a
+// human on our side updates it — no automated transition exists yet.
+enum UpgradeRequestStatus {
+  Pending
+  Contacted
+  Completed
+}
+
+/// A human-assisted "please upgrade our trial capacity" request (Phase 6) —
+/// intentionally not a billing/subscription record. Exists so a request is
+/// never silently lost even if the notification email fails to send (the
+/// row is written before the email attempt — see UpgradeRequestService) and
+/// so a future admin view has something to read; no such view exists yet.
+/// message is optional and user-supplied (length-validated by the API, not
+/// here) — every other field is derived server-side from the authenticated
+/// session/tenant context, never trusted from the client.
+model UpgradeRequest {
+  id                String               @id @default(cuid())
+  organizationId    String
+  requestedByUserId String
+  message           String?
+  status            UpgradeRequestStatus @default(Pending)
+  createdAt         DateTime             @default(now())
+
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  // Restrict, matching RemediationJob.initiatedByUserId/ScanJob.triggeredByUserId's
+  // precedent — who asked for this must never be silently lost to a user
+  // deletion.
+  requestedByUser User         @relation("UpgradeRequestRequestedBy", fields: [requestedByUserId], references: [id], onDelete: Restrict)
+
+  @@index([organizationId, createdAt])
+  // Backs the short-window duplicate-submission guard
+  // (upgrade-request.service.ts) — "has this user already requested an
+  // upgrade in the last N seconds," without a generic rate-limiting layer.
+  @@index([requestedByUserId, createdAt])
 }

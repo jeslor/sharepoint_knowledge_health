@@ -11,6 +11,16 @@ export const envSchema = z.object({
   // flow to acquire app-only Graph tokens. Key Vault-backed in production
   // per ADR-0006.
   ENTRA_CLIENT_SECRET: z.string().min(1),
+  // Phase 6 (trial upgrade UX): apps/api's EmailService, used only by the
+  // "Request an upgrade" flow (POST /organizations/:id/upgrade-request) —
+  // a Resend API key + verified sender address. Deliberately optional: no
+  // other part of the application depends on email, so a deployment
+  // without these configured must still boot normally (validateEnvOrExit
+  // must not fail the whole API over an unconfigured secondary feature).
+  // EmailService itself fails closed at call time when either is missing —
+  // see its own module comment.
+  EMAIL_API_KEY: z.string().min(1).optional(),
+  EMAIL_FROM: z.string().min(1).optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

@@ -19,6 +19,7 @@ import { SharePointReviewDateMappingRepository } from './repositories/sharepoint
 import { SharePointClassificationFieldRepository } from './repositories/sharepoint-classification-field-repository';
 import { RemediationJobRepository } from './repositories/remediation-job-repository';
 import { RemediationItemRepository } from './repositories/remediation-item-repository';
+import { UpgradeRequestRepository } from './repositories/upgrade-request-repository';
 
 export interface TenantContext {
   readonly organizationId: string;
@@ -42,6 +43,7 @@ export interface TenantContext {
   readonly sharePointClassificationFields: SharePointClassificationFieldRepository;
   readonly remediationJobs: RemediationJobRepository;
   readonly remediationItems: RemediationItemRepository;
+  readonly upgradeRequests: UpgradeRequestRepository;
 }
 
 /**
@@ -73,5 +75,6 @@ export function createTenantContext(organizationId: string): TenantContext {
     sharePointClassificationFields: new SharePointClassificationFieldRepository(organizationId, prisma),
     remediationJobs: new RemediationJobRepository(organizationId, prisma),
     remediationItems: new RemediationItemRepository(organizationId, prisma),
+    upgradeRequests: new UpgradeRequestRepository(organizationId, prisma),
   };
 }

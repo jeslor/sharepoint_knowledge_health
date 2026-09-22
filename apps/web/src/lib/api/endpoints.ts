@@ -51,6 +51,8 @@ import type {
   SetDocumentReviewDateRequest,
   SharePointSiteResponse,
   TriggerScanRequest,
+  RequestUpgradeRequest,
+  RequestUpgradeResponse,
   UnreadNotificationCountResponse,
   UpdateGovernanceIssueRequest,
   UpdateScanScheduleRequest,
@@ -498,4 +500,19 @@ export function getOwnershipCoverage(organizationId: string, token: string): Pro
 // no query parameters.
 export function getUsage(organizationId: string, token: string): Promise<UsageResponse> {
   return apiRequest(`/organizations/${organizationId}/usage`, token);
+}
+
+// Phase 6: the exact RequestUpgradeResponse contract
+// apps/api/src/upgrade-request/upgrade-request.controller.ts implements —
+// body carries only the optional message; organization/user/usage context
+// is derived server-side, never sent from here.
+export function requestUpgrade(
+  organizationId: string,
+  token: string,
+  body: RequestUpgradeRequest,
+): Promise<RequestUpgradeResponse> {
+  return apiRequest(`/organizations/${organizationId}/upgrade-request`, token, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
 }

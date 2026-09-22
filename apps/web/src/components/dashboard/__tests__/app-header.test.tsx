@@ -25,7 +25,7 @@ describe('AppHeader', () => {
   });
 
   it('shows the connected tenant name and user display name once loaded', () => {
-    mockUser = { id: 'user-1', role: 'Admin', organizationId: 'org-1', displayName: 'Sarah Kim', email: 's@contoso.com', tenantName: 'Contoso Ltd.' };
+    mockUser = { id: 'user-1', role: 'Admin', organizationId: 'org-1', displayName: 'Sarah Kim', email: 's@contoso.com', organizationName: 'Contoso Corp', tenantName: 'Contoso Ltd.' };
     render(<AppHeader mobileNavOpen={false} onToggleMobileNav={jest.fn()} />);
 
     expect(screen.getByText('Contoso Ltd.')).toBeInTheDocument();
@@ -33,7 +33,7 @@ describe('AppHeader', () => {
   });
 
   it('omits the tenant label when there is no connected tenant', () => {
-    mockUser = { id: 'user-1', role: 'Admin', organizationId: 'org-1', displayName: 'Sarah Kim', email: 's@contoso.com', tenantName: null };
+    mockUser = { id: 'user-1', role: 'Admin', organizationId: 'org-1', displayName: 'Sarah Kim', email: 's@contoso.com', organizationName: 'Contoso Corp', tenantName: null };
     render(<AppHeader mobileNavOpen={false} onToggleMobileNav={jest.fn()} />);
 
     expect(screen.getByText('Sarah Kim')).toBeInTheDocument();

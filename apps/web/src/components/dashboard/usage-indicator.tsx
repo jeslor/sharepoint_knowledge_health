@@ -1,9 +1,9 @@
 'use client';
 
 import { useState } from 'react';
-import { DataUsageRegular, WarningRegular } from '@fluentui/react-icons';
+import { CheckmarkCircleFilled, DataUsageRegular, WarningRegular } from '@fluentui/react-icons';
 import type { UsageResponse } from '@sph/types';
-import { UsageLimitDialog } from './usage-limit-dialog';
+import { RequestUpgradeDialog } from './request-upgrade-dialog';
 
 // Phase 5: presentational UX thresholds only — never a second quota
 // system. The one authoritative gate (is the trial actually exhausted) is
@@ -47,6 +47,12 @@ interface UsageIndicatorProps {
 // here — see usage-indicator.test.tsx and the Phase 5 report).
 export function UsageIndicator({ usage, loading, error }: UsageIndicatorProps): JSX.Element | null {
   const [dialogOpen, setDialogOpen] = useState(false);
+  // Phase 6: session-local only, not backend-persisted — there is no GET
+  // endpoint yet for "has this organization already requested an upgrade,"
+  // so this deliberately does not survive a reload (a stale, forever-true
+  // "sent" state would be worse than none). See the Phase 6 report for the
+  // tradeoff this accepts.
+  const [requestSent, setRequestSent] = useState(false);
 
   if (loading) return <UsageIndicatorSkeleton />;
 
@@ -98,13 +104,23 @@ export function UsageIndicator({ usage, loading, error }: UsageIndicatorProps): 
             <WarningRegular fontSize={14} />
             Trial limit reached
           </p>
-          <button
-            type="button"
-            onClick={() => setDialogOpen(true)}
-            className="mt-1 text-caption font-medium text-brand-600 underline transition-colors duration-150 ease-premium hover:text-brand-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-600"
-          >
-            Upgrade
-          </button>
+          <p className="mt-0.5 text-caption text-slate-500">
+            Your existing documents and knowledge health results remain available.
+          </p>
+          {requestSent ? (
+            <p className="mt-1.5 flex items-center gap-1 text-caption font-medium text-green-700">
+              <CheckmarkCircleFilled fontSize={14} />
+              Upgrade request sent
+            </p>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setDialogOpen(true)}
+              className="mt-1.5 text-caption font-medium text-brand-600 underline transition-colors duration-150 ease-premium hover:text-brand-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-600"
+            >
+              Request an upgrade
+            </button>
+          )}
         </div>
       ) : usage.usagePercentage !== null && usage.usagePercentage >= WARNING_THRESHOLD ? (
         <p className="mt-2 flex items-start gap-1 text-caption text-amber-700">
@@ -119,12 +135,9 @@ export function UsageIndicator({ usage, loading, error }: UsageIndicatorProps): 
         <p className="mt-1.5 text-caption text-slate-500">{remainingLabel}</p>
       )}
 
-      <UsageLimitDialog
-        open={dialogOpen}
-        onOpenChange={setDialogOpen}
-        currentDocumentCount={usage.currentDocumentCount}
-        documentLimit={usage.documentLimit}
-      />
+      {usage.limitReached && (
+        <RequestUpgradeDialog open={dialogOpen} onOpenChange={setDialogOpen} onSuccess={() => setRequestSent(true)} />
+      )}
     </div>
   );
 }

@@ -56,6 +56,7 @@ export type {
   RemediationJob,
   RemediationItem,
   OrganizationEntitlement,
+  UpgradeRequest,
 } from '@prisma/client';
 
 export {
@@ -82,4 +83,5 @@ export {
   RemediationJobStatus,
   RemediationItemStatus,
   OrganizationPlanType,
+  UpgradeRequestStatus,
 } from '@prisma/client';
