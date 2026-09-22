@@ -42,7 +42,7 @@ export class ScansController {
   }
 
   @Get('scans/:scanId')
-  async getScan(@Param('id') organizationId: string, @Param('scanId') scanId: string): Promise<ScanJob> {
+  async getScan(@Param('id') organizationId: string, @Param('scanId') scanId: string): Promise<ScanResponse> {
     return this.scansService.getScan(organizationId, scanId);
   }
 
