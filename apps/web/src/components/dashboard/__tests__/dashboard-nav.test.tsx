@@ -1,10 +1,14 @@
 import { render, screen, fireEvent, within } from '@testing-library/react';
-import type { MeResponse } from '@sph/types';
+import type { MeResponse, UsageResponse } from '@sph/types';
 import { DashboardNav } from '../dashboard-nav';
 
 let mockUser: MeResponse | undefined;
 let mockPathname = '/dashboard';
 let mockUnreadCount: number | undefined;
+// Phase 5: undefined (never fetched/loading) by default — every existing
+// test in this file predates the usage indicator and doesn't care about
+// it; only the dedicated "usage indicator" describe block below sets this.
+let mockUsage: UsageResponse | undefined;
 
 jest.mock('@/lib/auth/current-user-context', () => ({
   useCurrentUser: () => ({ user: mockUser, loading: false, error: undefined }),
@@ -17,6 +21,16 @@ jest.mock('next/navigation', () => ({
 jest.mock('@/lib/api/hooks/use-unread-notification-count', () => ({
   useUnreadNotificationCount: () => ({
     data: mockUnreadCount === undefined ? undefined : { count: mockUnreadCount },
+    loading: false,
+    error: undefined,
+    isRefetching: false,
+    refetch: jest.fn(),
+  }),
+}));
+
+jest.mock('@/lib/api/hooks/use-usage', () => ({
+  useUsage: () => ({
+    data: mockUsage,
     loading: false,
     error: undefined,
     isRefetching: false,
@@ -53,6 +67,7 @@ describe('DashboardNav', () => {
     mockUser = undefined;
     mockPathname = '/dashboard';
     mockUnreadCount = undefined;
+    mockUsage = undefined;
   });
 
   it('always shows the core product areas reachable by every role, in the desktop sidebar', () => {
@@ -241,5 +256,33 @@ describe('DashboardNav', () => {
     fireEvent.click(workspaceToggle);
     expect(workspaceToggle).toHaveAttribute('aria-expanded', 'true');
     expect(getByRole('link', { name: /documents/i })).toBeInTheDocument();
+  });
+
+  // Phase 5: only wiring/placement is tested here — UsageIndicator's own
+  // presentation logic (thresholds, tone, dialog) is covered in its own
+  // test file.
+  describe('document usage indicator', () => {
+    it('renders the usage indicator in the desktop sidebar for a Trial organization', () => {
+      mockUser = user();
+      mockUsage = {
+        planType: 'Trial',
+        documentLimit: 2000,
+        currentDocumentCount: 1847,
+        remainingDocumentCount: 153,
+        usagePercentage: 92.35,
+        limitReached: false,
+      };
+      render(<DashboardNav mobileOpen={false} onCloseMobile={noop} />);
+
+      expect(within(desktopSidebar()).getByText('Document usage')).toBeInTheDocument();
+    });
+
+    it('renders nothing extra when usage has not loaded yet and no organization is known', () => {
+      mockUser = undefined;
+      mockUsage = undefined;
+      render(<DashboardNav mobileOpen={false} onCloseMobile={noop} />);
+
+      expect(screen.queryByText('Document usage')).not.toBeInTheDocument();
+    });
   });
 });

@@ -54,6 +54,7 @@ import type {
   UnreadNotificationCountResponse,
   UpdateGovernanceIssueRequest,
   UpdateScanScheduleRequest,
+  UsageResponse,
 } from '@sph/types';
 import { apiRequest } from './client';
 
@@ -490,4 +491,11 @@ export function getRemediationJob(
 // parameters (a current-state snapshot, not a filtered/date-ranged view).
 export function getOwnershipCoverage(organizationId: string, token: string): Promise<OwnershipCoverageResponse> {
   return apiRequest(`/organizations/${organizationId}/ownership-coverage`, token);
+}
+
+// Phase 5: the exact UsageResponse contract apps/api/src/usage/usage.controller.ts
+// implements (Phase 4) — a cheap, tenant-scoped entitlement-counter read,
+// no query parameters.
+export function getUsage(organizationId: string, token: string): Promise<UsageResponse> {
+  return apiRequest(`/organizations/${organizationId}/usage`, token);
 }
