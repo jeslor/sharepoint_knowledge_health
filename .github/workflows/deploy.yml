@@ -99,6 +99,15 @@ jobs:
   # 3) Apply Prisma migrations exactly once, from the runner, directly against
   #    the production Neon database (internet-reachable over TLS — no temporary
   #    Container Apps Job required). Forward-only; must succeed before rollout.
+  #    Immediately followed by the entitlement backfill (idempotent, same
+  #    DATABASE_URL) — a migration only ever creates the OrganizationEntitlement
+  #    TABLE; this is what guarantees every pre-existing organization actually
+  #    has a ROW, closing the exact gap that caused the "Document usage
+  #    unavailable" production incident (a migrate-only pipeline with no
+  #    automated backfill step). Both steps must succeed or this job fails,
+  #    which blocks `deploy` (`needs: migrate`) — a deploy must never look
+  #    successful while required baseline entitlement data silently failed to
+  #    initialize.
   migrate:
     needs: build-and-push
     runs-on: ubuntu-latest
@@ -121,6 +130,29 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: pnpm --filter @sph/database run migrate:deploy
+
+      # apps/api/src/scripts/backfill-organization-entitlements.ts imports
+      # backfillOrganizationEntitlements from @sph/database, which this job
+      # only ever generated the Prisma client for (above) — the package's own
+      # compiled dist/ (its package.json "main") doesn't exist yet on this
+      # fresh runner, unlike build-and-push's Docker builds which compile it
+      # inside the image. Build it directly, matching how migrate:deploy
+      # itself is invoked (a plain --filter call, no turbo needed here).
+      - name: Build @sph/database (required to import the backfill script)
+        run: pnpm --filter @sph/database run build
+
+      # THE SAME existing, already-tested backfill implementation
+      # (packages/database/src/entitlement-backfill.ts) — no second
+      # implementation. Only ever creates a row for an organization with
+      # entitlement: null; never updates an existing row (see that file's own
+      # idempotency test). A no-op "No organizations needed backfilling" once
+      # every organization has a row, so this is safe to run unconditionally
+      # on every deploy rather than a one-off manual step someone has to
+      # remember to run.
+      - name: Backfill missing OrganizationEntitlement rows (idempotent)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: pnpm --filter @sph/api run backfill:entitlements
 
   # 4) Roll out the new image to each Container App as a NEW REVISION. Runtime
   #    secrets (DATABASE_URL/REDIS_URL/ENTRA_CLIENT_SECRET) are configured ONCE
